@@ -1,0 +1,77 @@
+# Reference projects and business data are local evidence, never source assets.
+/历史项目-参考用/
+
+# Superseded local planning snapshots; v0.6 is the repository baseline.
+/docs/0.1/
+/docs/TMS_Data_Model_Baseline_v0.2_SQLServer/
+/docs/TMS_Development_Baseline_v0.3_SQLServer_React_Wijmo/
+/docs/TMS_Development_Baseline_v0.5_SQLServer_React_AntD_Governance/
+
+# Raw, processed, generated and temporary data.
+data/raw/
+data/processed/
+input/
+inputs/
+output/
+outputs/
+reports/
+exports/
+uploads/
+samples/private/
+*.csv
+*.tsv
+*.xls
+*.xlsx
+*.xlsm
+*.vdmos
+*.7z
+*.zip
+
+# Secrets and local configuration.
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+secrets/
+credentials/
+
+# Python.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+env/
+
+# JavaScript / frontend.
+node_modules/
+dist/
+build/
+.vite/
+coverage/
+
+# IDE, OS and runtime files.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.log
+*.tmp
+*.bak
+~$*
+
+# Local databases and generated packages.
+*.db
+*.sqlite
+*.sqlite3
+*.pyz
+*.exe
+*.msi
