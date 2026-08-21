@@ -16,7 +16,7 @@ class StoredUpload:
 
 
 @dataclass(frozen=True, slots=True)
-class ProductionUploadRow:
+class StageUploadRow:
     import_batch_id: int
     sequence_no: int
     original_file_name: str
@@ -31,7 +31,7 @@ class ProductionUploadRow:
 
 
 @dataclass(frozen=True, slots=True)
-class ProductionResultRow:
+class StageResultRow:
     result_summary_id: int
     import_batch_id: int
     data_name: str
@@ -48,10 +48,12 @@ class ProductionResultRow:
     created_at_utc: str
 
 
-class ProductionDataService(Protocol):
+class StageDataService(Protocol):
     def register_upload(
         self,
         principal: Principal,
+        business_domain: str,
+        test_stage: str,
         factory_code: str,
         files: Sequence[StoredUpload],
         remark: str | None,
@@ -61,8 +63,12 @@ class ProductionDataService(Protocol):
 
     def mark_failed(self, batch_id: int, job_id: int, message: str) -> None: ...
 
-    def record_cp_result(self, batch_id: int, job_id: int, result: dict) -> None: ...
+    def record_result(self, batch_id: int, job_id: int, result: dict) -> None: ...
 
-    def list_uploads(self, principal: Principal) -> tuple[ProductionUploadRow, ...]: ...
+    def list_uploads(
+        self, principal: Principal, business_domain: str, test_stage: str
+    ) -> tuple[StageUploadRow, ...]: ...
 
-    def list_results(self, principal: Principal) -> tuple[ProductionResultRow, ...]: ...
+    def list_results(
+        self, principal: Principal, business_domain: str, test_stage: str
+    ) -> tuple[StageResultRow, ...]: ...

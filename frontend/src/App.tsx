@@ -1,27 +1,21 @@
-import { ApartmentOutlined, BarChartOutlined, DatabaseOutlined, ExperimentOutlined, FileSearchOutlined, LogoutOutlined, SafetyCertificateOutlined, SettingOutlined, ThunderboltOutlined, UserOutlined } from "@ant-design/icons";
+import { ApartmentOutlined, BarChartOutlined, DatabaseOutlined, ExperimentOutlined, LogoutOutlined, SettingOutlined, UserOutlined } from "@ant-design/icons";
 import { PageContainer, ProLayout } from "@ant-design/pro-components";
 import { Avatar, Button, Dropdown, Result, Spin, Typography } from "antd";
 import { lazy, Suspense, useMemo, useState } from "react";
 import { LoginPage } from "./features/auth/LoginPage";
 import { useAuth } from "./features/auth/AuthContext";
-import { HuaHongInspector } from "./features/cleaners/HuaHongInspector";
-import { DatasetReview } from "./features/datasets/DatasetReview";
-import { JobWorkbench } from "./features/jobs/JobWorkbench";
 import { UserManagement } from "./features/users/UserManagement";
-import { CpDataWorkbench } from "./features/production/CpDataWorkbench";
-import { BusinessPlaceholder } from "./features/production/BusinessPlaceholder";
+import { StageDataWorkbench } from "./features/stage/StageDataWorkbench";
 import "./styles.css";
 
 const AnalyticsWorkbench = lazy(() => import("./features/analytics/AnalyticsWorkbench").then((module) => ({ default: module.AnalyticsWorkbench })));
 const routes = [
-  { path: "/engineering", name: "工程数据", icon: <ApartmentOutlined />, permission: "DATASET_READ" },
+  { path: "/engineering", name: "工程数据", icon: <ApartmentOutlined />, permission: "DATASET_READ", routes: [
+    { path: "/engineering/cp", name: "CP数据", icon: <ExperimentOutlined />, permission: "DATASET_READ" },
+  ] },
   { path: "/production", name: "量产数据", icon: <DatabaseOutlined />, permission: "DATASET_READ", routes: [
     { path: "/production/cp", name: "CP数据", icon: <ExperimentOutlined />, permission: "DATASET_READ" },
-    { path: "/production/ft", name: "FT数据", icon: <ThunderboltOutlined />, permission: "DATASET_READ" },
   ] },
-  { path: "/jobs", name: "清洗任务", icon: <DatabaseOutlined />, permission: "DATASET_READ" },
-  { path: "/huahong", name: "华虹样本检查", icon: <FileSearchOutlined />, permission: "TASK_CREATE" },
-  { path: "/review", name: "结果审核", icon: <SafetyCertificateOutlined />, permission: "DATASET_READ" },
   { path: "/analytics", name: "分析图表", icon: <BarChartOutlined />, permission: "ANALYSIS_RUN" },
   { path: "/users", name: "用户与权限", icon: <UserOutlined />, permission: "USER_ADMIN" },
   { path: "/governance", name: "规则治理", icon: <SettingOutlined />, permission: "RULE_GOVERN", disabled: true },
@@ -51,6 +45,6 @@ export default function App() {
     actionsRender={() => [<Button key="env" type="text">开发环境</Button>]}
     token={{ sider: { colorMenuBackground: "#082f52", colorTextMenu: "#c8d8e5", colorTextMenuSelected: "#ffffff", colorBgMenuItemSelected: "#1167a8" } }}
   ><PageContainer title={false} className="app-content">
-    {activePage === "/production/cp" ? <CpDataWorkbench /> : activePage === "/production/ft" ? <BusinessPlaceholder kind="FT" /> : activePage === "/engineering" ? <BusinessPlaceholder kind="ENGINEERING" /> : activePage === "/huahong" ? <HuaHongInspector /> : activePage === "/review" ? <DatasetReview /> : activePage === "/analytics" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><AnalyticsWorkbench /></Suspense> : activePage === "/users" ? <UserManagement /> : activePage === "/jobs" ? <JobWorkbench /> : <Result status="403" title="无权访问" subTitle="当前账户没有此功能权限。" />}
+    {activePage === "/engineering/cp" ? <StageDataWorkbench businessDomain="ENGINEERING" testStage="CP" /> : activePage === "/production/cp" ? <StageDataWorkbench businessDomain="PRODUCTION" testStage="CP" /> : activePage === "/analytics" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><AnalyticsWorkbench /></Suspense> : activePage === "/users" ? <UserManagement /> : <Result status="403" title="无权访问" subTitle="当前账户没有此功能权限。" />}
   </PageContainer></ProLayout>;
 }
