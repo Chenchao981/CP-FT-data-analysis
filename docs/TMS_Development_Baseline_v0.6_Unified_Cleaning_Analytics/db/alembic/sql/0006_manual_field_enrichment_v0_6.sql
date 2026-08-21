@@ -1,0 +1,3 @@
+-- Reference copy. Executable migration source:
+-- db/alembic/sql/0006_manual_field_enrichment_sql2014.sql
+-- Adds versioned CP/FT manual FILL/IGNORE decisions without changing source facts.

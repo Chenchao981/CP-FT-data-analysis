@@ -6,6 +6,8 @@
 /docs/TMS_Data_Model_Baseline_v0.2_SQLServer/
 /docs/TMS_Development_Baseline_v0.3_SQLServer_React_Wijmo/
 /docs/TMS_Development_Baseline_v0.5_SQLServer_React_AntD_Governance/
+/evidence/private/
+/artifacts/
 
 # Raw, processed, generated and temporary data.
 data/raw/
@@ -47,6 +49,7 @@ __pycache__/
 .coverage
 htmlcov/
 .venv/
+.conda-env/
 venv/
 env/
 

@@ -1,7 +1,7 @@
 # TMS SQL Server DDL Reference（v0.6）
 
 > **重要：本文件不是生产部署入口。**  
-> 正式 Schema 以 `db/alembic/versions/` + `db/alembic/sql/` 为准。
+> 当前 `db/alembic/versions/` + `db/alembic/sql/` 是2022+参考草案；正式SQL Server 2014兼容链完成验收后才成为执行入口。
 
 ## 1. v0.4 关键物理设计
 
@@ -15,8 +15,8 @@ Rowstore
   test.unit_bin_evaluation
   governance.audit_log
 
-Columnstore
-  test.measurement
+Rowstore（SQL Server 2014首版）
+  test.measurement + 普通非聚集索引
 ```
 
 ## 2. measurement 变化
@@ -74,6 +74,8 @@ measurement_evaluation(measurement_id,evaluation_type,evaluation_scope_key)
 Priority 不硬编码在应用散落代码中，而由 `mdm.scope_priority` 受控初始化；应用 Resolver 读取后按规则执行。
 
 ## 6. 可执行 Migration 资源
+
+`sql2014_0005`冻结Stage身份规则：CP的Product可空但Lot必填；FT的Lot可空但Product必填。`sql2014_0006`增加版本化人工字段补录/忽略记录，补录值不覆盖源文件事实。
 
 见：
 

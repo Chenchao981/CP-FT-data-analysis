@@ -1,10 +1,19 @@
 # TMS v0.6 数据库 Migration 与 Release Strategy
 
-## 1. 唯一生产入口
+## 1. 生产入口状态
 
-正式 Schema 变更采用 Alembic revision + SQLAlchemy Connection + SQL Server Native T-SQL。Markdown 中的 SQL 仅用于说明；`db/alembic/versions/` revision 链是执行入口，`alembic_version` 是数据库 Schema 当前版本的唯一事实来源。
+正式Schema变更采用Alembic revision + SQLAlchemy Connection + SQL Server Native T-SQL。根据ADR-0001，首版目标为SQL Server 2014；仓库根目录 `db/alembic/` 的 `sql2014_0001 → sql2014_0004` 是当前唯一执行入口，已在隔离数据库完成空库升级。本文档目录中的 `0001 → 0004` 是2022+设计参考，不得用于目标实例；`alembic_version` 是数据库Schema当前版本的唯一事实来源。
 
-## 2. 当前 revision 链
+## 2. 正式SQL Server 2014 revision链
+
+```text
+sql2014_0001_core_schema
+→ sql2014_0002_unified_workflow
+→ sql2014_0003_governance_seed
+→ sql2014_0004_analytics_views
+```
+
+执行目录为仓库根目录 `db/alembic/`。以下原链只保留在本文档包中作设计参考，禁止在2014执行：
 
 ```text
 20260820_0001_initial_schema_v0_4
@@ -13,7 +22,7 @@
 → 20260820_0004_analytics_current_views_v0_6
 ```
 
-对应目录：
+2022+参考链对应本文档包内目录：
 
 ```text
 db/alembic/
@@ -43,7 +52,8 @@ SQL 文件中的 `GO` 由 revision helper 按独立批次拆分；不能把包�
 5. 大表变更评估锁、日志、磁盘和执行时间。
 6. Schema、种子数据和 View 分 revision。
 7. 高风险 destructive change 不自动 downgrade；回滚优先应用回滚 + restore/forward-fix。
-8. 每个 revision 写明 SQL Server 2022+ 兼容性和 Edition 限制。
+8. 每个正式 revision 必须通过SQL Server 2014 SP3、Compatibility Level 120和实际Edition验证。
+9. SQL Server 2014兼容链不使用 `ISJSON`、`CREATE OR ALTER`，Measurement不建立Clustered Columnstore。
 
 ## 4. 发布流程
 
@@ -78,12 +88,12 @@ Create Revision
 
 ## 6. v0.6 Initial Baseline 说明
 
-`0001` 保留 v0.4 Canonical 表作为历史基础；`0002` 增加 v0.6 应用闭环；`0003` 提供可重复执行的治理种子；`0004` 创建默认 Current Published Views。后续从 `0005` 开始只做增量 migration。
+参考链中，`0001` 保留 v0.4 Canonical 表，`0002` 增加 v0.6 应用闭环，`0003` 提供治理种子，`0004` 创建Current Published Views。该链未在共享数据库执行，可以保留作2022+设计参考；SQL Server 2014正式链使用独立revision ID，禁止与参考链混用。
 
 `0002` 为兼容历史数据，将 `measurement_evaluation.evaluation_run_id` 初始建为可空。应用上线后新写入必须非空；完成历史回填和核对后，以新的 revision 收紧数据库 `NOT NULL`。`0003` 只建立治理主数据和权限基线，不替代业务 Owner 对 DQ Rule Version、Bin/Spec/PAT Rule Version 的批准。
 
-如果尚未有任何共享数据库，可在正式开发前评审是否 squash 为新的单一 `0001_v0_6`。一旦任一共享 DEV/TEST 数据库使用当前链，禁止改写历史 revision。
+SQL Server 2014正式链从 `sql2014_0001` 开始，已完成JSON约束替代、Rowstore Measurement、2014 View DDL和种子/View Smoke Test。一旦任一共享DEV/TEST数据库使用正式链，禁止改写历史revision。
 
 ## 7. 本文档包的验证边界
 
-本目录提供 revision 与 T-SQL 参考实现，可做 Python 静态检查和目录一致性检查。只有在可用的 SQL Server 2022+ 测试实例上完成 `upgrade head`、约束/View 查询和回滚演练后，才能把 Migration 状态标记为“已执行验收”。
+SQL Server 2014兼容链已在隔离数据库完成 `upgrade head`、Schema/View/种子和Rowstore索引验证，可标记为“开发空库验证通过”。黄金样例、性能、备份恢复和生产发布尚未验收，不能标记为生产就绪。

@@ -3,6 +3,8 @@
 > 状态：**候选开发基线**。v0.6 保留 v0.5 的免费前端选型，并补齐多文件输入、正式数据集版本、评价运行、异步导出、RBAC 和可执行 Migration。
 >
 > 产品定位：厂家和格式差异在接入层被确定性消化；最终用户主要使用统一的清洗结果、质量验收、良率/Bin、参数统计和图表分析。
+>
+> **G0 数据库决定（2026-08-20）**：首版继续使用SQL Server 2014，Measurement采用Rowstore + 普通非聚集索引，JSON由应用层校验，View使用2014兼容DDL。正式兼容链已在隔离库执行到 `sql2014_0004`；本目录内原 `0001 → 0004` 2022+草案只作参考。
 
 ## 0. 参考依据与使用边界
 
@@ -33,8 +35,8 @@ Backend
   Polars / NumPy / SciPy
 
 Database
-  Microsoft SQL Server
-  Rowstore + Columnstore
+  Microsoft SQL Server 2014 SP3+
+  Rowstore + B-tree Index（首版）
 
 Schema Migration
   Alembic

@@ -1,0 +1,6 @@
+-- Reference copy. Executable migration source:
+-- db/alembic/sql/0005_stage_identity_sql2014.sql
+--
+-- Business rule approved 2026-08-21:
+-- CP requires Lot and permits NULL Product.
+-- FT requires Product and permits NULL Lot.

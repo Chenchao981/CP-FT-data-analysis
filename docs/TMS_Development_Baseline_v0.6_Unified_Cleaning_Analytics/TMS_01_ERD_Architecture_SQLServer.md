@@ -1,6 +1,6 @@
 # TMS CP/FT 标准数据模型与 ERD（v0.6）
 
-> 数据库：Microsoft SQL Server 2022+  
+> 数据库：Microsoft SQL Server 2014 SP3+，Compatibility Level 120
 > v0.6 保留 v0.4 Canonical Fact，并增加 **IAM、Input Set、Dataset Version、Rule Version、Evaluation Run、Export** 六类应用闭环实体。
 
 ## 1. v0.4 设计原则

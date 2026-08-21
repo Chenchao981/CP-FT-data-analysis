@@ -13,7 +13,7 @@ TMS 数据库采用 **Microsoft SQL Server** 是合理且适合当前场景的�
 
 1. 数据库保存的是经过 Parser 清洗、标准化后的 Canonical Data，而不是直接保存厂商异构文件结构。
 2. 系统是公司内部 TMS，用户数量有限，典型查询以批次、Wafer、参数、Bin、时间范围的聚合分析为主。
-3. 最大事实表 `test.measurement` 是典型的分析型事实表，适合 SQL Server Columnstore。
+3. 最大事实表 `test.measurement` 是分析型事实表，但首版运行于 SQL Server 2014，需要兼顾按 Unit/Parameter 钻取，因此采用 Rowstore + B-tree Index。
 4. 主数据、Run、Unit、Spec 等表仍适合 Rowstore。
 5. Python/FastAPI/Polars/Pandas 可以继续作为数据解析、统计算法与 API 层，不受数据库切换影响。
 6. 如果企业已有 Windows Server、SQL Server、SSMS、备份和运维体系，引入成本低于新增一套 PostgreSQL 运维栈。
@@ -21,12 +21,13 @@ TMS 数据库采用 **Microsoft SQL Server** 是合理且适合当前场景的�
 ### 最终推荐
 
 ```text
-开发/测试：SQL Server Developer（仅开发测试用途）
-生产：SQL Server Standard
-新部署版本：SQL Server 2025 优先；兼容基线 SQL Server 2022+
+目标实例：SQL Server 2014 SP3+，Compatibility Level 120
+开发/测试：使用隔离数据库，不与现有业务库混用
+生产 Edition：以现有实例 Edition 与公司授权核验结果为准
+Measurement：Rowstore + 普通非聚集索引，首版不建 Clustered Columnstore
 ```
 
-> SQL Server 2025 Standard 提升了实例计算/内存上限；Columnstore 是 SQL Server 针对大型分析事实表的核心能力。生产授权仍应以公司实际 Microsoft 授权合同为准。
+> SQL Server 2014支持普通非聚集索引；限制仅针对已经使用Clustered Columnstore的同一张表。首版不在Measurement使用CCI，后续是否建立独立分析表或升级Columnstore由真实压测决定。
 
 ---
 
@@ -110,7 +111,7 @@ RUN → UNIT → MEASUREMENT → TEST_ITEM
 
 ---
 
-## 4. Rowstore 与 Columnstore 分工
+## 4. SQL Server 2014物理存储基线
 
 ### 4.1 Rowstore 表
 
@@ -133,13 +134,16 @@ ingestion.source_file
 
 test.test_run
 test.unit_result
+test.measurement
 trace.unit_traceability
 ```
 
-### 4.2 Columnstore 表
+### 4.2 Measurement首版实现
 
 ```text
-test.measurement
+test.measurement = Rowstore
+Clustered Key = measurement_id（最终以压测确认）
+Nonclustered Index = unit_id + test_item_id 等已验证访问路径
 ```
 
 特点：
@@ -150,25 +154,11 @@ test.measurement
 - 常执行 AVG / STDEV / COUNT / GROUP BY / Distribution 等分析。
 - 很少逐条更新。
 
-因此生产数据量进入千万级后，优先采用：
-
-```sql
-CLUSTERED COLUMNSTORE INDEX
-```
-
-SQL Server 官方将 clustered columnstore 推荐用于数据仓库事实表和大型分析工作负载。
+SQL Server 2014支持普通非聚集索引，但使用Clustered Columnstore的表不能再创建普通B-tree非聚集索引。TMS需要高频按Unit/Parameter钻取，因此首版明确选择Rowstore，不在Measurement建立CCI。
 
 ### 4.3 不要一开始过度优化
 
-MVP 数据量较小时也可以：
-
-```text
-measurement = Rowstore
-```
-
-待达到几百万/千万级并完成基准测试后转换为 CCI。
-
-本基线 DDL 已按 **CCI-ready** 方式设计。
+完成1M/10M/50M行装载、点查、范围筛选和聚合压测后，允许评估独立汇总表或分析副本；不得在没有回归测试的情况下直接把生产Measurement转换为CCI。
 
 ---
 
@@ -207,7 +197,6 @@ CI测试
 
 - 公司内部数人到数十人使用
 - 数千万到数亿测试参数明细
-- Columnstore
 - SQL Agent
 - 标准备份/恢复
 - Windows 运维体系
@@ -291,7 +280,7 @@ Measurement Rows
 
 - measurement 行数
 - 日/月增量
-- Columnstore Rowgroup 质量
+- Rowstore页数、碎片、索引大小和使用情况
 - 数据文件增长
 - Log 文件增长
 - tempdb
@@ -323,7 +312,7 @@ SqlBulkCopy / bcp / BULK INSERT
 正式表
 ```
 
-对于 Columnstore，大批量写入更容易形成高质量压缩 Rowgroup。
+即使使用Rowstore，也必须批量装载，减少逐行往返、日志开销和索引维护抖动。
 
 建议单次批量规模根据文件和内存实测；目标是减少大量微小 Insert。
 
@@ -333,7 +322,7 @@ SqlBulkCopy / bcp / BULK INSERT
 
 **第一阶段不强制分区。**
 
-Columnstore 已能处理较大事实表，过早分区会增加 DDL、Filegroup、索引维护复杂度。
+Rowstore配合必要索引可以支持MVP；过早分区会增加DDL、Filegroup和索引维护复杂度。
 
 当出现以下需求时再启用：
 
@@ -372,12 +361,13 @@ Unknown Future Attributes
 
 核心参数仍采用 Long Format。
 
-为兼容 SQL Server 2022/2025，v0.2 使用：
+SQL Server 2014没有内置JSON函数。首版使用：
 
 ```sql
 NVARCHAR(MAX)
-CHECK (ISJSON(column) = 1)
 ```
+
+JSON合法性和JSON Schema由应用层在写入前严格校验；需要查询、关联、唯一约束或业务判定的字段必须结构化建列/建表，不能只放在JSON中。
 
 ---
 

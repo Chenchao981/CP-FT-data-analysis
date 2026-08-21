@@ -1,5 +1,7 @@
 # TMS 实施路线图 v0.6
 
+> 业务身份与复用约束以 `docs/business/CP_FT_Analysis_Business_Facts_v0.1.md` 为准：CP与FT采用独立Cleaner和独立补录表单，只在清洗后映射到公共模型；接入复用既有CP/FT Cleaner，图表迁移复用VDMOS HTML逻辑。基础人工补录属于当前需求，自动格式识别仅在大量未知格式形成实际需求后启动。
+
 > 编制日期：2026-08-20  
 > 依据：`TMS_Development_Baseline_v0.6_Unified_Cleaning_Analytics`  
 > 状态：候选执行规划  
@@ -20,10 +22,10 @@
 |---|---:|---|---|
 | G0 基线验收 | 1～2 周 | 业务决策、黄金样例、SQL Server 环境、安全边界、架构 ADR | 门禁事项有负责人、证据和批准结论 |
 | P0 工程骨架 | 2 周 | Backend/Frontend/Worker/DB/Test 骨架、CI、配置、日志、认证最小闭环 | 空环境可部署，Migration 和鉴权 Smoke Test 通过 |
-| P1 华虹 CP Slice | 3～4 周 | HH Format Profile/Cleaner、DQ、Dataset、CP 查询与核心图表 | 黄金样例行数、身份、Bin、Yield、Spec 和坐标 100% 对账 |
-| P2 日月新 FT Slice | 3～4 周 | ASE Format Profile/Cleaner、DQ、Dataset、FT 查询、PAT/散点 | Unit、参数、单位、PASS/FAIL、Bin 与异常状态 100% 对账 |
+| P1 华虹 CP Slice | 3～4 周 | 复用既有CP Cleaner的HH Adapter、CP补录表单、DQ、Dataset、CP查询与核心图表 | 与原CP程序的行数、身份、Bin、Yield、Spec和坐标100%对账 |
+| P2 日月新 FT Slice | 3～4 周 | 复用既有FT Cleaner的ASE Adapter、FT补录表单、DQ、Dataset、FT查询、PAT/散点 | 与原FT程序的Unit、参数、单位、PASS/FAIL、Bin与异常状态100%对账 |
 | P3 通用分析与交付 | 2～3 周 | BoxPlot、Histogram、Scatter、Cpk、PAT/SBL/SPC、Saved Analysis、Export Job | 图表/明细/导出使用同一 Dataset、Filter 和 Rule Context |
-| P4 多厂家扩展 | 按格式滚动 | JT、Lion、国宇、杰群、电基、集佳逐格式接入 | 每个格式独立 Profile、黄金样例、回归测试和发布批准 |
+| P4 多厂家扩展 | 按格式滚动 | 通过CP或FT对应Adapter复用JT、Lion、国宇、杰群、电基、集佳现有Cleaner | 每个格式与原程序独立对账、回归测试和发布批准 |
 | P5 生产硬化 | 2～3 周 | 性能、备份恢复、审计、监控、部署、UAT、运维和用户手册 | SLA、恢复演练、安全审计和 UAT 全部通过 |
 
 周期是假设 3～4 人并行且业务问题能及时确认的初始区间；若单人串行开发，应按完成的 Vertical Slice 重新排期，不把日历日期当作验收证据。
@@ -34,7 +36,7 @@
 |---|---|---|---|
 | G0-01 | 首批真实样例 | 华虹 CP、日月新 FT各覆盖正常、Fail、Retest、异常格式 | 样例台账、SHA256、脱敏/存储批准 |
 | G0-02 | 黄金结果 | 每种格式固定行数、Unit/Die、参数、Bin、Yield、状态计数 | 人工确认的 Golden Manifest |
-| G0-03 | SQL Server | DEV/TEST 用 SQL Server 2022 Developer；生产 Edition 后续批准 | 实例、Collation、容量、备份路径 |
+| G0-03 | SQL Server 2014兼容基线 | 已批准继续使用2014；Measurement采用Rowstore + 普通非聚集索引，建立独立兼容Migration | ADR、Edition/SP、补丁、Compatibility 120、兼容测试 |
 | G0-04 | 原始文件存储 | 优先复用受控 NAS；数据库只存 URI、Hash 和元数据 | 权限、保留期限、恢复测试 |
 | G0-05 | 身份与权限 | 优先 AD/OIDC；权限按 Role + Data Scope + Object Authorization | 角色矩阵、测试账号、越权用例 |
 | G0-06 | 数据权限维度 | 首版建议 Product/Project + Owner，部门作为补充范围 | 跨部门、跨项目和导出场景确认 |
@@ -115,7 +117,7 @@ P0 不搬运历史项目代码。先定义 Detector、Cleaner、Canonical Writer
 1. 评审并批准 v0.6 架构、用户流程和本路线图。
 2. 确定 G0-01～G0-10 的 Owner、截止日期和证据位置。
 3. 建立只存元数据的样例台账，真实数据放受控数据区。
-4. 准备 SQL Server 2022 DEV/TEST，执行 `0001 → 0004` Migration。
+4. 对现有 SQL Server 2014 做只读盘点，完成独立兼容Migration；现有 `0001 → 0004` 2022+草案不得在目标实例执行。
 5. 补充历史 `measurement_evaluation` 回填方案和后续 `NOT NULL` revision。
 6. 建立后端、前端、Worker、测试和 CI 工程骨架。
 7. 固化 Format Detector/Cleaner/DQ/Dataset/Evaluation/Export 接口。

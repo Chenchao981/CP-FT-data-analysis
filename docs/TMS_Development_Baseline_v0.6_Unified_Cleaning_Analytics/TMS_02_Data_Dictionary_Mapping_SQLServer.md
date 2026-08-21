@@ -11,7 +11,7 @@
 | 系统时间 | `datetime2(3)` | **UTC**，字段名以 `_utc` 结尾 |
 | 源本地时间 | `datetime2(3)` | 必须配 `source_timezone_iana` |
 | 时区 | `nvarchar(64)` | IANA，例如 `Asia/Shanghai` |
-| JSON | `nvarchar(max)` | `ISJSON` 校验 |
+| JSON | `nvarchar(max)` | SQL Server 2014不提供 `ISJSON`；应用层做JSON Schema校验，关键字段结构化 |
 | 状态 | `varchar(n)` | CHECK 约束或受控字典 |
 
 ## 2. 核心状态码
@@ -358,6 +358,17 @@ resolved_at_utc
 
 ## 15. test.test_run
 
+Stage身份字段（`sql2014_0005`）：
+
+| 字段 | CP | FT |
+|---|---|---|
+| supplier_id | 必填，表示晶圆厂/测试来源 | 保留现有来源信息 |
+| product_id | 可空 | 必填 |
+| lot_id | 必填 | 可空 |
+| wafer_id | 源数据存在时保存 | 通常可空 |
+
+数据库允许`product_id`与`lot_id`为空，但Stage Check Constraint保证CP必须有Lot、FT必须有Product。禁止用占位符填补另一个Stage不具备的身份。
+
 v0.4 时间字段：
 
 ```text
@@ -399,7 +410,7 @@ attempt_no
 华虹 CP：
 
 ```text
-logical_unit_key = CP|Product|Lot|Wafer|X|Y
+logical_unit_key = CP|Lot|Wafer|X|Y
 ```
 
 日月新 FT：若没有稳定 Serial，则先以厂商 Unit/Test No. 组合，但记录 DQ Warning，并等待更多样本确定长期 identity。

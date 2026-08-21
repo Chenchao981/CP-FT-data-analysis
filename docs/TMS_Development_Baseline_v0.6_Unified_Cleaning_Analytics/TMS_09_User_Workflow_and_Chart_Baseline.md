@@ -6,9 +6,13 @@
 
 ## 2. 数据接入流程
 
+CP与FT使用两个独立任务入口和两套Cleaner调用链。公共任务状态仅统一调度与审计，不共享源文件解析逻辑。
+
 ### 2.1 新建任务
 
-用户选择 CP / FT / 独立业务汇总、厂家（或保守 Auto Detect）、一个或多个文件/压缩包、目标 Product/Project 和任务说明。提交前显示文件名、大小、SHA 状态、文件角色和检测结果；检测不唯一时只能进入待确认。
+用户选择CP / FT / 独立业务汇总、厂家（或保守Auto Detect）、一个或多个文件/压缩包和任务说明。CP以晶圆厂与Lot为主，Product仅在源数据存在或人工明确补录时选择；FT以Product为主，Lot仅在源数据存在时保存。提交前显示文件名、大小、SHA状态、文件角色和检测结果；检测不唯一时只能进入待确认。
+
+Cleaner完成后页面分别展示“源程序已识别字段”和“可人工补录字段”。补录值不修改源解析结果；每个值记录SOURCE/MANUAL/MAPPING/NOT_PROVIDED/IGNORED来源状态。当前分析不需要的缺失字段可以明确忽略。
 
 ### 2.2 任务进度
 
@@ -21,19 +25,19 @@ UPLOADING → DETECTING → PARSING → NORMALIZING → VALIDATING
 
 ### 2.3 发布确认
 
-发布前至少核对输入文件与 SHA、Format Profile/Cleaner Release、源行/Unit/Measurement 数量、Lot/Wafer/批次、PASS/FAIL/Bin、单位与 Spec/Bin Resolution、DQ 以及迁移期旧系统差异。只有规则允许的 ERROR 可由授权用户填写原因后 Waive；BLOCKER 不允许 Waive。
+发布前至少核对输入文件与SHA、Format Profile/Cleaner Release、源行/Unit/Measurement数量、该Stage实际必需的业务身份、PASS/FAIL/Bin、单位与Spec/Bin Resolution、DQ以及迁移期旧系统差异。CP缺Product、FT缺Lot不属于发布阻断。只有规则允许的ERROR可由授权用户填写原因后Waive；BLOCKER不允许Waive。
 
 ## 3. 已发布数据集页面
 
-页面顶部固定显示 Dataset Name/Version/Status、Stage/Supplier/Product、Lot 或 Test Batch、Processing Run/Cleaner Version、Spec-Bin-Evaluation Context、发布时间与发布人。
+页面顶部固定显示Dataset Name/Version/Status、Stage、Processing Run/Cleaner Version、Spec-Bin-Evaluation Context、发布时间与发布人，并按Stage显示身份：CP显示晶圆厂/Lot/Wafer，FT显示Product及源数据实际存在的可选Lot/供应商信息。
 
 主要区域为：来源与 DQ、清洗结果摘要、明细、图表、保存分析、导出/报告、历史版本。
 
 ## 4. 全局筛选合同
 
-CP：Lot、Wafer、Parameter 默认全部并支持单选/多选；辅助筛选包括 Bin/Result、时间、Site 和 Program。
+CP：晶圆厂、Lot、Wafer、Parameter默认全部并支持单选/多选；辅助筛选包括Bin/Result、时间、Site和Program。Product不是CP分析前提。
 
-FT：Product、Supplier、Test Lot/制造批次、Parameter 默认授权范围内全部并支持单选/多选；辅助筛选包括 PASS/FAIL、Soft/Hard Bin、机台、程序、时间和测试条件。
+FT：Product、Parameter、测试条件默认授权范围内全部并支持单选/多选；辅助筛选包括PASS/FAIL、Soft/Hard Bin、机台、程序、时间，以及源数据实际存在时的Supplier/Lot。Lot不是FT分析前提。
 
 每个统计响应返回规范化 `filter_summary`。图表、明细和导出必须使用同一个筛选对象。多 Lot CP 按每行 Lot 上下文匹配 Spec，禁止使用第一份或最新一份规格代替。
 

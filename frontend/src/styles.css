@@ -1,0 +1,68 @@
+:root {
+  font-family: Inter, "Microsoft YaHei", "Segoe UI", sans-serif;
+  color: #172a3a;
+  background: #f2f5f8;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; }
+.fullscreen { min-height: 100vh !important; }
+.login-shell { min-height: 100vh; background: radial-gradient(circle at 15% 18%, rgba(48,164,223,.22), transparent 30%), linear-gradient(135deg, #edf6fb 0%, #f8fafc 55%, #e8f1f7 100%); }
+.login-logo { width: 52px; height: 52px; border-radius: 14px; color: white; background: linear-gradient(135deg, #0d5f9c, #30a4df); display: grid; place-items: center; font-size: 27px; font-weight: 800; box-shadow: 0 10px 24px rgba(17,103,168,.28); }
+.login-actions { display: flex; align-items: center; justify-content: space-between; margin-top: -8px; }
+.register-form .ant-pro-form-login-page-container { padding: 0; width: 100%; }
+.register-form .ant-pro-form-login-page-main { width: 100%; }
+.app-content .ant-pro-page-container-children-container { padding: 0; }
+.app-shell { min-height: 100vh; }
+.sidebar { background: #082f52 !important; }
+.brand { height: 74px; padding: 16px 20px; display: flex; gap: 12px; align-items: center; color: white; }
+.brand-mark { width: 38px; height: 38px; border-radius: 10px; background: #30a4df; display: grid; place-items: center; font-weight: 800; font-size: 20px; }
+.brand strong, .brand span { display: block; }
+.brand span { color: #a9c2d6; font-size: 12px; margin-top: 2px; }
+.topbar { height: 64px; padding: 0 28px; background: white; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e5eaf0; }
+.workbench { padding: 28px; max-width: 1460px; margin: 0 auto; }
+.page-heading { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 22px; gap: 16px; }
+.page-heading h2 { margin: 0 0 4px !important; color: #12344d; }
+.panel-card { min-height: 520px; box-shadow: 0 4px 18px rgba(16, 52, 77, 0.06); border-color: #e3e9ef; }
+.full-width { width: 100%; }
+.page-loading { min-height: 420px; display: grid; place-items: center; }
+.empty-state { min-height: 390px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
+.empty-state > span:first-child { font-size: 38px; color: #94aabd; }
+.job-title { display: flex; justify-content: space-between; align-items: center; }
+.job-title h4 { margin: 0 !important; }
+.tag-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.inspector-upload-card .ant-upload-wrapper { width: 100%; }
+.review-filter-card { margin-bottom: 20px; }
+.review-filter-card .ant-form { row-gap: 12px; }
+.review-alert { margin-bottom: 20px; }
+.review-results { margin-top: 0; }
+.review-panel { min-height: 330px; }
+.analytics-filter-card { margin-bottom: 20px; }
+.analytics-filter-card .ant-form { row-gap: 12px; }
+.chart-filter-row { margin-top: 16px; padding-top: 16px; border-top: 1px solid #edf0f3; width: 100%; }
+.chart-select { min-width: 210px; }
+.analytics-stats { margin-bottom: 18px; }
+.chart-card { min-height: 440px; box-shadow: 0 4px 18px rgba(16, 52, 77, 0.06); }
+.chart-canvas { width: 100%; height: 350px; }
+.wafer-map-canvas { width: 100%; height: 520px; }
+.chart-card .ant-empty { min-height: 350px; display: flex; flex-direction: column; justify-content: center; }
+.bin-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 14px; }
+.bin-tile { border: 1px solid #e2e8ee; border-top: 4px solid; border-radius: 8px; padding: 14px; background: #fbfcfd; }
+.bin-tile span, .bin-tile strong, .bin-tile em { display: block; }
+.bin-tile span { color: #587083; }
+.bin-tile strong { font-size: 24px; color: #12344d; margin: 8px 0 3px; }
+.bin-tile em { color: #7890a1; font-style: normal; }
+.intake-workbench > .ant-alert { margin-bottom: 20px; }
+.intake-grid { margin-bottom: 20px; }
+.intake-card { min-height: 390px; box-shadow: 0 4px 18px rgba(16, 52, 77, 0.05); }
+.intake-hint { margin: 18px 0 0 !important; }
+.field-description { margin-bottom: 18px; }
+.intake-record-card { box-shadow: 0 4px 18px rgba(16, 52, 77, 0.05); }
+
+@media (max-width: 768px) {
+  .workbench { padding: 18px 14px; }
+  .topbar { padding: 0 16px; }
+  .page-heading { flex-direction: column; }
+  .panel-card { min-height: auto; }
+}
