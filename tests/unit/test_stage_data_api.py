@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app.domain.stage_data import StageResultRow, StageUploadRow
+from app.domain.stage_data import BatchFileInfo, BatchInfo, StageResultRow, StageUploadRow
 from app.infrastructure.existing_cleaner_runner import CleanerArtifact, ExistingCleanerRunResult
 from app.main import create_app
 
@@ -13,6 +13,8 @@ class StubStageService:
     def __init__(self) -> None:
         self.principal = None
         self.calls: list[tuple[str, str]] = []
+        self.archived: list[int] = []
+        self.stored_path = Path("unused")
 
     def register_upload(self, principal, business_domain, test_stage, factory_code, files, remark):
         self.principal = principal
@@ -46,6 +48,13 @@ class StubStageService:
     def list_results(self, principal, business_domain, test_stage):
         self.calls.append((business_domain, test_stage))
         return (StageResultRow(1, 41, "FA5X-2565", "NCETEN30CAC", "FA5X-2565", 1, "huahong", 2, 10, 9, .9, "PROCESSED", "CP", "2026-08-21T00:00:00"),)
+
+    def get_batch_info(self, principal, business_domain, test_stage, batch_id):
+        assert batch_id == 41
+        return BatchInfo(41, "huahong", "PROCESSED", (BatchFileInfo(9001, "sample.zip", str(self.stored_path)),))
+
+    def archive_previous_results(self, batch_id):
+        self.archived.append(batch_id)
 
 
 def _stub_cp_cleaner(monkeypatch, tmp_path: Path) -> None:
@@ -170,3 +179,45 @@ def test_lists_reject_unknown_stage() -> None:
     response = _client(StubStageService()).get("/api/v1/production/xray/results")
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "TEST_STAGE_UNSUPPORTED"
+
+
+def test_download_returns_stored_source_file(monkeypatch, tmp_path: Path) -> None:
+    stored = tmp_path / "stored" / "sample.zip"
+    stored.parent.mkdir()
+    stored.write_bytes(b"original-zip-bytes")
+    service = StubStageService()
+    service.stored_path = stored
+    response = _client(service).get("/api/v1/engineering/cp/uploads/41/files/9001/download")
+    assert response.status_code == 200
+    assert response.content == b"original-zip-bytes"
+    assert "sample.zip" in response.headers.get("content-disposition", "")
+
+
+def test_download_rejects_unknown_receipt(monkeypatch, tmp_path: Path) -> None:
+    service = StubStageService()
+    response = _client(service).get("/api/v1/engineering/cp/uploads/41/files/9999/download")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "UPLOAD_FILE_NOT_FOUND"
+
+
+def test_reprocess_reruns_cleaner_and_archives_previous_results(monkeypatch, tmp_path: Path) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+    service = StubStageService()
+    response = _client(service).post("/api/v1/production/cp/uploads/41/reprocess")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "PROCESSED"
+    assert body["result"]["lot_id"] == "FA5X-2565"
+    assert service.archived == [41]
+
+
+def test_reprocess_rejects_unknown_batch(monkeypatch, tmp_path: Path) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+
+    class EmptyService(StubStageService):
+        def get_batch_info(self, principal, business_domain, test_stage, batch_id):
+            return None
+
+    response = _client(EmptyService()).post("/api/v1/production/cp/uploads/99/reprocess")
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "BATCH_NOT_FOUND"

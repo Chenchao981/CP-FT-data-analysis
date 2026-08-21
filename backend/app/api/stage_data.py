@@ -4,11 +4,13 @@ import csv
 import hashlib
 import json
 import os
+import shutil
 from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
+from fastapi.responses import FileResponse
 
 from app.api.dependencies import require_permission
 from app.core.errors import DomainError
@@ -163,6 +165,11 @@ def _read_ft_summary(run_result) -> dict:
     }
 
 
+def _run_cleaner_and_summarize(stage: str, factory: str, input_paths: list[Path], output_root: Path) -> dict:
+    result = ExistingCleanerRunner().run(test_stage=stage, factory=factory, inputs=input_paths, output_root=output_root)
+    return _read_cp_summary(result) if stage == "CP" else _read_ft_summary(result)
+
+
 @router.post("/{business_domain}/{test_stage}/uploads", status_code=status.HTTP_201_CREATED)
 def upload_stage_data(
     request: Request,
@@ -186,13 +193,8 @@ def upload_stage_data(
     job_id = service(request).mark_processing(batch_id, principal)
     output_root = Path(os.getenv("TMS_PROCESSED_ROOT", r"F:\CP-FT数据分析\data\processed")) / domain.lower() / stage.lower() / str(batch_id)
     try:
-        if stage == "CP":
-            result = ExistingCleanerRunner().run(test_stage=stage, factory=factory, inputs=[item.path for item in stored], output_root=output_root)
-            summary = _read_cp_summary(result)
-        else:
-            input_dir = stored[0].path.parent
-            result = ExistingCleanerRunner().run(test_stage=stage, factory=factory, inputs=[input_dir], output_root=output_root)
-            summary = _read_ft_summary(result)
+        input_paths = [item.path for item in stored] if stage == "CP" else [stored[0].path.parent]
+        summary = _run_cleaner_and_summarize(stage, factory, input_paths, output_root)
         service(request).record_result(batch_id, job_id, summary)
     except Exception as exc:
         service(request).mark_failed(batch_id, job_id, str(exc))
@@ -212,3 +214,56 @@ def list_stage_results(request: Request, business_domain: str, test_stage: str, 
     domain = _normalize_business_domain(business_domain)
     stage = _normalize_list_stage(test_stage)
     return [asdict(item) for item in service(request).list_results(principal, domain, stage)]
+
+
+@router.get("/{business_domain}/{test_stage}/uploads/{batch_id}/files/{receipt_id}/download")
+def download_upload_file(
+    request: Request,
+    business_domain: str,
+    test_stage: str,
+    batch_id: int,
+    receipt_id: int,
+    principal: Principal = Depends(require_permission("DATASET_READ")),
+) -> FileResponse:
+    domain = _normalize_business_domain(business_domain)
+    stage = _normalize_list_stage(test_stage)
+    info = service(request).get_batch_info(principal, domain, stage, batch_id)
+    if info is None:
+        raise DomainError("BATCH_NOT_FOUND", "批次不存在或无权访问", 404)
+    match = [item for item in info.files if item.receipt_id == receipt_id]
+    if not match:
+        raise DomainError("UPLOAD_FILE_NOT_FOUND", "源文件不存在或无权访问", 404)
+    path = Path(match[0].storage_uri)
+    if not path.is_file():
+        raise DomainError("UPLOAD_FILE_MISSING", "源文件已不在存储位置", 404)
+    return FileResponse(path, filename=match[0].original_file_name)
+
+
+@router.post("/{business_domain}/{test_stage}/uploads/{batch_id}/reprocess")
+def reprocess_batch(
+    request: Request,
+    business_domain: str,
+    test_stage: str,
+    batch_id: int,
+    principal: Principal = Depends(require_permission("TASK_CREATE")),
+) -> dict:
+    domain = _normalize_business_domain(business_domain)
+    stage = UPLOAD_TEST_STAGES.get(test_stage.strip().lower())
+    if stage is None:
+        raise DomainError("STAGE_UPLOAD_UNSUPPORTED", f"{test_stage.upper()}数据暂不支持重新处理，当前支持CP/FT数据", 422)
+    info = service(request).get_batch_info(principal, domain, stage, batch_id)
+    if info is None or not info.files:
+        raise DomainError("BATCH_NOT_FOUND", "批次不存在或无权访问", 404)
+    factory = info.factory_code.strip().lower()
+    job_id = service(request).mark_processing(batch_id, principal)
+    output_root = Path(os.getenv("TMS_PROCESSED_ROOT", r"F:\CP-FT数据分析\data\processed")) / domain.lower() / stage.lower() / str(batch_id)
+    shutil.rmtree(output_root, ignore_errors=True)
+    try:
+        input_paths = [Path(item.storage_uri) for item in info.files] if stage == "CP" else [Path(info.files[0].storage_uri).parent]
+        summary = _run_cleaner_and_summarize(stage, factory, input_paths, output_root)
+        service(request).archive_previous_results(batch_id)
+        service(request).record_result(batch_id, job_id, summary)
+    except Exception as exc:
+        service(request).mark_failed(batch_id, job_id, str(exc))
+        raise DomainError("CLEANING_FAILED", f"重新处理失败：{exc}", 422) from exc
+    return {"import_batch_id": batch_id, "status": "PROCESSED", "business_domain": domain, "test_stage": stage, "result": summary}

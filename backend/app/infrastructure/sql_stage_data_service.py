@@ -6,7 +6,7 @@ from typing import Any, Mapping, Sequence
 from sqlalchemy import Engine, text
 
 from app.domain.auth import Principal
-from app.domain.stage_data import StageResultRow, StageUploadRow, StoredUpload
+from app.domain.stage_data import BatchFileInfo, BatchInfo, StageResultRow, StageUploadRow, StoredUpload
 
 
 def _iso(value: Any) -> str | None:
@@ -82,6 +82,28 @@ class SqlStageDataService:
     def _scope() -> str:
         return "(b.owner_user_id=:user_id OR EXISTS(SELECT 1 FROM iam.data_scope_grant g WHERE (g.user_id=:user_id OR g.role_id IN(SELECT role_id FROM iam.user_role WHERE user_id=:user_id)) AND (g.expires_at_utc IS NULL OR g.expires_at_utc>SYSUTCDATETIME()) AND g.scope_type='GLOBAL' AND g.permission_mode IN('READ','WRITE','GOVERN','EXPORT')))"
 
+    def get_batch_info(self, principal: Principal, business_domain: str, test_stage: str, batch_id: int) -> BatchInfo | None:
+        with self._engine.connect() as connection:
+            batch_row = connection.execute(text(
+                "SELECT b.import_batch_id,b.factory_code,b.status FROM ingestion.import_batch b "
+                "WHERE b.import_batch_id=:batch AND b.business_domain=:domain AND b.test_stage=:stage AND " + self._scope()
+            ), {"user_id": principal.user_id, "batch": batch_id, "domain": business_domain, "stage": test_stage}).mappings().one_or_none()
+            if batch_row is None:
+                return None
+            file_rows = connection.execute(text(
+                "SELECT r.receipt_id,r.original_file_name,s.canonical_storage_uri "
+                "FROM ingestion.import_batch_file ibf "
+                "JOIN ingestion.source_file_receipt r ON r.receipt_id=ibf.receipt_id "
+                "JOIN ingestion.source_file s ON s.source_file_id=r.source_file_id "
+                "WHERE ibf.import_batch_id=:batch ORDER BY ibf.ordinal_no"
+            ), {"batch": batch_id}).mappings().all()
+        files = tuple(BatchFileInfo(int(r["receipt_id"]), str(r["original_file_name"]), str(r["canonical_storage_uri"])) for r in file_rows)
+        return BatchInfo(int(batch_row["import_batch_id"]), str(batch_row["factory_code"] or ""), str(batch_row["status"]), files)
+
+    def archive_previous_results(self, batch_id: int) -> None:
+        with self._engine.begin() as connection:
+            connection.execute(text("UPDATE ingestion.processing_result_summary SET status='ARCHIVED' WHERE import_batch_id=:batch AND status='PROCESSED'"), {"batch": batch_id})
+
     def list_uploads(self, principal: Principal, business_domain: str, test_stage: str) -> tuple[StageUploadRow, ...]:
         with self._engine.connect() as connection:
             rows = connection.execute(text(
@@ -96,6 +118,6 @@ class SqlStageDataService:
         with self._engine.connect() as connection:
             rows = connection.execute(text(
                 "SELECT s.* FROM ingestion.processing_result_summary s JOIN ingestion.import_batch b ON b.import_batch_id=s.import_batch_id "
-                "WHERE b.business_domain=:domain AND b.test_stage=:stage AND " + self._scope() + " ORDER BY s.result_summary_id DESC"
+                "WHERE b.business_domain=:domain AND b.test_stage=:stage AND s.status='PROCESSED' AND " + self._scope() + " ORDER BY s.result_summary_id DESC"
             ), {"user_id": principal.user_id, "domain": business_domain, "stage": test_stage}).mappings().all()
         return tuple(StageResultRow(int(r["result_summary_id"]), int(r["import_batch_id"]), str(r["data_name"]), r["product_name"], r["lot_id"], int(r["wafer_count"]) if r["wafer_count"] is not None else None, str(r["factory_code"] or ''), int(r["test_item_count"]) if r["test_item_count"] is not None else None, int(r["unit_count"]) if r["unit_count"] is not None else None, int(r["pass_count"]) if r["pass_count"] is not None else None, float(r["yield_rate"]) if r["yield_rate"] is not None else None, str(r["status"]), str(r["data_type"]), _iso(r["created_at_utc"]) or '') for r in rows)

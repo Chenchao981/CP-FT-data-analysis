@@ -1,10 +1,10 @@
-import { CloudUploadOutlined, FileSearchOutlined, ReloadOutlined } from "@ant-design/icons";
+import { CloudUploadOutlined, DownloadOutlined, FileSearchOutlined, RedoOutlined, ReloadOutlined } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Alert, Button, Card, Col, Form, Input, Modal, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography, Upload, message } from "antd";
+import { Alert, Button, Card, Col, Form, Input, Modal, Popconfirm, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography, Upload, message } from "antd";
 import type { UploadFile } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useMemo, useState } from "react";
-import { BusinessDomain, TestStage, listStageResults, listStageUploads, StageResultRow, StageUploadRow, uploadStageData } from "../../api/stageData";
+import { BusinessDomain, TestStage, downloadStageUploadFile, listStageResults, listStageUploads, reprocessStageBatch, StageResultRow, StageUploadRow, uploadStageData } from "../../api/stageData";
 import { useAuth } from "../auth/AuthContext";
 
 const statusColor: Record<string, string> = { RECEIVED: "blue", PROCESSING: "processing", PROCESSED: "success", FAILED: "error" };
@@ -52,6 +52,11 @@ export function StageDataWorkbench({ businessDomain, testStage }: StageDataWorkb
     onSuccess: async (data) => { messageApi.success(`上传和清洗完成，批次 ${data.import_batch_id}`); setOpen(false); setFiles([]); form.resetFields(); await queryClient.invalidateQueries({ queryKey: scopeKey }); },
     onError: (error) => messageApi.error(error.message),
   });
+  const reprocessMutation = useMutation({
+    mutationFn: (batchId: number) => reprocessStageBatch(businessDomain, testStage, batchId),
+    onSuccess: async (data) => { messageApi.success(`批次 ${data.import_batch_id} 重新处理完成`); await queryClient.invalidateQueries({ queryKey: scopeKey }); },
+    onError: (error) => messageApi.error(error.message),
+  });
   const uploadColumns: ColumnsType<StageUploadRow> = [
     { title: "批次编号", dataIndex: "import_batch_id", width: 95, fixed: "left" },
     { title: "SEQ", dataIndex: "sequence_no", width: 70 },
@@ -64,6 +69,7 @@ export function StageDataWorkbench({ businessDomain, testStage }: StageDataWorkb
     { title: "上传账号", dataIndex: "uploader_login", width: 120 },
     { title: "上传人", dataIndex: "uploader_name", width: 110 },
     { title: "状态", dataIndex: "status", width: 100, fixed: "right", render: (v) => <Tag color={statusColor[v]}>{statusName[v] ?? v}</Tag> },
+    { title: "操作", key: "actions", width: 90, fixed: "right", render: (_, row) => <Button type="link" size="small" icon={<DownloadOutlined />} onClick={() => void downloadStageUploadFile(businessDomain, testStage, row.import_batch_id, row.receipt_id, row.original_file_name)}>下载</Button> },
   ];
   const resultColumns: ColumnsType<StageResultRow> = [
     { title: "名称", dataIndex: "data_name", width: 180, fixed: "left" },
@@ -78,6 +84,7 @@ export function StageDataWorkbench({ businessDomain, testStage }: StageDataWorkb
     { title: "状态", dataIndex: "status", width: 100, render: (v) => <Tag color="success">{statusName[v] ?? v}</Tag> },
     { title: "Data Type", dataIndex: "data_type", width: 105 },
     { title: "处理时间", dataIndex: "created_at_utc", width: 175, render: dt },
+    { title: "操作", key: "actions", width: 110, fixed: "right", render: (_, row) => can("TASK_CREATE") ? <Popconfirm title="重新处理该批次？" description="将重跑现有清洗程序并归档旧结果。" onConfirm={() => reprocessMutation.mutate(row.import_batch_id)}><Button type="link" size="small" icon={<RedoOutlined />} loading={reprocessMutation.isPending && reprocessMutation.variables === row.import_batch_id}>重新处理</Button></Popconfirm> : null },
   ];
   const metrics = useMemo(() => ({ total: new Set((uploads.data ?? []).map((r) => r.import_batch_id)).size, processing: (uploads.data ?? []).filter((r) => r.status === "PROCESSING").length, processed: results.data?.length ?? 0, failed: (uploads.data ?? []).filter((r) => r.status === "FAILED").length }), [uploads.data, results.data]);
 

@@ -1,4 +1,4 @@
-import { apiRequest } from "./auth";
+import { apiRequest, storedToken } from "./auth";
 
 export type BusinessDomain = "ENGINEERING" | "PRODUCTION";
 export type TestStage = "CP" | "FT";
@@ -6,6 +6,7 @@ export type TestStage = "CP" | "FT";
 export interface StageUploadRow {
   import_batch_id: number;
   sequence_no: number;
+  receipt_id: number;
   original_file_name: string;
   extension: string;
   size_bytes: number;
@@ -49,4 +50,25 @@ export function uploadStageData(businessDomain: BusinessDomain, testStage: TestS
   body.append("factory_code", factoryCode);
   if (remark) body.append("remark", remark);
   return apiRequest<{ import_batch_id: number; status: string; business_domain: BusinessDomain; test_stage: TestStage }>(`${stageBase(businessDomain, testStage)}/uploads`, { method: "POST", body });
+}
+
+export const reprocessStageBatch = (businessDomain: BusinessDomain, testStage: TestStage, importBatchId: number) =>
+  apiRequest<{ import_batch_id: number; status: string }>(`${stageBase(businessDomain, testStage)}/uploads/${importBatchId}/reprocess`, { method: "POST" });
+
+export async function downloadStageUploadFile(businessDomain: BusinessDomain, testStage: TestStage, importBatchId: number, receiptId: number, fileName: string) {
+  const headers = new Headers();
+  const token = storedToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(`${stageBase(businessDomain, testStage)}/uploads/${importBatchId}/files/${receiptId}/download`, { headers });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null);
+    throw new Error(payload?.error?.message ?? `下载失败（${response.status}）`);
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.click();
+  URL.revokeObjectURL(url);
 }

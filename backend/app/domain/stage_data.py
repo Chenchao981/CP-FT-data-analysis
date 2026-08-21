@@ -88,3 +88,9 @@ class StageDataService(Protocol):
     def list_results(
         self, principal: Principal, business_domain: str, test_stage: str
     ) -> tuple[StageResultRow, ...]: ...
+
+    def get_batch_info(
+        self, principal: Principal, business_domain: str, test_stage: str, batch_id: int
+    ) -> BatchInfo | None: ...
+
+    def archive_previous_results(self, batch_id: int) -> None: ...
