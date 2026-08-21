@@ -10,10 +10,19 @@ import { useAuth } from "../auth/AuthContext";
 const statusColor: Record<string, string> = { RECEIVED: "blue", PROCESSING: "processing", PROCESSED: "success", FAILED: "error" };
 const statusName: Record<string, string> = { RECEIVED: "已接收", PROCESSING: "处理中", PROCESSED: "已处理", FAILED: "失败" };
 const domainName: Record<BusinessDomain, string> = { ENGINEERING: "工程", PRODUCTION: "量产" };
-const factoryName: Record<string, string> = { huahong: "华虹" };
+const factoryName: Record<string, string> = { huahong: "华虹", riyuexin: "日月新" };
 const stageDescription: Record<TestStage, string> = {
   CP: "上传华虹CP源文件后，系统自动调用现有CP清洗程序并形成Lot/Wafer分析数据。",
   FT: "上传日月新FT源文件后，系统自动调用现有FT清洗程序并形成以产品型号为主线的分析数据。",
+};
+const stageFactories: Record<TestStage, { value: string; label: string }[]> = {
+  CP: [{ value: "huahong", label: "华虹" }],
+  FT: [{ value: "riyuexin", label: "日月新" }],
+};
+const stageAccept: Record<TestStage, string> = { CP: ".zip,.7z,.txt", FT: ".xlsx" };
+const stageHint: Record<TestStage, string> = {
+  CP: "支持华虹 ZIP、7Z 或多个 TXT；上传后自动复用现有清洗逻辑。",
+  FT: "支持日月新 DC XLSX 源文件；上传后自动复用现有清洗逻辑。",
 };
 const dt = (value?: string | null) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
 const size = (value: number) => value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(2)} MB`;
@@ -83,10 +92,10 @@ export function StageDataWorkbench({ businessDomain, testStage }: StageDataWorkb
     ]} /></Card>
     <Modal title={`上传${domainName[businessDomain]}${testStage}数据`} open={open} width={700} onCancel={() => !mutation.isPending && setOpen(false)} onOk={() => form.submit()} okText="上传并自动清洗" confirmLoading={mutation.isPending} destroyOnHidden>
       <Alert showIcon type="info" message={`上传身份：${user?.display_name}（${user?.login_name}）`} description="系统从当前登录账号自动记录上传人，无需填写。" />
-      <Form form={form} layout="vertical" initialValues={{ factory_code: "huahong" }} onFinish={(values) => mutation.mutate(values)} className="cp-upload-form">
+      <Form form={form} layout="vertical" initialValues={{ factory_code: stageFactories[testStage][0].value }} onFinish={(values) => mutation.mutate(values)} className="cp-upload-form">
         <Form.Item label="业务分类"><Space><Tag color="blue">{domainName[businessDomain]}</Tag><Tag color="cyan">{testStage}数据</Tag></Space></Form.Item>
-        <Form.Item label={testStage === "CP" ? "晶圆厂" : "封测厂"} name="factory_code" rules={[{ required: true }]}><Select options={[{ value: "huahong", label: "华虹" }]} /></Form.Item>
-        <Form.Item label={`${testStage}源文件`} required><Upload.Dragger multiple accept=".zip,.7z,.txt" fileList={files} beforeUpload={() => false} onChange={({ fileList }) => setFiles(fileList)}><p className="ant-upload-drag-icon"><FileSearchOutlined /></p><p className="ant-upload-text">点击或拖入{testStage}源文件</p><p className="ant-upload-hint">支持华虹 ZIP、7Z 或多个 TXT；上传后自动复用现有清洗逻辑。</p></Upload.Dragger></Form.Item>
+        <Form.Item label={testStage === "CP" ? "晶圆厂" : "封测厂"} name="factory_code" rules={[{ required: true }]}><Select options={stageFactories[testStage]} /></Form.Item>
+        <Form.Item label={`${testStage}源文件`} required><Upload.Dragger multiple accept={stageAccept[testStage]} fileList={files} beforeUpload={() => false} onChange={({ fileList }) => setFiles(fileList)}><p className="ant-upload-drag-icon"><FileSearchOutlined /></p><p className="ant-upload-text">点击或拖入{testStage}源文件</p><p className="ant-upload-hint">{stageHint[testStage]}</p></Upload.Dragger></Form.Item>
         <Form.Item label="备注（可选）" name="remark"><Input.TextArea maxLength={500} rows={3} placeholder="可填写本次上传说明" /></Form.Item>
       </Form>
     </Modal>

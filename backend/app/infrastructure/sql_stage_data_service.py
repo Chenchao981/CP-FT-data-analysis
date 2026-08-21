@@ -85,12 +85,12 @@ class SqlStageDataService:
     def list_uploads(self, principal: Principal, business_domain: str, test_stage: str) -> tuple[StageUploadRow, ...]:
         with self._engine.connect() as connection:
             rows = connection.execute(text(
-                "SELECT b.import_batch_id,ibf.ordinal_no,r.original_file_name,s.file_size,b.factory_code,b.started_at_utc,b.completed_at_utc,u.login_name,u.display_name,b.status "
+                "SELECT b.import_batch_id,ibf.ordinal_no,r.receipt_id,r.original_file_name,s.file_size,b.factory_code,b.started_at_utc,b.completed_at_utc,u.login_name,u.display_name,b.status "
                 "FROM ingestion.import_batch b JOIN iam.app_user u ON u.user_id=b.owner_user_id JOIN ingestion.import_batch_file ibf ON ibf.import_batch_id=b.import_batch_id "
                 "JOIN ingestion.source_file_receipt r ON r.receipt_id=ibf.receipt_id JOIN ingestion.source_file s ON s.source_file_id=r.source_file_id "
                 "WHERE b.business_domain=:domain AND b.test_stage=:stage AND " + self._scope() + " ORDER BY b.import_batch_id DESC,ibf.ordinal_no"
             ), {"user_id": principal.user_id, "domain": business_domain, "stage": test_stage}).mappings().all()
-        return tuple(StageUploadRow(int(r["import_batch_id"]), int(r["ordinal_no"]), str(r["original_file_name"]), str(r["original_file_name"]).rsplit('.',1)[-1].lower() if '.' in str(r["original_file_name"]) else '', int(r["file_size"] or 0), str(r["factory_code"] or ''), _iso(r["started_at_utc"]) or '', _iso(r["completed_at_utc"]), str(r["login_name"]), str(r["display_name"]), str(r["status"])) for r in rows)
+        return tuple(StageUploadRow(int(r["import_batch_id"]), int(r["ordinal_no"]), int(r["receipt_id"]), str(r["original_file_name"]), str(r["original_file_name"]).rsplit('.',1)[-1].lower() if '.' in str(r["original_file_name"]) else '', int(r["file_size"] or 0), str(r["factory_code"] or ''), _iso(r["started_at_utc"]) or '', _iso(r["completed_at_utc"]), str(r["login_name"]), str(r["display_name"]), str(r["status"])) for r in rows)
 
     def list_results(self, principal: Principal, business_domain: str, test_stage: str) -> tuple[StageResultRow, ...]:
         with self._engine.connect() as connection:

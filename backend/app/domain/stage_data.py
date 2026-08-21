@@ -19,6 +19,7 @@ class StoredUpload:
 class StageUploadRow:
     import_batch_id: int
     sequence_no: int
+    receipt_id: int
     original_file_name: str
     extension: str
     size_bytes: int
@@ -28,6 +29,21 @@ class StageUploadRow:
     uploader_login: str
     uploader_name: str
     status: str
+
+
+@dataclass(frozen=True, slots=True)
+class BatchFileInfo:
+    receipt_id: int
+    original_file_name: str
+    storage_uri: str
+
+
+@dataclass(frozen=True, slots=True)
+class BatchInfo:
+    import_batch_id: int
+    factory_code: str
+    status: str
+    files: tuple[BatchFileInfo, ...]
 
 
 @dataclass(frozen=True, slots=True)

@@ -18,8 +18,8 @@ class StubStageService:
         self.principal = principal
         self.calls.append((business_domain, test_stage))
         assert business_domain in {"ENGINEERING", "PRODUCTION"}
-        assert test_stage == "CP"
-        assert factory_code == "huahong"
+        assert test_stage in {"CP", "FT"}
+        assert factory_code in {"huahong", "riyuexin"}
         assert files[0].sha256
         return 41
 
@@ -29,23 +29,26 @@ class StubStageService:
         return 73
 
     def record_result(self, batch_id, job_id, result):
-        assert result["lot_id"] == "FA5X-2565"
-        assert result["product_name"] == "NCETEN30CAC"
-        assert result["data_type"] == "CP"
+        if result["data_type"] == "CP":
+            assert result["lot_id"] == "FA5X-2565"
+            assert result["product_name"] == "NCETEN30CAC"
+        else:
+            assert result["lot_id"] == "FA59-3997"
+            assert result["product_name"] == "NCEAP40PT15D(M)-2B00"
 
     def mark_failed(self, batch_id, job_id, message):
         raise AssertionError(message)
 
     def list_uploads(self, principal, business_domain, test_stage):
         self.calls.append((business_domain, test_stage))
-        return (StageUploadRow(41, 1, "sample.zip", "zip", 100, "huahong", "2026-08-21T00:00:00", None, principal.login_name, principal.display_name, "RECEIVED"),)
+        return (StageUploadRow(41, 1, 9001, "sample.zip", "zip", 100, "huahong", "2026-08-21T00:00:00", None, principal.login_name, principal.display_name, "RECEIVED"),)
 
     def list_results(self, principal, business_domain, test_stage):
         self.calls.append((business_domain, test_stage))
         return (StageResultRow(1, 41, "FA5X-2565", "NCETEN30CAC", "FA5X-2565", 1, "huahong", 2, 10, 9, .9, "PROCESSED", "CP", "2026-08-21T00:00:00"),)
 
 
-def _stub_cleaner(monkeypatch, tmp_path: Path) -> None:
+def _stub_cp_cleaner(monkeypatch, tmp_path: Path) -> None:
     cleaned = tmp_path / "FA5X-2565_cleaned_20260821_000000.csv"
     cleaned.write_text("Lot_ID,Wafer_ID,Seq,Bin,X,Y,VTH,RDSON\nFA5X-2565,1,1,1,1,1,4,0.1\n", encoding="utf-8")
     yield_file = tmp_path / "FA5X-2565_yield_20260821_000000.csv"
@@ -62,6 +65,27 @@ def _stub_cleaner(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr("app.api.stage_data.ExistingCleanerRunner", StubRunner)
 
 
+def _stub_ft_cleaner(monkeypatch, tmp_path: Path) -> None:
+    manifest = tmp_path / "ft_scatter_manifest.json"
+    manifest.write_text('{"schema_version":1,"factory":"日月新（ASE）","data_type":"DC","row_count":100,"parameters":["VTH1(V)","BVDSS1(V)"],"sources":["NCT5542087"],"lots":["FA59-3997"]}', encoding="utf-8")
+    spec = tmp_path / "ft_scatter_spec.csv"
+    spec.write_text("Source_ID,lot_ID,Parameter,Unit,Low_Limit,High_Limit,Source_File\nNCT5542087,FA59-3997,VTH1(V),V,1.3,2.2,NCT5542087_NCEAP40PT15D(M)-2B00_FA59-3997_20251024_182422.xlsx\n", encoding="utf-8-sig")
+    cleaned = tmp_path / "FA59-3997_001.xlsx"
+    cleaned.write_text("workbook", encoding="utf-8")
+    seen: dict = {}
+
+    class StubRunner:
+        def run(self, **kwargs):
+            seen.update(kwargs)
+            assert kwargs["test_stage"] == "FT"
+            assert len(kwargs["inputs"]) == 1 and Path(kwargs["inputs"][0]).is_dir()
+            return ExistingCleanerRunResult("FT", "riyuexin", str(tmp_path), (CleanerArtifact("cleaned", str(cleaned), cleaned.stat().st_size), CleanerArtifact("scatter_manifest", str(manifest), manifest.stat().st_size), CleanerArtifact("scatter_spec", str(spec), spec.stat().st_size)), "ok")
+
+    monkeypatch.setenv("TMS_UPLOAD_ROOT", str(tmp_path / "raw"))
+    monkeypatch.setattr("app.api.stage_data.ExistingCleanerRunner", StubRunner)
+    return seen
+
+
 def _client(service: StubStageService) -> TestClient:
     app = create_app()
     app.state.stage_data_service = service
@@ -69,7 +93,7 @@ def _client(service: StubStageService) -> TestClient:
 
 
 def test_engineering_cp_upload_uses_authenticated_principal_and_existing_cleaner(monkeypatch, tmp_path: Path) -> None:
-    _stub_cleaner(monkeypatch, tmp_path)
+    _stub_cp_cleaner(monkeypatch, tmp_path)
     service = StubStageService()
     response = _client(service).post("/api/v1/engineering/cp/uploads", files={"files": ("sample.zip", b"sample", "application/zip")}, data={"factory_code": "huahong"})
     assert response.status_code == 201
@@ -80,8 +104,38 @@ def test_engineering_cp_upload_uses_authenticated_principal_and_existing_cleaner
     assert service.principal.login_name == "development-admin"
 
 
+def test_production_ft_upload_parses_manifest_and_keeps_missing_yield_empty(monkeypatch, tmp_path: Path) -> None:
+    _stub_ft_cleaner(monkeypatch, tmp_path)
+    service = StubStageService()
+    response = _client(service).post("/api/v1/production/ft/uploads", files={"files": ("NCT5542087_NCEAP40PT15D(M)-2B00_FA59-3997_20251024_182422.xlsx", b"workbook", "application/octet-stream")}, data={"factory_code": "riyuexin"})
+    assert response.status_code == 201
+    body = response.json()
+    assert body["business_domain"] == "PRODUCTION"
+    assert body["test_stage"] == "FT"
+    result = body["result"]
+    assert result["data_type"] == "FT"
+    assert result["lot_id"] == "FA59-3997"
+    assert result["product_name"] == "NCEAP40PT15D(M)-2B00"
+    assert result["test_item_count"] == 2
+    assert result["unit_count"] == 100
+    assert result["pass_count"] is None
+    assert result["yield_rate"] is None
+    assert service.calls == [("PRODUCTION", "FT")]
+
+
+def test_upload_rejects_factory_stage_mismatch(monkeypatch, tmp_path: Path) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+    client = _client(StubStageService())
+    mismatch = client.post("/api/v1/production/ft/uploads", files={"files": ("a.xlsx", b"x", "application/octet-stream")}, data={"factory_code": "huahong"})
+    assert mismatch.status_code == 422
+    assert mismatch.json()["error"]["code"] == "FACTORY_UNSUPPORTED"
+    wrong_cp = client.post("/api/v1/production/cp/uploads", files={"files": ("a.zip", b"x", "application/zip")}, data={"factory_code": "riyuexin"})
+    assert wrong_cp.status_code == 422
+    assert wrong_cp.json()["error"]["code"] == "FACTORY_UNSUPPORTED"
+
+
 def test_production_cp_upload_keeps_existing_behavior(monkeypatch, tmp_path: Path) -> None:
-    _stub_cleaner(monkeypatch, tmp_path)
+    _stub_cp_cleaner(monkeypatch, tmp_path)
     service = StubStageService()
     response = _client(service).post("/api/v1/production/cp/uploads", files={"files": ("sample.zip", b"sample", "application/zip")}, data={"factory_code": "huahong"})
     assert response.status_code == 201
@@ -90,14 +144,14 @@ def test_production_cp_upload_keeps_existing_behavior(monkeypatch, tmp_path: Pat
 
 
 def test_upload_rejects_unsupported_test_stage(monkeypatch, tmp_path: Path) -> None:
-    _stub_cleaner(monkeypatch, tmp_path)
-    response = _client(StubStageService()).post("/api/v1/production/ft/uploads", files={"files": ("sample.xlsx", b"sample", "application/octet-stream")}, data={"factory_code": "riyuexin"})
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+    response = _client(StubStageService()).post("/api/v1/production/wat/uploads", files={"files": ("sample.zip", b"sample", "application/zip")}, data={"factory_code": "huahong"})
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "STAGE_UPLOAD_UNSUPPORTED"
 
 
 def test_upload_rejects_unknown_business_domain(monkeypatch, tmp_path: Path) -> None:
-    _stub_cleaner(monkeypatch, tmp_path)
+    _stub_cp_cleaner(monkeypatch, tmp_path)
     response = _client(StubStageService()).post("/api/v1/pilot/cp/uploads", files={"files": ("sample.zip", b"sample", "application/zip")}, data={})
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "BUSINESS_DOMAIN_UNSUPPORTED"
