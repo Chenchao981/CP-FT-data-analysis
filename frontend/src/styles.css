@@ -59,6 +59,13 @@ body { margin: 0; min-width: 320px; }
 .intake-hint { margin: 18px 0 0 !important; }
 .field-description { margin-bottom: 18px; }
 .intake-record-card { box-shadow: 0 4px 18px rgba(16, 52, 77, 0.05); }
+.production-workbench { max-width: none; }
+.production-workbench .page-heading h2 { margin-top: 4px !important; }
+.production-stats { margin-bottom: 18px; }
+.production-stats .ant-card { border-color: #e3e9ef; box-shadow: 0 3px 12px rgba(16, 52, 77, 0.04); }
+.production-table-card { border-color: #e3e9ef; box-shadow: 0 4px 18px rgba(16, 52, 77, 0.05); }
+.production-table-card .ant-card-body { padding-top: 8px; }
+.cp-upload-form { margin-top: 18px; }
 
 @media (max-width: 768px) {
   .workbench { padding: 18px 14px; }

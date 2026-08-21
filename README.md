@@ -12,7 +12,7 @@
 
 本机的 `docs/0.1`、v0.2、v0.3 和 v0.5 目录只保留决策演进记录，不进入 GitHub；如旧文档与 v0.6 冲突，以 v0.6 为准。
 
-当前目标环境确定为远端 Windows Server 2019 + SQL Server 2014。数据库按[ADR-0001](docs/adr/ADR-0001_SQLServer2014_Target.md)采用2014兼容实现；正式开发链位于 `db/alembic/`，已在隔离库升级到 `sql2014_0006`。文档包内原 `0001 → 0004` 2022+草案只作参考。
+当前目标环境确定为远端 Windows Server 2019 + SQL Server 2014。数据库按[ADR-0001](docs/adr/ADR-0001_SQLServer2014_Target.md)采用2014兼容实现；正式开发链位于 `db/alembic/`，开发库已升级到 `sql2014_0008`。文档包内原 `0001 → 0004` 2022+草案只作参考。
 
 当前实例实测为SQL Server 2014 SP2 Enterprise（12.0.5000.0）；隔离库开发可继续，正式环境验收前需升级SP3并复验，详见[G0执行状态](docs/G0/G0_Status_2026-08-20.md)。
 

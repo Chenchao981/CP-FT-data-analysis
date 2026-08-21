@@ -16,7 +16,6 @@ export interface FieldEnrichmentRecord {
   field_code: string;
   action: EnrichmentAction;
   value_text: string | null;
-  entered_by: number;
   reason: string;
   is_current: boolean;
 }
@@ -28,7 +27,6 @@ export interface CreateEnrichmentPayload {
   field_code: string;
   action: EnrichmentAction;
   value_text?: string;
-  entered_by: number;
   reason: string;
 }
 

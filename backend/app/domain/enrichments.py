@@ -85,7 +85,7 @@ class CreateFieldEnrichmentRequest(BaseModel):
     field_code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
     action: EnrichmentAction
     value_text: str | None = Field(default=None, max_length=500)
-    entered_by: int = Field(gt=0)
+    entered_by: int | None = Field(default=None, gt=0)
     reason: str = Field(min_length=1, max_length=500)
 
     @model_validator(mode="after")

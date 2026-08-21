@@ -21,7 +21,6 @@ interface EnrichmentForm {
   field_code: string;
   action: EnrichmentAction;
   value_text?: string;
-  entered_by: number;
   reason: string;
 }
 
@@ -148,12 +147,7 @@ export function StageIntakeWorkbench({ stage }: Props) {
                   </Form.Item>
                 )}
                 <Row gutter={16}>
-                  <Col xs={24} md={8}>
-                    <Form.Item label="操作用户编号" name="entered_by" rules={[{ required: true }]}>
-                      <InputNumber min={1} precision={0} className="full-width" />
-                    </Form.Item>
-                  </Col>
-                  <Col xs={24} md={16}>
+                  <Col span={24}>
                     <Form.Item label="补录/忽略说明" name="reason" rules={[{ required: true }]}>
                       <Input maxLength={500} placeholder="说明数据来源或为什么不使用该字段" />
                     </Form.Item>

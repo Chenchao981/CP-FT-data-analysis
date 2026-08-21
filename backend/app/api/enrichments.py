@@ -31,8 +31,9 @@ def service(request: Request) -> FieldEnrichmentService:
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-def create_enrichment(payload: CreateFieldEnrichmentRequest, request: Request, _principal: Principal = Depends(require_permission("TASK_CREATE"))) -> dict:
-    return asdict(service(request).create(payload))
+def create_enrichment(payload: CreateFieldEnrichmentRequest, request: Request, principal: Principal = Depends(require_permission("TASK_CREATE"))) -> dict:
+    owned_payload = payload.model_copy(update={"entered_by": principal.user_id})
+    return asdict(service(request).create(owned_payload))
 
 
 @router.get("/batches/{import_batch_id}")

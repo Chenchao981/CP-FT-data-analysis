@@ -46,12 +46,13 @@ def test_cp_and_ft_use_separate_approved_manual_fields() -> None:
             "field_code": "SUPPLIER_CODE",
             "action": "FILL",
             "value_text": "HUAHONG",
-            "entered_by": 9,
+            "entered_by": 999,
             "reason": "源目录确认晶圆厂",
         },
     )
     assert cp.status_code == 201
     assert cp.json()["test_stage"] == "CP"
+    assert cp.json()["entered_by"] == 1
 
     invalid_cp_lot = client.post(
         "/api/v1/enrichments",
@@ -61,7 +62,6 @@ def test_cp_and_ft_use_separate_approved_manual_fields() -> None:
             "field_code": "LOT_ID",
             "action": "FILL",
             "value_text": "SHOULD-COME-FROM-CP-CLEANER",
-            "entered_by": 9,
             "reason": "invalid",
         },
     )
@@ -75,7 +75,6 @@ def test_cp_and_ft_use_separate_approved_manual_fields() -> None:
             "field_code": "PRODUCT_CODE",
             "action": "FILL",
             "value_text": "NCE-FT-PRODUCT",
-            "entered_by": 9,
             "reason": "人工确认产品型号",
         },
     )
@@ -91,7 +90,6 @@ def test_ignore_requires_no_value_and_keeps_reason() -> None:
             "test_stage": "FT",
             "field_code": "LOT_ID",
             "action": "IGNORE",
-            "entered_by": 9,
             "reason": "该FT文件不提供且本次分析不使用Lot",
         },
     )

@@ -30,7 +30,6 @@ describe("enrichments api", () => {
       test_stage: "FT",
       field_code: "LOT_ID",
       action: "IGNORE",
-      entered_by: 9,
       reason: "FT源文件没有Lot",
     });
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
@@ -38,7 +37,6 @@ describe("enrichments api", () => {
       test_stage: "FT",
       field_code: "LOT_ID",
       action: "IGNORE",
-      entered_by: 9,
       reason: "FT源文件没有Lot",
     });
   });
