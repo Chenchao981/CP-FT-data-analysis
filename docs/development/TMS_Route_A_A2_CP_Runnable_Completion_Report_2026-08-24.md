@@ -15,7 +15,7 @@
 
 ## 真实数据验收
 
-已有工程 CP 批次 10 已回填并保留为 Dataset 9 Version 1：
+已有工程 CP 批次 10 首次回填为 Dataset 9 Version 1；业务确认 `CONT` 是计数符号后，已重跑并发布 Dataset 9 Version 2。当前版本结果如下：
 
 ```text
 Product=NCETEN30CAC
@@ -27,11 +27,11 @@ Fail=100
 Yield=97.419355%
 Test Items=13（CONT 为计数符号，不是参数）
 Measurements=50,375
-Spec Set=1
+Spec Set=3
 Dataset Status=PUBLISHED / Current=True
 ```
 
-界面实测：从工程 CP 结果点击“数据分析”后自动载入 Dataset 9 Version 1；选择 Lot `FA5X-2565`、Wafer 1 后显示 155 Die、152 Pass、3 Fail、Yield 98.064%，Yield 趋势、Bin Pareto、Bin Map 和 Wafer Map 均正常渲染。
+界面实测：从工程 CP 结果点击“数据分析”后可以载入对应 Dataset Version；选择 Lot `FA5X-2565`、Wafer 1 后显示 155 Die、152 Pass、3 Fail、Yield 98.064%，Yield 趋势、Bin Pareto、Bin Map 和 Wafer Map 均正常渲染。
 
 业务确认 `CONT` 是计数符号而不是参数后，批次 10 已重跑为 Dataset 9 Version 2。Version 1 保留为历史，Version 2 成为 Current：13 个参数、3,875 Die、50,375 Measurements、3,775 Pass，Canonical 和分析参数中均无 `CONT`。
 
@@ -53,7 +53,7 @@ ZIP @203 / NCEVTG120EB60DB / FA59-8531：13 Wafer，1,950 Die，17 参数，1,85
 ## 验证结果
 
 ```text
-backend unit tests=74 passed
+backend unit tests=75 passed
 frontend tests=13 passed
 frontend production build=PASS
 route_a_schema=PASS

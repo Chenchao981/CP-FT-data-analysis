@@ -4,7 +4,7 @@
 
 ## 本轮完成范围
 
-A0、A1 已完成；A2 华虹 CP 首条可运行纵向链路已经完成真实数据库和界面验证。
+A0、A1 核心底座已完成；A2 华虹 CP 首条可运行纵向链路已经完成真实数据库和界面验证，但尚未满足原计划的全部正式退出条件。
 
 ### A0 证据
 
@@ -61,7 +61,7 @@ Cleaner Release ID 是当前开发库事实，其他环境由 Bootstrap 脚本�
 ## 验证结果
 
 ```text
-backend unit tests=74 passed
+backend unit tests=75 passed
 frontend tests=13 passed
 frontend production build=PASS
 route_a_schema=PASS
@@ -72,7 +72,7 @@ manual_field_enrichment=PASS
 integration cleanup=PASS
 ```
 
-真实 Worker 验证使用已有华虹 ZIP 和已登记 CP Release，生成三个当前格式结果文件，完成 Artifact、结果摘要、Dataset Version 和 Canonical 明细写入。另将已有工程 CP 批次 10 正式回填为 Dataset 9 Version 1，并在实际浏览器中完成分析界面验证。
+真实 Worker 验证使用已有华虹 ZIP 和已登记 CP Release，生成三个当前格式结果文件，完成 Artifact、结果摘要、Dataset Version 和 Canonical 明细写入。已有工程 CP 批次 10 当前为 Dataset 9 Version 2；Version 1 因包含计数符号 `CONT` 已被 Superseded。实际浏览器已完成分析界面验证。
 
 ## 当前仍未完成
 
