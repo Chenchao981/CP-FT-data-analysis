@@ -58,16 +58,17 @@ class SqlDatasetService:
         self._engine = engine
 
     def list_datasets(self, principal: Principal) -> tuple[DatasetRecord, ...]:
-        params = {"user_id": principal.user_id}
+        params = {
+            "user_id": principal.user_id,
+            "is_admin": "SYSTEM_ADMIN" in principal.roles,
+        }
         with self._engine.connect() as connection:
             rows = (
                 connection.execute(
                     text(
                         "SELECT d.dataset_id,d.dataset_code,d.dataset_name,d.dataset_type,d.test_stage,"
                         "d.supplier_id,d.product_id,d.owner_user_id FROM dataset.dataset d "
-                        "WHERE d.owner_user_id=:user_id OR EXISTS("
-                        "SELECT 1 FROM iam.user_role ur JOIN iam.role r ON r.role_id=ur.role_id "
-                        "WHERE ur.user_id=:user_id AND r.role_code='SYSTEM_ADMIN') "
+                        "WHERE :is_admin=1 OR d.owner_user_id=:user_id "
                         "ORDER BY d.dataset_id DESC"
                     ),
                     params,

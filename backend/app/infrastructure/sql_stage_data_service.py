@@ -261,6 +261,8 @@ class SqlStageDataService:
                 "passes": result.get("pass_count"),
                 "yield_rate": result.get("yield_rate"),
                 "data_type": result.get("data_type", "CP"),
+                "dataset_id": result.get("dataset_id"),
+                "dataset_version_no": result.get("dataset_version_no"),
                 "manifest": json.dumps(result.get("artifacts", []), ensure_ascii=False),
             }
             updated = connection.execute(
@@ -269,7 +271,8 @@ class SqlStageDataService:
                     "product_name=:product,lot_id=:lot,wafer_count=:wafers,"
                     "factory_code=:factory,output_uri=:output,test_item_count=:items,"
                     "unit_count=:units,pass_count=:passes,yield_rate=:yield_rate,"
-                    "status='PROCESSED',data_type=:data_type,artifact_manifest_json=:manifest "
+                    "status='PROCESSED',data_type=:data_type,dataset_id=:dataset_id,"
+                    "dataset_version_no=:dataset_version_no,artifact_manifest_json=:manifest "
                     "WHERE job_id=:job AND import_batch_id=:batch"
                 ),
                 values,
@@ -277,8 +280,8 @@ class SqlStageDataService:
             if updated.rowcount == 0:
                 connection.execute(
                     text(
-                        "INSERT ingestion.processing_result_summary(import_batch_id,job_id,data_name,product_name,lot_id,wafer_count,factory_code,output_uri,test_item_count,unit_count,pass_count,yield_rate,status,data_type,artifact_manifest_json) "
-                        "VALUES(:batch,:job,:name,:product,:lot,:wafers,:factory,:output,:items,:units,:passes,:yield_rate,'PROCESSED',:data_type,:manifest)"
+                        "INSERT ingestion.processing_result_summary(import_batch_id,job_id,data_name,product_name,lot_id,wafer_count,factory_code,output_uri,test_item_count,unit_count,pass_count,yield_rate,status,data_type,dataset_id,dataset_version_no,artifact_manifest_json) "
+                        "VALUES(:batch,:job,:name,:product,:lot,:wafers,:factory,:output,:items,:units,:passes,:yield_rate,'PROCESSED',:data_type,:dataset_id,:dataset_version_no,:manifest)"
                     ),
                     values,
                 )
@@ -322,7 +325,7 @@ class SqlStageDataService:
 
     @staticmethod
     def _scope() -> str:
-        return "(b.owner_user_id=:user_id OR EXISTS(SELECT 1 FROM iam.user_role ur JOIN iam.role r ON r.role_id=ur.role_id WHERE ur.user_id=:user_id AND r.role_code='SYSTEM_ADMIN'))"
+        return "(:is_admin=1 OR b.owner_user_id=:user_id)"
 
     def get_batch_info(
         self, principal: Principal, business_domain: str, test_stage: str, batch_id: int
@@ -337,6 +340,7 @@ class SqlStageDataService:
                     ),
                     {
                         "user_id": principal.user_id,
+                        "is_admin": "SYSTEM_ADMIN" in principal.roles,
                         "batch": batch_id,
                         "domain": business_domain,
                         "stage": test_stage,
@@ -401,6 +405,7 @@ class SqlStageDataService:
                     ),
                     {
                         "user_id": principal.user_id,
+                        "is_admin": "SYSTEM_ADMIN" in principal.roles,
                         "domain": business_domain,
                         "stage": test_stage,
                     },
@@ -442,6 +447,7 @@ class SqlStageDataService:
                     ),
                     {
                         "user_id": principal.user_id,
+                        "is_admin": "SYSTEM_ADMIN" in principal.roles,
                         "domain": business_domain,
                         "stage": test_stage,
                     },
@@ -464,6 +470,10 @@ class SqlStageDataService:
                 float(r["yield_rate"]) if r["yield_rate"] is not None else None,
                 str(r["status"]),
                 str(r["data_type"]),
+                int(r["dataset_id"]) if r["dataset_id"] is not None else None,
+                int(r["dataset_version_no"])
+                if r["dataset_version_no"] is not None
+                else None,
                 _iso(r["created_at_utc"]) or "",
             )
             for r in rows

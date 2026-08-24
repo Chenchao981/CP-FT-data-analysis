@@ -64,7 +64,7 @@ def main() -> None:
         cursor = connection.cursor()
         cursor.execute("SELECT version_num FROM alembic_version")
         revision = cursor.fetchone()[0]
-        assert revision == "sql2014_0010", revision
+        assert revision == "sql2014_0011", revision
 
         cursor.execute("SELECT name FROM sys.schemas")
         schemas = {row[0] for row in cursor.fetchall()}
@@ -130,6 +130,19 @@ def main() -> None:
         assert not (required_job_columns - job_columns), (
             required_job_columns - job_columns
         )
+
+        cursor.execute(
+            "SELECT name FROM sys.columns "
+            "WHERE object_id=OBJECT_ID('dataset.dataset_version')"
+        )
+        dataset_version_columns = {row[0] for row in cursor.fetchall()}
+        assert "spec_set_id" in dataset_version_columns
+        cursor.execute(
+            "SELECT name FROM sys.columns "
+            "WHERE object_id=OBJECT_ID('ingestion.processing_result_summary')"
+        )
+        result_columns = {row[0] for row in cursor.fetchall()}
+        assert {"dataset_id", "dataset_version_no"} <= result_columns
 
         cursor.execute(
             "SELECT COUNT(*) FROM sys.check_constraints "

@@ -4,7 +4,7 @@
 
 ## 本轮完成范围
 
-A0 基线盘点和 A1 Worker 底座已经完成首轮开发与真实数据库验证。
+A0、A1 已完成；A2 华虹 CP 首条可运行纵向链路已经完成真实数据库和界面验证。
 
 ### A0 证据
 
@@ -35,11 +35,21 @@ A0 基线盘点和 A1 Worker 底座已经完成首轮开发与真实数据库验
 - CP 增加缺失 Lot_ID 的任务级补录字段；
 - Worker 临时 Artifact 带 SHA256 和到期时间登记。
 
+### A2 华虹 CP 已实现
+
+- `CP_CSV_TRIPLET_V1` Output Adapter 严格读取 cleaned/yield/spec 三类 CSV；
+- 多批次 Spec 沿用第一批次 Spec，并在 Dataset Version 元数据中记录 `FIRST_BATCH`；
+- Cleaner 结果写入 `test.test_run/unit_result/measurement` 唯一 Canonical；
+- 首次成功自动发布 Dataset Current，结果摘要关联 Dataset ID 和 Version；
+- 数据结果页增加“数据分析”入口，自动带入对应 Dataset/Version；
+- 数据分析页已能查询 Lot、Wafer、Die、Yield、Bin、参数趋势、Pareto 和 Wafer Map；
+- “重新处理”改为异步排队，并复用首次上传的同一条 Route A 入库链路。
+
 ## 实际数据库结果
 
 ```text
 database=TMS_G0_DEV
-revision=sql2014_0010
+revision=sql2014_0011
 route_b_detail_tables=0
 analysis.saved_analysis=保留
 CP Cleaner Release=9 / sha256-78fc9188a96c / CP_CSV_TRIPLET_V1
@@ -51,7 +61,7 @@ Cleaner Release ID 是当前开发库事实，其他环境由 Bootstrap 脚本�
 ## 验证结果
 
 ```text
-backend unit tests=72 passed
+backend unit tests=74 passed
 frontend tests=13 passed
 frontend production build=PASS
 route_a_schema=PASS
@@ -62,14 +72,11 @@ manual_field_enrichment=PASS
 integration cleanup=PASS
 ```
 
-真实 Worker 验证使用已有华虹 ZIP 和已登记 CP Release，生成三个当前格式的结果文件、登记 Artifact 和结果摘要，然后完整清理验证任务与临时目录。
+真实 Worker 验证使用已有华虹 ZIP 和已登记 CP Release，生成三个当前格式结果文件，完成 Artifact、结果摘要、Dataset Version 和 Canonical 明细写入。另将已有工程 CP 批次 10 正式回填为 Dataset 9 Version 1，并在实际浏览器中完成分析界面验证。
 
 ## 当前仍未完成
 
-- A2 的三个 Cleaner 输出 → `test.test_run/unit_result/measurement` 正式结构化 Writer；
-- 首次成功后内部 Dataset Current 自动切换；
 - 缺失能力提示弹窗；
-- 数据库结构化明细、Yield/Bin/Wafer Map 查询；
 - A5 最新版临时导出、显式重清洗原子更新和物理删除；
 - 日月新 FT 的 Route A 正式结构化导入；
 
@@ -80,8 +87,6 @@ integration cleanup=PASS
 - 隔离内网数据库安全不再作为本阶段讨论项；
 - 前端包体积在功能完成后再优化。
 
-当前上传 Worker 仍只形成结果摘要和临时 Artifact，不能把它误称为 A2 正式结构化入库完成。
-
 ## 下一开发入口
 
-进入 A2 华虹 CP：先实现 `CP_CSV_TRIPLET_V1` Output Adapter 和运行级参数/Spec 定义，再写入唯一 `test.*` Canonical；使用真实华虹 Golden 样例对账 Lot、Wafer、Die、Bin、X/Y、参数、Measurement、第一批次 Spec 和 Yield。等原 Cleaner 发布三个 XLSX 新合同后，再增加新的 Output Adapter，不修改旧合同。
+进入日月新 FT 的 Route A 正式结构化导入。FT 保持独立 Cleaner 和明细适配逻辑，不与 CP 合并；工程/量产入口继续直接确定业务域。

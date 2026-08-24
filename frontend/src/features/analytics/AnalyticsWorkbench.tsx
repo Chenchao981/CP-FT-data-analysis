@@ -9,10 +9,14 @@ import { EChart } from "../../components/EChart";
 interface DatasetSelection { datasetId: number; versionNo: number }
 interface LoadForm { dataset_id: number; version_no: number }
 
+export interface AnalyticsWorkbenchProps {
+  initialSelection?: DatasetSelection;
+}
+
 const BIN_COLORS = ["#2d9d78", "#d64545", "#f0a429", "#7b61a8", "#247ba0", "#8d6e63", "#607d8b"];
 
-export function AnalyticsWorkbench() {
-  const [selection, setSelection] = useState<DatasetSelection>();
+export function AnalyticsWorkbench({ initialSelection }: AnalyticsWorkbenchProps) {
+  const [selection, setSelection] = useState<DatasetSelection | undefined>(initialSelection);
   const [lotId, setLotId] = useState<string>();
   const [waferId, setWaferId] = useState<string>();
   const query = useQuery({
@@ -110,6 +114,7 @@ export function AnalyticsWorkbench() {
       <Card className="analytics-filter-card">
         <Form<LoadForm>
           layout="inline"
+          initialValues={initialSelection ? { dataset_id: initialSelection.datasetId, version_no: initialSelection.versionNo } : undefined}
           onFinish={(values) => {
             setLotId(undefined);
             setWaferId(undefined);

@@ -27,6 +27,11 @@ export default function App() {
   const { user, loading, logout, can } = useAuth();
   const permittedRoutes = useMemo(() => routes.filter((route) => can(route.permission)).map((route) => ({ ...route, routes: route.routes?.filter((child) => can(child.permission)) })), [user, can]);
   const [page, setPage] = useState("/production/cp");
+  const [analyticsSelection, setAnalyticsSelection] = useState<{ datasetId: number; versionNo: number }>();
+  const openAnalytics = (datasetId: number, versionNo: number) => {
+    setAnalyticsSelection({ datasetId, versionNo });
+    setPage("/analytics");
+  };
   if (loading) return <div className="page-loading fullscreen"><Spin size="large" /></div>;
   if (!user) return <LoginPage />;
   const visiblePaths = permittedRoutes.flatMap((route) => [route.path, ...(route.routes?.map((child) => child.path) ?? [])]);
@@ -47,6 +52,6 @@ export default function App() {
     actionsRender={() => [<Button key="env" type="text">开发环境</Button>]}
     token={{ sider: { colorMenuBackground: "#082f52", colorTextMenu: "#c8d8e5", colorTextMenuSelected: "#ffffff", colorBgMenuItemSelected: "#1167a8" } }}
   ><PageContainer title={false} className="app-content">
-    {activePage === "/engineering/cp" ? <StageDataWorkbench businessDomain="ENGINEERING" testStage="CP" /> : activePage === "/engineering/ft" ? <StageDataWorkbench businessDomain="ENGINEERING" testStage="FT" /> : activePage === "/production/cp" ? <StageDataWorkbench businessDomain="PRODUCTION" testStage="CP" /> : activePage === "/production/ft" ? <StageDataWorkbench businessDomain="PRODUCTION" testStage="FT" /> : activePage === "/analytics" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><AnalyticsWorkbench /></Suspense> : activePage === "/users" ? <UserManagement /> : <Result status="403" title="无权访问" subTitle="当前账户没有此功能权限。" />}
+    {activePage === "/engineering/cp" ? <StageDataWorkbench businessDomain="ENGINEERING" testStage="CP" onOpenAnalytics={openAnalytics} /> : activePage === "/engineering/ft" ? <StageDataWorkbench businessDomain="ENGINEERING" testStage="FT" onOpenAnalytics={openAnalytics} /> : activePage === "/production/cp" ? <StageDataWorkbench businessDomain="PRODUCTION" testStage="CP" onOpenAnalytics={openAnalytics} /> : activePage === "/production/ft" ? <StageDataWorkbench businessDomain="PRODUCTION" testStage="FT" onOpenAnalytics={openAnalytics} /> : activePage === "/analytics" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><AnalyticsWorkbench initialSelection={analyticsSelection} /></Suspense> : activePage === "/users" ? <UserManagement /> : <Result status="403" title="无权访问" subTitle="当前账户没有此功能权限。" />}
   </PageContainer></ProLayout>;
 }

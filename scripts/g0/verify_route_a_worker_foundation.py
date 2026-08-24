@@ -16,6 +16,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from app.domain.jobs import CreateJobRequest, JobStatus, JobType
+from app.infrastructure.cp_csv_triplet_writer import CpCsvTripletWriter
 from app.infrastructure.sql_cleaner_registry import SqlCleanerRegistry
 from app.infrastructure.sql_job_service import SqlJobService
 from app.infrastructure.sql_stage_data_service import SqlStageDataService
@@ -47,7 +48,7 @@ def main() -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert revision == "sql2014_0010", revision
+            assert revision == "sql2014_0011", revision
             route_b_count = connection.execute(
                 text(
                     "SELECT COUNT(*) FROM sys.tables t JOIN sys.schemas s "
@@ -137,6 +138,7 @@ def main() -> None:
                 JobType.INITIAL_IMPORT: RouteAInitialImportHandler(
                     registry,
                     stage_data,
+                    CpCsvTripletWriter(engine),
                     work_root=work_root,
                 )
             },
@@ -151,7 +153,8 @@ def main() -> None:
             summary = (
                 connection.execute(
                     text(
-                        "SELECT unit_count,test_item_count,status FROM ingestion.processing_result_summary "
+                        "SELECT unit_count,test_item_count,status,dataset_id,dataset_version_no "
+                        "FROM ingestion.processing_result_summary "
                         "WHERE job_id=:job"
                     ),
                     {"job": import_job_id},
@@ -162,6 +165,8 @@ def main() -> None:
             assert summary["status"] == "PROCESSED"
             assert int(summary["unit_count"] or 0) > 0
             assert int(summary["test_item_count"] or 0) > 0
+            assert int(summary["dataset_id"] or 0) > 0
+            assert int(summary["dataset_version_no"] or 0) > 0
             artifact_roles = {
                 row[0]
                 for row in connection.execute(
@@ -220,6 +225,40 @@ def main() -> None:
     finally:
         with engine.begin() as connection:
             if import_job_id is not None:
+                run_ids = [
+                    int(row[0])
+                    for row in connection.execute(
+                        text(
+                            "SELECT processing_run_id FROM ingestion.processing_run WHERE job_id=:job"
+                        ),
+                        {"job": import_job_id},
+                    )
+                ]
+                version_ids = [
+                    int(row[0])
+                    for row in connection.execute(
+                        text(
+                            "SELECT dataset_version_id FROM dataset.dataset_version WHERE input_batch_id=:batch"
+                        ),
+                        {"batch": batch_id},
+                    )
+                ]
+                for version_id in version_ids:
+                    connection.execute(
+                        text("DELETE dataset.dataset_version_run WHERE dataset_version_id=:version"),
+                        {"version": version_id},
+                    )
+                connection.execute(
+                    text("DELETE dataset.dataset_version WHERE input_batch_id=:batch"),
+                    {"batch": batch_id},
+                )
+                dataset_ids = [
+                    int(row[0])
+                    for row in connection.execute(
+                        text("SELECT dataset_id FROM dataset.dataset WHERE dataset_code=:code"),
+                        {"code": f"CP-BATCH-{batch_id}"},
+                    )
+                ]
                 connection.execute(
                     text("DELETE ingestion.processing_artifact WHERE job_id=:job"),
                     {"job": import_job_id},
@@ -230,6 +269,34 @@ def main() -> None:
                     ),
                     {"job": import_job_id},
                 )
+                for run_id in run_ids:
+                    connection.execute(
+                        text(
+                            "DELETE m FROM test.measurement m JOIN test.unit_result ur ON ur.unit_id=m.unit_id "
+                            "JOIN test.test_run tr ON tr.run_id=ur.run_id WHERE tr.processing_run_id=:run"
+                        ),
+                        {"run": run_id},
+                    )
+                    connection.execute(
+                        text(
+                            "DELETE ur FROM test.unit_result ur JOIN test.test_run tr ON tr.run_id=ur.run_id "
+                            "WHERE tr.processing_run_id=:run"
+                        ),
+                        {"run": run_id},
+                    )
+                    connection.execute(
+                        text("DELETE test.test_run WHERE processing_run_id=:run"),
+                        {"run": run_id},
+                    )
+                    connection.execute(
+                        text("DELETE ingestion.processing_run WHERE processing_run_id=:run"),
+                        {"run": run_id},
+                    )
+                for dataset_id in dataset_ids:
+                    connection.execute(
+                        text("DELETE dataset.dataset WHERE dataset_id=:dataset"),
+                        {"dataset": dataset_id},
+                    )
             for job_id in (lease_job_id, import_job_id):
                 if job_id is not None:
                     connection.execute(

@@ -20,13 +20,13 @@
 
 ## 当前开发状态
 
-- SQL Server 2014兼容Migration：开发库已前向升级至 `sql2014_0010`；
+- SQL Server 2014兼容Migration：开发库已前向升级至 `sql2014_0011`；
 - 隔离开发数据库：`TMS_G0_DEV`，空库升级与Schema验证通过；
 - Measurement：Rowstore聚集主键 + 普通非聚集索引；
 - FastAPI后端骨架：存活检查、数据库就绪检查；
 - React前端：清洗任务、华虹样本检查、Dataset结果审核与发布；
 - 华虹CP首条能力：严格DCP/TXT Parser、10套Schema、ZIP/7z安全输入、Canonical Writer和批量DQ；
-- Route A Worker底座：Cleaner Release执行合同、SHA256校验、SQL队列租约/心跳/恢复、上传异步化；
+- Route A Worker：Cleaner Release执行合同、SHA256校验、SQL队列租约/心跳/恢复、上传与重新处理异步化，华虹CP已写入Canonical并可直接进入数据分析；
 - Route B空明细表已退出，`test.*`确定为唯一Canonical明细入口；
 - Dataset发布链：版本创建、输入血缘和身份门禁、阻断DQ检查、原子发布及Yield/Bin结果摘要；
 - 真实SQL Server集成：Canonical写入、DQ Gate、Dataset发布、结果查询及测试数据清理通过；

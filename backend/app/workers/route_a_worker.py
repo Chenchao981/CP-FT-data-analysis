@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from app.domain.jobs import Job, JobStatus, JobType, WorkerJobQueue
+from app.infrastructure.cp_csv_triplet_writer import CpCsvTripletWriter
 from app.infrastructure.existing_cleaner_results import (
     summarize_existing_cleaner_result,
 )
@@ -24,11 +25,13 @@ class RouteAInitialImportHandler:
         self,
         registry: SqlCleanerRegistry,
         stage_data: SqlStageDataService,
+        cp_writer: CpCsvTripletWriter,
         runner: ExistingCleanerRunner | None = None,
         work_root: str | Path | None = None,
     ) -> None:
         self._registry = registry
         self._stage_data = stage_data
+        self._cp_writer = cp_writer
         self._runner = runner or ExistingCleanerRunner()
         self._work_root = Path(
             work_root or os.getenv("TMS_WORK_ROOT", r"F:\CP-FT数据分析\data\work")
@@ -74,6 +77,19 @@ class RouteAInitialImportHandler:
             summary = summarize_existing_cleaner_result(result)
             expires = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=24)
             self._stage_data.record_artifacts(job.job_id, result.artifacts, expires)
+            if batch.test_stage == "CP":
+                canonical = self._cp_writer.write(
+                    job_id=job.job_id,
+                    import_batch_id=job.import_batch_id,
+                    artifacts=result.artifacts,
+                )
+                summary.update(
+                    {
+                        "dataset_id": canonical.dataset_id,
+                        "dataset_version_no": canonical.dataset_version_no,
+                    }
+                )
+            self._stage_data.archive_previous_results(job.import_batch_id)
             self._stage_data.record_result(
                 job.import_batch_id,
                 job.job_id,

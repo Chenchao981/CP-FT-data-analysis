@@ -32,6 +32,8 @@ export interface StageResultRow {
   yield_rate: number | null;
   status: string;
   data_type: string;
+  dataset_id: number | null;
+  dataset_version_no: number | null;
   created_at_utc: string;
 }
 

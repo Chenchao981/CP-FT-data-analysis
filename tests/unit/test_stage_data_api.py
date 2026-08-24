@@ -91,6 +91,8 @@ class StubStageService:
                 0.9,
                 "PROCESSED",
                 "CP",
+                31,
+                1,
                 "2026-08-21T00:00:00",
             ),
         )
@@ -139,7 +141,9 @@ def _stub_cp_cleaner(monkeypatch, tmp_path: Path) -> None:
             return result
 
     monkeypatch.setenv("TMS_UPLOAD_ROOT", str(tmp_path / "raw"))
-    monkeypatch.setattr("app.api.stage_data.ExistingCleanerRunner", StubRunner)
+    monkeypatch.setattr(
+        "app.api.stage_data.ExistingCleanerRunner", StubRunner, raising=False
+    )
 
 
 def _stub_ft_cleaner(monkeypatch, tmp_path: Path) -> None:
@@ -184,7 +188,9 @@ def _stub_ft_cleaner(monkeypatch, tmp_path: Path) -> None:
             )
 
     monkeypatch.setenv("TMS_UPLOAD_ROOT", str(tmp_path / "raw"))
-    monkeypatch.setattr("app.api.stage_data.ExistingCleanerRunner", StubRunner)
+    monkeypatch.setattr(
+        "app.api.stage_data.ExistingCleanerRunner", StubRunner, raising=False
+    )
     return seen
 
 
@@ -360,7 +366,7 @@ def test_download_rejects_unknown_receipt(monkeypatch, tmp_path: Path) -> None:
     assert response.json()["error"]["code"] == "UPLOAD_FILE_NOT_FOUND"
 
 
-def test_reprocess_reruns_cleaner_and_archives_previous_results(
+def test_reprocess_queues_same_route_a_pipeline(
     monkeypatch, tmp_path: Path
 ) -> None:
     _stub_cp_cleaner(monkeypatch, tmp_path)
@@ -368,9 +374,11 @@ def test_reprocess_reruns_cleaner_and_archives_previous_results(
     response = _client(service).post("/api/v1/production/cp/uploads/41/reprocess")
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "PROCESSED"
-    assert body["result"]["lot_id"] == "FA5X-2565"
-    assert service.archived == [41]
+    assert body["status"] == "QUEUED"
+    assert body["job_id"] > 0
+    assert body["cleaner_release"]["cleaner_release_id"] == 17
+    assert service.queued == [41]
+    assert service.archived == []
 
 
 def test_reprocess_rejects_unknown_batch(monkeypatch, tmp_path: Path) -> None:

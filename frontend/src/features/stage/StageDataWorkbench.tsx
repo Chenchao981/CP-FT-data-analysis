@@ -1,4 +1,4 @@
-import { CloudUploadOutlined, DownloadOutlined, FileSearchOutlined, RedoOutlined, ReloadOutlined } from "@ant-design/icons";
+import { BarChartOutlined, CloudUploadOutlined, DownloadOutlined, FileSearchOutlined, RedoOutlined, ReloadOutlined } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, Card, Col, Form, Input, Modal, Popconfirm, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography, Upload, message } from "antd";
 import type { UploadFile } from "antd";
@@ -30,9 +30,10 @@ const size = (value: number) => value < 1024 * 1024 ? `${(value / 1024).toFixed(
 export interface StageDataWorkbenchProps {
   businessDomain: BusinessDomain;
   testStage: TestStage;
+  onOpenAnalytics?: (datasetId: number, versionNo: number) => void;
 }
 
-export function StageDataWorkbench({ businessDomain, testStage }: StageDataWorkbenchProps) {
+export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics }: StageDataWorkbenchProps) {
   const { user, can } = useAuth();
   const [open, setOpen] = useState(false);
   const [files, setFiles] = useState<UploadFile[]>([]);
@@ -54,7 +55,7 @@ export function StageDataWorkbench({ businessDomain, testStage }: StageDataWorkb
   });
   const reprocessMutation = useMutation({
     mutationFn: (batchId: number) => reprocessStageBatch(businessDomain, testStage, batchId),
-    onSuccess: async (data) => { messageApi.success(`批次 ${data.import_batch_id} 重新处理完成`); await queryClient.invalidateQueries({ queryKey: scopeKey }); },
+    onSuccess: async (data) => { messageApi.success(`批次 ${data.import_batch_id} 已进入重新处理队列`); await queryClient.invalidateQueries({ queryKey: scopeKey }); },
     onError: (error) => messageApi.error(error.message),
   });
   const uploadColumns: ColumnsType<StageUploadRow> = [
@@ -84,7 +85,10 @@ export function StageDataWorkbench({ businessDomain, testStage }: StageDataWorkb
     { title: "状态", dataIndex: "status", width: 100, render: (v) => <Tag color="success">{statusName[v] ?? v}</Tag> },
     { title: "Data Type", dataIndex: "data_type", width: 105 },
     { title: "处理时间", dataIndex: "created_at_utc", width: 175, render: dt },
-    { title: "操作", key: "actions", width: 110, fixed: "right", render: (_, row) => can("TASK_CREATE") ? <Popconfirm title="重新处理该批次？" description="将重跑现有清洗程序并归档旧结果。" onConfirm={() => reprocessMutation.mutate(row.import_batch_id)}><Button type="link" size="small" icon={<RedoOutlined />} loading={reprocessMutation.isPending && reprocessMutation.variables === row.import_batch_id}>重新处理</Button></Popconfirm> : null },
+    { title: "操作", key: "actions", width: 210, fixed: "right", render: (_, row) => <Space size={0}>
+      {row.dataset_id && row.dataset_version_no && can("ANALYSIS_RUN") && <Button type="link" size="small" icon={<BarChartOutlined />} onClick={() => onOpenAnalytics?.(row.dataset_id!, row.dataset_version_no!)}>数据分析</Button>}
+      {can("TASK_CREATE") && <Popconfirm title="重新处理该批次？" description="将重跑现有清洗程序并归档旧结果。" onConfirm={() => reprocessMutation.mutate(row.import_batch_id)}><Button type="link" size="small" icon={<RedoOutlined />} loading={reprocessMutation.isPending && reprocessMutation.variables === row.import_batch_id}>重新处理</Button></Popconfirm>}
+    </Space> },
   ];
   const metrics = useMemo(() => ({ total: new Set((uploads.data ?? []).map((r) => r.import_batch_id)).size, processing: (uploads.data ?? []).filter((r) => ["QUEUED", "PROCESSING"].includes(r.status)).length, processed: results.data?.length ?? 0, failed: (uploads.data ?? []).filter((r) => r.status === "FAILED").length }), [uploads.data, results.data]);
 

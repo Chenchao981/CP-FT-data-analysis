@@ -14,10 +14,6 @@ from app.core.errors import DomainError
 from app.domain.auth import Principal
 from app.domain.jobs import CreateJobRequest, JobType, TriggerType
 from app.domain.stage_data import StoredUpload
-from app.infrastructure.existing_cleaner_results import (
-    summarize_existing_cleaner_result,
-)
-from app.infrastructure.existing_cleaner_runner import ExistingCleanerRunner
 
 router = APIRouter()
 ALLOWED_SUFFIXES = {
@@ -114,15 +110,6 @@ def _save_uploads(
             StoredUpload(original, destination.resolve(), size, digest.hexdigest())
         )
     return tuple(stored)
-
-
-def _run_cleaner_and_summarize(
-    stage: str, factory: str, input_paths: list[Path], output_root: Path
-) -> dict:
-    result = ExistingCleanerRunner().run(
-        test_stage=stage, factory=factory, inputs=input_paths, output_root=output_root
-    )
-    return summarize_existing_cleaner_result(result)
 
 
 @router.post(
@@ -270,30 +257,38 @@ def reprocess_batch(
     info = service(request).get_batch_info(principal, domain, stage, batch_id)
     if info is None or not info.files:
         raise DomainError("BATCH_NOT_FOUND", "批次不存在或无权访问", 404)
-    factory = info.factory_code.strip().lower()
-    job_id = service(request).mark_processing(batch_id, principal)
-    output_root = (
-        Path(os.getenv("TMS_WORK_ROOT", r"F:\CP-FT数据分析\data\work"))
-        / "legacy-reprocess"
-        / str(batch_id)
-        / str(job_id)
+    factory_aliases = {
+        "华虹": "HUAHONG",
+        "hh": "HUAHONG",
+        "日月新": "RIYUEXIN",
+        "ase": "RIYUEXIN",
+    }
+    factory = factory_aliases.get(
+        info.factory_code.strip().lower(), info.factory_code.strip().upper()
     )
-    try:
-        input_paths = (
-            [Path(item.storage_uri) for item in info.files]
-            if stage == "CP"
-            else [Path(info.files[0].storage_uri).parent]
+    release = cleaner_registry(request).latest_released(stage, factory)
+    job = job_service(request).create(
+        CreateJobRequest(
+            import_batch_id=batch_id,
+            cleaner_release_id=release.cleaner_release_id,
+            job_type=JobType.INITIAL_IMPORT,
+            trigger_type=TriggerType.MANUAL,
+            requested_by=principal.login_name,
+            requested_by_user_id=principal.user_id,
+            reason="用户重新处理：由 Route A Worker 重跑并发布新数据版本",
+            idempotency_key=f"reprocess:{batch_id}:{uuid4().hex}",
         )
-        summary = _run_cleaner_and_summarize(stage, factory, input_paths, output_root)
-        service(request).archive_previous_results(batch_id)
-        service(request).record_result(batch_id, job_id, summary)
-    except Exception as exc:
-        service(request).mark_failed(batch_id, job_id, str(exc))
-        raise DomainError("CLEANING_FAILED", f"重新处理失败：{exc}", 422) from exc
+    )
+    service(request).mark_queued(batch_id)
     return {
         "import_batch_id": batch_id,
-        "status": "PROCESSED",
+        "job_id": job.job_id,
+        "status": "QUEUED",
         "business_domain": domain,
         "test_stage": stage,
-        "result": summary,
+        "cleaner_release": {
+            "cleaner_release_id": release.cleaner_release_id,
+            "cleaner_code": release.cleaner_code,
+            "cleaner_version": release.cleaner_version,
+        },
     }

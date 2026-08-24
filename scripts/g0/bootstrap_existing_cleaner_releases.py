@@ -92,8 +92,8 @@ def main() -> None:
         revision = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-        if revision != "sql2014_0010":
-            raise RuntimeError(f"sql2014_0010 is required, database is {revision}")
+        if revision != "sql2014_0011":
+            raise RuntimeError(f"sql2014_0011 is required, database is {revision}")
         approved_by = connection.execute(
             text(
                 "SELECT TOP (1) u.user_id FROM iam.app_user u "

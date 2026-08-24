@@ -71,6 +71,8 @@ class StageResultRow:
     yield_rate: float | None
     status: str
     data_type: str
+    dataset_id: int | None
+    dataset_version_no: int | None
     created_at_utc: str
 
 

@@ -13,6 +13,7 @@ if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
 from app.domain.jobs import JobType
+from app.infrastructure.cp_csv_triplet_writer import CpCsvTripletWriter
 from app.infrastructure.database import get_engine
 from app.infrastructure.sql_cleaner_registry import SqlCleanerRegistry
 from app.infrastructure.sql_job_service import SqlJobService
@@ -33,7 +34,9 @@ def main() -> None:
     engine = get_engine()
     queue = SqlJobService(engine)
     stage_data = SqlStageDataService(engine)
-    handler = RouteAInitialImportHandler(SqlCleanerRegistry(engine), stage_data)
+    handler = RouteAInitialImportHandler(
+        SqlCleanerRegistry(engine), stage_data, CpCsvTripletWriter(engine)
+    )
     worker = DatabaseJobWorker(
         queue,
         {JobType.INITIAL_IMPORT: handler},
