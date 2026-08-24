@@ -9,6 +9,7 @@
 - [`docs/TMS_Development_Baseline_v0.6_Unified_Cleaning_Analytics/`](docs/TMS_Development_Baseline_v0.6_Unified_Cleaning_Analytics/README.md)
 - [`docs/TMS_Implementation_Roadmap_v0.6.md`](docs/TMS_Implementation_Roadmap_v0.6.md)
 - [`docs/G0/G0_Execution_Plan_v0.6.md`](docs/G0/G0_Execution_Plan_v0.6.md)
+- [`docs/business/TMS_Business_Requirements_v0.2.md`](docs/business/TMS_Business_Requirements_v0.2.md)：当前业务需求口径；与旧业务流程冲突时优先。
 
 本机的 `docs/0.1`、v0.2、v0.3 和 v0.5 目录只保留决策演进记录，不进入 GitHub；如旧文档与 v0.6 冲突，以 v0.6 为准。
 
