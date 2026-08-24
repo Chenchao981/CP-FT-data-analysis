@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-from fastapi.testclient import TestClient
-
 from app.domain.enrichments import CreateFieldEnrichmentRequest, FieldEnrichmentRecord
 from app.main import create_app
+from fastapi.testclient import TestClient
 
 
 class StubEnrichmentService:
     def __init__(self) -> None:
         self.records: list[FieldEnrichmentRecord] = []
 
-    def create(self, request: CreateFieldEnrichmentRequest) -> FieldEnrichmentRecord:
+    def create(
+        self, request: CreateFieldEnrichmentRequest, principal
+    ) -> FieldEnrichmentRecord:
+        assert request.entered_by == principal.user_id
         record = FieldEnrichmentRecord(
             len(self.records) + 1,
             request.import_batch_id,
@@ -26,8 +28,12 @@ class StubEnrichmentService:
         self.records.append(record)
         return record
 
-    def list_current(self, import_batch_id: int) -> tuple[FieldEnrichmentRecord, ...]:
-        return tuple(item for item in self.records if item.import_batch_id == import_batch_id)
+    def list_current(
+        self, import_batch_id: int, principal
+    ) -> tuple[FieldEnrichmentRecord, ...]:
+        return tuple(
+            item for item in self.records if item.import_batch_id == import_batch_id
+        )
 
 
 def client_with_service() -> TestClient:
@@ -54,18 +60,18 @@ def test_cp_and_ft_use_separate_approved_manual_fields() -> None:
     assert cp.json()["test_stage"] == "CP"
     assert cp.json()["entered_by"] == 1
 
-    invalid_cp_lot = client.post(
+    cp_lot = client.post(
         "/api/v1/enrichments",
         json={
             "import_batch_id": 7,
             "test_stage": "CP",
             "field_code": "LOT_ID",
             "action": "FILL",
-            "value_text": "SHOULD-COME-FROM-CP-CLEANER",
-            "reason": "invalid",
+            "value_text": "MANUAL-LOT",
+            "reason": "CP源数据缺少Lot，任务级补录",
         },
     )
-    assert invalid_cp_lot.status_code == 422
+    assert cp_lot.status_code == 201
 
     ft = client.post(
         "/api/v1/enrichments",
@@ -104,6 +110,7 @@ def test_field_catalog_is_stage_specific() -> None:
     assert [item["field_code"] for item in cp.json()] == [
         "SUPPLIER_CODE",
         "PRODUCT_CODE",
+        "LOT_ID",
         "PROJECT_CODE",
     ]
     assert [item["field_code"] for item in ft.json()] == [

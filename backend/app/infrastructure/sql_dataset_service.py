@@ -1,19 +1,21 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from sqlalchemy import Engine, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 
 from app.core.errors import DomainError
+from app.domain.auth import Principal
 from app.domain.datasets import (
     BinCountPoint,
     CreateDatasetRequest,
     CreateDatasetVersionRequest,
-    DatasetRecord,
     DatasetChartData,
+    DatasetRecord,
     DatasetResultSummary,
     DatasetVersionRecord,
     DqGateResult,
@@ -23,7 +25,6 @@ from app.domain.datasets import (
     WaferOption,
     WaferYieldPoint,
 )
-from app.domain.auth import Principal
 
 
 def _dataset(row: Mapping[str, Any]) -> DatasetRecord:
@@ -59,32 +60,29 @@ class SqlDatasetService:
     def list_datasets(self, principal: Principal) -> tuple[DatasetRecord, ...]:
         params = {"user_id": principal.user_id}
         with self._engine.connect() as connection:
-            rows = connection.execute(
-                text(
-                    "SELECT d.dataset_id,d.dataset_code,d.dataset_name,d.dataset_type,d.test_stage,"
-                    "d.supplier_id,d.product_id,d.owner_user_id FROM dataset.dataset d "
-                    "JOIN iam.app_user owner_user ON owner_user.user_id=d.owner_user_id "
-                    "WHERE d.owner_user_id=:user_id OR EXISTS("
-                    "SELECT 1 FROM iam.data_scope_grant g WHERE "
-                    "(g.user_id=:user_id OR g.role_id IN(SELECT ur.role_id FROM iam.user_role ur WHERE ur.user_id=:user_id)) "
-                    "AND (g.expires_at_utc IS NULL OR g.expires_at_utc>SYSUTCDATETIME()) "
-                    "AND g.permission_mode IN('READ','WRITE','GOVERN','EXPORT') AND ("
-                    "g.scope_type='GLOBAL' OR "
-                    "(g.scope_type='OWNER' AND d.owner_user_id=:user_id) OR "
-                    "(g.scope_type='PROJECT' AND g.scope_key=d.project_code) OR "
-                    "(g.scope_type='PRODUCT' AND g.scope_key=CONVERT(nvarchar(256),d.product_id)) OR "
-                    "(g.scope_type='SUPPLIER' AND g.scope_key=CONVERT(nvarchar(256),d.supplier_id)) OR "
-                    "(g.scope_type='DEPARTMENT' AND g.scope_key=owner_user.department_code))) "
-                    "ORDER BY d.dataset_id DESC"
-                ),
-                params,
-            ).mappings().all()
+            rows = (
+                connection.execute(
+                    text(
+                        "SELECT d.dataset_id,d.dataset_code,d.dataset_name,d.dataset_type,d.test_stage,"
+                        "d.supplier_id,d.product_id,d.owner_user_id FROM dataset.dataset d "
+                        "WHERE d.owner_user_id=:user_id OR EXISTS("
+                        "SELECT 1 FROM iam.user_role ur JOIN iam.role r ON r.role_id=ur.role_id "
+                        "WHERE ur.user_id=:user_id AND r.role_code='SYSTEM_ADMIN') "
+                        "ORDER BY d.dataset_id DESC"
+                    ),
+                    params,
+                )
+                .mappings()
+                .all()
+            )
         return tuple(_dataset(row) for row in rows)
 
     def assert_dataset_access(
         self, dataset_id: int, principal: Principal, mode: str = "READ"
     ) -> None:
-        if not any(item.dataset_id == dataset_id for item in self.list_datasets(principal)):
+        if not any(
+            item.dataset_id == dataset_id for item in self.list_datasets(principal)
+        ):
             raise DomainError("DATASET_ACCESS_DENIED", "无权访问该数据集", 403)
 
     def create_dataset(self, request: CreateDatasetRequest) -> DatasetRecord:
@@ -146,7 +144,8 @@ class SqlDatasetService:
             option_rows = (
                 connection.execute(
                     text(
-                        "SELECT DISTINCT tr.lot_id,tr.wafer_id" + version_join
+                        "SELECT DISTINCT tr.lot_id,tr.wafer_id"
+                        + version_join
                         + "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
                         "AND tr.wafer_id IS NOT NULL ORDER BY tr.lot_id,tr.wafer_id"
                     ),
@@ -242,7 +241,9 @@ class SqlDatasetService:
                 WaferMapPoint(
                     x=int(row["x_coord"]),
                     y=int(row["y_coord"]),
-                    soft_bin=str(row["soft_bin"]) if row["soft_bin"] is not None else None,
+                    soft_bin=str(row["soft_bin"])
+                    if row["soft_bin"] is not None
+                    else None,
                     result=str(row["overall_result"]),
                 )
                 for row in map_rows
@@ -339,7 +340,9 @@ class SqlDatasetService:
                         "processing_run_id": run_id,
                         "ordinal_no": ordinal,
                     }
-                    for ordinal, run_id in enumerate(request.processing_run_ids, start=1)
+                    for ordinal, run_id in enumerate(
+                        request.processing_run_ids, start=1
+                    )
                 ],
             )
         return _version(row, run_count=len(request.processing_run_ids))
@@ -415,10 +418,16 @@ class SqlDatasetService:
         )
         reasons: list[GateReason] = []
         if not run_rows:
-            reasons.append(GateReason("NO_PROCESSING_RUN", 1, "dataset version has no processing run"))
+            reasons.append(
+                GateReason(
+                    "NO_PROCESSING_RUN", 1, "dataset version has no processing run"
+                )
+            )
         not_ready = sum(row["status"] not in {"READY", "PUBLISHED"} for row in run_rows)
         if not_ready:
-            reasons.append(GateReason("RUN_NOT_READY", not_ready, "processing runs are not ready"))
+            reasons.append(
+                GateReason("RUN_NOT_READY", not_ready, "processing runs are not ready")
+            )
         bad_lineage = sum(not bool(row["lineage_matches"]) for row in run_rows)
         if bad_lineage:
             reasons.append(
@@ -516,7 +525,9 @@ class SqlDatasetService:
         self, dataset_id: int, version_no: int, request: PublishDatasetVersionRequest
     ) -> DatasetVersionRecord:
         with self._engine.begin() as connection:
-            context = self._version_context(connection, dataset_id, version_no, lock=True)
+            context = self._version_context(
+                connection, dataset_id, version_no, lock=True
+            )
             version_id = int(context["dataset_version_id"])
             run_count = int(
                 connection.execute(
@@ -541,7 +552,9 @@ class SqlDatasetService:
             ).scalar_one_or_none()
             if user_status != "ACTIVE":
                 raise DomainError(
-                    "PUBLISHER_NOT_ACTIVE", "publisher must be an active application user", 409
+                    "PUBLISHER_NOT_ACTIVE",
+                    "publisher must be an active application user",
+                    409,
                 )
             gate = self._evaluate(connection, dataset_id, version_no, lock=False)
             if gate.status != "PASS":
@@ -550,7 +563,11 @@ class SqlDatasetService:
                     "dataset version cannot be published because the DQ gate is blocked",
                     409,
                     details=[
-                        {"code": reason.code, "count": reason.count, "message": reason.message}
+                        {
+                            "code": reason.code,
+                            "count": reason.count,
+                            "message": reason.message,
+                        }
                         for reason in gate.reasons
                     ],
                 )
@@ -688,5 +705,7 @@ class SqlDatasetService:
             fail_count=int(base["fail_count"] or 0),
             yield_rate=pass_count / unit_count if unit_count else 0.0,
             measurement_count=measurement_count,
-            bin_counts={str(row["soft_bin"]): int(row["unit_count"]) for row in bin_rows},
+            bin_counts={
+                str(row["soft_bin"]): int(row["unit_count"]) for row in bin_rows
+            },
         )

@@ -12,6 +12,7 @@
 # Raw, processed, generated and temporary data.
 data/raw/
 data/processed/
+data/work/
 input/
 inputs/
 output/

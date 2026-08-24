@@ -49,7 +49,18 @@ export function uploadStageData(businessDomain: BusinessDomain, testStage: TestS
   files.forEach((file) => body.append("files", file));
   body.append("factory_code", factoryCode);
   if (remark) body.append("remark", remark);
-  return apiRequest<{ import_batch_id: number; status: string; business_domain: BusinessDomain; test_stage: TestStage }>(`${stageBase(businessDomain, testStage)}/uploads`, { method: "POST", body });
+  return apiRequest<{
+    import_batch_id: number;
+    job_id: number;
+    status: "QUEUED";
+    business_domain: BusinessDomain;
+    test_stage: TestStage;
+    cleaner_release: {
+      cleaner_release_id: number;
+      cleaner_code: string;
+      cleaner_version: string;
+    };
+  }>(`${stageBase(businessDomain, testStage)}/uploads`, { method: "POST", body });
 }
 
 export const reprocessStageBatch = (businessDomain: BusinessDomain, testStage: TestStage, importBatchId: number) =>

@@ -1,5 +1,7 @@
 # 既有 CP/FT Cleaner 真实输出合同（2026-08-21）
 
+> **2026-08-24 Route A 实测补充**：当前发布包仍分别输出 CP 的 `cleaned/yield/spec CSV`，以及 FT 的 `cleaned XLSX + scatter data/spec/manifest`，并不是业务目标描述中的统一三个 XLSX。`sql2014_0010` 因此按实际包登记 `CP_CSV_TRIPLET_V1` 和 `FT_XLSX_SCATTER_V1` 两个版本化输出合同。TMS Worker 按 Cleaner Release 合同读取；后续原 Cleaner 改为 RawData/Spec/Statistics 三个 XLSX 时，必须发布新的 Output Contract Version，不得静默改变旧版本语义。
+
 ## 验证结论
 
 TMS 不重写 CP/FT 清洗逻辑。FastAPI Worker 通过独立进程调用两个既有发布包，再把其输出映射到平台数据模型。

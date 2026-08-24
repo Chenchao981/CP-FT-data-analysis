@@ -5,7 +5,6 @@ import getpass
 
 import pyodbc
 
-
 EXPECTED_SCHEMAS = {
     "mdm",
     "ingestion",
@@ -31,6 +30,7 @@ EXPECTED_TABLES = {
     "ingestion.format_profile",
     "ingestion.cleaner_release",
     "ingestion.field_enrichment",
+    "ingestion.processing_artifact",
     "test.test_run",
     "test.unit_result",
     "test.measurement",
@@ -64,21 +64,17 @@ def main() -> None:
         cursor = connection.cursor()
         cursor.execute("SELECT version_num FROM alembic_version")
         revision = cursor.fetchone()[0]
-        assert revision == "sql2014_0006", revision
+        assert revision == "sql2014_0010", revision
 
         cursor.execute("SELECT name FROM sys.schemas")
         schemas = {row[0] for row in cursor.fetchall()}
         assert not (EXPECTED_SCHEMAS - schemas), EXPECTED_SCHEMAS - schemas
 
-        cursor.execute(
-            "SELECT SCHEMA_NAME(schema_id) + '.' + name FROM sys.tables"
-        )
+        cursor.execute("SELECT SCHEMA_NAME(schema_id) + '.' + name FROM sys.tables")
         tables = {row[0] for row in cursor.fetchall()}
         assert not (EXPECTED_TABLES - tables), EXPECTED_TABLES - tables
 
-        cursor.execute(
-            "SELECT SCHEMA_NAME(schema_id) + '.' + name FROM sys.views"
-        )
+        cursor.execute("SELECT SCHEMA_NAME(schema_id) + '.' + name FROM sys.views")
         views = {row[0] for row in cursor.fetchall()}
         assert not (EXPECTED_VIEWS - views), EXPECTED_VIEWS - views
 
@@ -106,7 +102,34 @@ def main() -> None:
             "SELECT COUNT(*) FROM sys.check_constraints "
             "WHERE name IN('CK_test_program_stage_identity','CK_test_run_stage_identity')"
         )
-        assert cursor.fetchone()[0] == 2
+        assert cursor.fetchone()[0] == 0
+
+        cursor.execute(
+            "SELECT COUNT(*) FROM sys.tables t JOIN sys.schemas s ON s.schema_id=t.schema_id "
+            "WHERE s.name='analysis' AND t.name IN('run','unit','test_item','measurement')"
+        )
+        assert cursor.fetchone()[0] == 0
+        cursor.execute(
+            "SELECT COUNT(*) FROM sys.tables WHERE object_id=OBJECT_ID('analysis.saved_analysis')"
+        )
+        assert cursor.fetchone()[0] == 1
+
+        cursor.execute(
+            "SELECT name FROM sys.columns WHERE object_id=OBJECT_ID('ingestion.processing_job')"
+        )
+        job_columns = {row[0] for row in cursor.fetchall()}
+        required_job_columns = {
+            "idempotency_key",
+            "lease_token",
+            "lease_owner",
+            "lease_expires_at_utc",
+            "heartbeat_at_utc",
+            "attempt_count",
+            "max_attempts",
+        }
+        assert not (required_job_columns - job_columns), (
+            required_job_columns - job_columns
+        )
 
         cursor.execute(
             "SELECT COUNT(*) FROM sys.check_constraints "
@@ -128,6 +151,7 @@ def main() -> None:
         print(f"schemas={len(schemas)} tables={len(tables)} views={len(views)}")
         print(f"measurement_indexes={indexes}")
         print(f"stage_identity_nullability={identity_nullability}")
+        print(f"route_a_job_columns={sorted(required_job_columns)}")
         print(
             f"seed_counts=roles:{role_count},permissions:{permission_count},"
             f"dq_rules:{dq_rule_count}"

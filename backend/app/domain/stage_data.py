@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, Sequence
+from typing import Protocol
 
 from app.domain.auth import Principal
 
@@ -47,6 +48,15 @@ class BatchInfo:
 
 
 @dataclass(frozen=True, slots=True)
+class WorkerBatchInfo:
+    import_batch_id: int
+    business_domain: str
+    test_stage: str
+    factory_code: str
+    files: tuple[BatchFileInfo, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class StageResultRow:
     result_summary_id: int
     import_batch_id: int
@@ -76,6 +86,8 @@ class StageDataService(Protocol):
     ) -> int: ...
 
     def mark_processing(self, batch_id: int, principal: Principal) -> int: ...
+
+    def mark_queued(self, batch_id: int) -> None: ...
 
     def mark_failed(self, batch_id: int, job_id: int, message: str) -> None: ...
 

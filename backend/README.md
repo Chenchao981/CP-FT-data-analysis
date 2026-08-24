@@ -1,5 +1,7 @@
 # TMS Backend
 
+> 当前执行主线为 Route A。上传接口只登记任务并返回 `QUEUED`，现有 Python Cleaner 由独立 Worker 调用。旧 Dataset 人工审核/发布接口暂时保留兼容，但不再是新业务主线。
+
 ## 开发环境
 
 ```powershell
@@ -14,6 +16,23 @@ $env:PYTHONPATH = "$PWD\backend"
 ```powershell
 $env:PYTHONPATH = "$PWD\backend"
 & .\.conda-env\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+```
+
+另开一个 PowerShell 窗口启动 Route A Worker：
+
+```powershell
+. .\.env.runtime.ps1
+$env:PYTHONPATH = "$PWD\backend"
+$env:TMS_JOB_REPOSITORY = "sql"
+& .\.conda-env\python.exe scripts\run_route_a_worker.py
+```
+
+部署新环境时，先升级 Migration，再按实际发布包 SHA256 幂等登记 Cleaner：
+
+```powershell
+. .\.env.runtime.ps1
+& .\.conda-env\Scripts\alembic.exe -c db\alembic\alembic.ini upgrade head
+& .\.conda-env\python.exe scripts\g0\bootstrap_existing_cleaner_releases.py
 ```
 
 接口：
@@ -38,7 +57,7 @@ $env:PYTHONPATH = "$PWD\backend"
 - `GET /api/v1/enrichments/fields/{CP|FT}`
 - `/api/docs`
 
-Job Service默认使用进程内实现；设置 `TMS_JOB_REPOSITORY=sql` 后使用SQL Repository，已在企业版隔离库完成状态流转集成验证。华虹接口上传单片TXT后返回身份、Schema、Die、Bin和良率摘要，未知Schema或身份不一致返回422。
+Job Service默认使用进程内实现；Route A 联调和部署必须设置 `TMS_JOB_REPOSITORY=sql`。SQL Repository支持原子领取、租约、心跳、超时恢复、幂等键和最大重试次数。
 
 华虹文件边界支持TXT、ZIP和7z。归档只在受控临时目录中展开TXT，并在退出上下文时清理；任何加密、损坏、路径穿越、符号链接、重复路径或容量超限均失败关闭。`HuaHongBatchInspector.inspect_input()` 是单文件/归档的统一检查入口。
 
@@ -62,4 +81,11 @@ Dataset发布链要求先建立Dataset Version并显式关联Processing Run。DQ
 ```powershell
 $env:PYTHONPATH = "$PWD\backend"
 & .\.conda-env\python.exe -m pytest -q tests
+```
+
+真实数据库与现有华虹 Cleaner 的 Route A Worker 验证：
+
+```powershell
+. .\.env.runtime.ps1
+& .\.conda-env\python.exe scripts\g0\verify_route_a_worker_foundation.py
 ```

@@ -19,7 +19,7 @@ class EnrichmentAction(StrEnum):
 
 STAGE_FIELD_CODES: dict[EnrichmentStage, frozenset[str]] = {
     EnrichmentStage.CP: frozenset(
-        {"SUPPLIER_CODE", "PRODUCT_CODE", "PROJECT_CODE"}
+        {"SUPPLIER_CODE", "PRODUCT_CODE", "LOT_ID", "PROJECT_CODE"}
     ),
     EnrichmentStage.FT: frozenset(
         {"PRODUCT_CODE", "SUPPLIER_CODE", "LOT_ID", "PROJECT_CODE"}
@@ -39,6 +39,12 @@ STAGE_FIELD_CATALOG: dict[EnrichmentStage, tuple[dict[str, object], ...]] = {
             "label": "产品型号",
             "required_for_analysis": False,
             "description": "CP可选业务信息，不影响Lot/Wafer分析",
+        },
+        {
+            "field_code": "LOT_ID",
+            "label": "批次号",
+            "required_for_analysis": False,
+            "description": "CP源数据缺少Lot_ID时可任务级补录；不补录仍允许入库",
         },
         {
             "field_code": "PROJECT_CODE",
@@ -89,7 +95,7 @@ class CreateFieldEnrichmentRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=500)
 
     @model_validator(mode="after")
-    def validate_stage_field_and_value(self) -> "CreateFieldEnrichmentRequest":
+    def validate_stage_field_and_value(self) -> CreateFieldEnrichmentRequest:
         if self.field_code not in STAGE_FIELD_CODES[self.test_stage]:
             raise ValueError(
                 f"{self.field_code} is not an approved {self.test_stage.value} enrichment field"
@@ -116,6 +122,10 @@ class FieldEnrichmentRecord:
 
 
 class FieldEnrichmentService(Protocol):
-    def create(self, request: CreateFieldEnrichmentRequest) -> FieldEnrichmentRecord: ...
+    def create(
+        self, request: CreateFieldEnrichmentRequest, principal
+    ) -> FieldEnrichmentRecord: ...
 
-    def list_current(self, import_batch_id: int) -> tuple[FieldEnrichmentRecord, ...]: ...
+    def list_current(
+        self, import_batch_id: int, principal
+    ) -> tuple[FieldEnrichmentRecord, ...]: ...

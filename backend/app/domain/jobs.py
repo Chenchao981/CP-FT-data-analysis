@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from threading import Lock
 from typing import Protocol
 
-from pydantic import ConfigDict, BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.core.errors import DomainError
 
 
 class JobType(StrEnum):
+    INITIAL_IMPORT = "INITIAL_IMPORT"
+    EXPORT_LATEST = "EXPORT_LATEST"
+    REPROCESS_UPDATE = "REPROCESS_UPDATE"
+    DELETE_TASK = "DELETE_TASK"
+    # Historical values remain readable during the forward migration.
     PARSE = "PARSE"
     REPROCESS = "REPROCESS"
     REEVALUATE = "REEVALUATE"
@@ -43,14 +48,26 @@ class CreateJobRequest(BaseModel):
     job_type: JobType = JobType.PARSE
     trigger_type: TriggerType = TriggerType.MANUAL
     requested_by: str = Field(min_length=1, max_length=128)
+    requested_by_user_id: int | None = Field(default=None, gt=0)
     reason: str | None = Field(default=None, max_length=1000)
+    idempotency_key: str | None = Field(default=None, min_length=8, max_length=128)
+    max_attempts: int = Field(default=3, ge=1, le=20)
 
     @model_validator(mode="after")
-    def validate_input(self) -> "CreateJobRequest":
+    def validate_input(self) -> CreateJobRequest:
         if (self.source_file_id is None) == (self.import_batch_id is None):
-            raise ValueError("exactly one of source_file_id or import_batch_id is required")
-        if self.job_type in {JobType.PARSE, JobType.REPROCESS} and self.cleaner_release_id is None:
-            raise ValueError("cleaner_release_id is required for parse or reprocess jobs")
+            raise ValueError(
+                "exactly one of source_file_id or import_batch_id is required"
+            )
+        cleaner_jobs = {
+            JobType.INITIAL_IMPORT,
+            JobType.EXPORT_LATEST,
+            JobType.REPROCESS_UPDATE,
+            JobType.PARSE,
+            JobType.REPROCESS,
+        }
+        if self.job_type in cleaner_jobs and self.cleaner_release_id is None:
+            raise ValueError("cleaner_release_id is required for Cleaner jobs")
         return self
 
 
@@ -62,7 +79,7 @@ class TransitionJobRequest(BaseModel):
     error_message: str | None = Field(default=None, max_length=2000)
 
     @model_validator(mode="after")
-    def validate_failure(self) -> "TransitionJobRequest":
+    def validate_failure(self) -> TransitionJobRequest:
         if self.target_status == JobStatus.FAILED and not self.error_code:
             raise ValueError("error_code is required when target_status is FAILED")
         if self.target_status != JobStatus.FAILED and (
@@ -81,6 +98,7 @@ class Job:
     job_type: JobType
     trigger_type: TriggerType
     requested_by: str
+    requested_by_user_id: int | None
     reason: str | None
     status: JobStatus
     requested_at_utc: datetime
@@ -88,6 +106,14 @@ class Job:
     finished_at_utc: datetime | None = None
     error_code: str | None = None
     error_message: str | None = None
+    idempotency_key: str | None = None
+    not_before_utc: datetime | None = None
+    lease_token: str | None = None
+    lease_owner: str | None = None
+    lease_expires_at_utc: datetime | None = None
+    heartbeat_at_utc: datetime | None = None
+    attempt_count: int = 0
+    max_attempts: int = 3
 
 
 ALLOWED_JOB_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
@@ -115,9 +141,13 @@ class InMemoryJobService:
                 job_type=request.job_type,
                 trigger_type=request.trigger_type,
                 requested_by=request.requested_by,
+                requested_by_user_id=request.requested_by_user_id,
                 reason=request.reason,
                 status=JobStatus.QUEUED,
                 requested_at_utc=datetime.now(UTC),
+                idempotency_key=request.idempotency_key,
+                not_before_utc=datetime.now(UTC),
+                max_attempts=request.max_attempts,
             )
             self._items[job.job_id] = job
             self._next_id += 1
@@ -150,7 +180,9 @@ class InMemoryJobService:
                 current,
                 status=request.target_status,
                 started_at_utc=(
-                    now if request.target_status == JobStatus.RUNNING else current.started_at_utc
+                    now
+                    if request.target_status == JobStatus.RUNNING
+                    else current.started_at_utc
                 ),
                 finished_at_utc=(
                     now
@@ -171,3 +203,24 @@ class JobService(Protocol):
     def get(self, job_id: int) -> Job: ...
 
     def transition(self, job_id: int, request: TransitionJobRequest) -> Job: ...
+
+
+class WorkerJobQueue(Protocol):
+    def claim_next(
+        self,
+        worker_id: str,
+        lease_for: timedelta,
+        accepted_job_types: tuple[JobType, ...],
+    ) -> Job | None: ...
+
+    def heartbeat(self, job_id: int, lease_token: str, lease_for: timedelta) -> Job: ...
+
+    def finish_leased(
+        self,
+        job_id: int,
+        lease_token: str,
+        target_status: JobStatus,
+        *,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> Job: ...

@@ -7,8 +7,8 @@ import { useMemo, useState } from "react";
 import { BusinessDomain, TestStage, downloadStageUploadFile, listStageResults, listStageUploads, reprocessStageBatch, StageResultRow, StageUploadRow, uploadStageData } from "../../api/stageData";
 import { useAuth } from "../auth/AuthContext";
 
-const statusColor: Record<string, string> = { RECEIVED: "blue", PROCESSING: "processing", PROCESSED: "success", FAILED: "error" };
-const statusName: Record<string, string> = { RECEIVED: "已接收", PROCESSING: "处理中", PROCESSED: "已处理", FAILED: "失败" };
+const statusColor: Record<string, string> = { RECEIVED: "blue", QUEUED: "gold", PROCESSING: "processing", PROCESSED: "success", FAILED: "error" };
+const statusName: Record<string, string> = { RECEIVED: "已接收", QUEUED: "排队中", PROCESSING: "处理中", PROCESSED: "已处理", FAILED: "失败" };
 const domainName: Record<BusinessDomain, string> = { ENGINEERING: "工程", PRODUCTION: "量产" };
 const factoryName: Record<string, string> = { huahong: "华虹", riyuexin: "日月新" };
 const stageDescription: Record<TestStage, string> = {
@@ -40,8 +40,8 @@ export function StageDataWorkbench({ businessDomain, testStage }: StageDataWorkb
   const [messageApi, contextHolder] = message.useMessage();
   const queryClient = useQueryClient();
   const scopeKey = ["stage", businessDomain, testStage];
-  const uploads = useQuery({ queryKey: [...scopeKey, "uploads"], queryFn: () => listStageUploads(businessDomain, testStage) });
-  const results = useQuery({ queryKey: [...scopeKey, "results"], queryFn: () => listStageResults(businessDomain, testStage) });
+  const uploads = useQuery({ queryKey: [...scopeKey, "uploads"], queryFn: () => listStageUploads(businessDomain, testStage), refetchInterval: (query) => (query.state.data ?? []).some((row) => ["RECEIVED", "QUEUED", "PROCESSING"].includes(row.status)) ? 3000 : false });
+  const results = useQuery({ queryKey: [...scopeKey, "results"], queryFn: () => listStageResults(businessDomain, testStage), refetchInterval: (query) => (uploads.data ?? []).some((row) => ["QUEUED", "PROCESSING"].includes(row.status)) ? 3000 : false });
   const refresh = async () => Promise.all([uploads.refetch(), results.refetch()]);
   const mutation = useMutation({
     mutationFn: async (values: { factory_code: string; remark?: string }) => {
@@ -49,7 +49,7 @@ export function StageDataWorkbench({ businessDomain, testStage }: StageDataWorkb
       if (!nativeFiles.length) throw new Error(`请选择${testStage}源文件`);
       return uploadStageData(businessDomain, testStage, nativeFiles, values.factory_code, values.remark);
     },
-    onSuccess: async (data) => { messageApi.success(`上传和清洗完成，批次 ${data.import_batch_id}`); setOpen(false); setFiles([]); form.resetFields(); await queryClient.invalidateQueries({ queryKey: scopeKey }); },
+    onSuccess: async (data) => { messageApi.success(`批次 ${data.import_batch_id} 已进入后台清洗队列（任务 ${data.job_id}）`); setOpen(false); setFiles([]); form.resetFields(); await queryClient.invalidateQueries({ queryKey: scopeKey }); },
     onError: (error) => messageApi.error(error.message),
   });
   const reprocessMutation = useMutation({
@@ -86,7 +86,7 @@ export function StageDataWorkbench({ businessDomain, testStage }: StageDataWorkb
     { title: "处理时间", dataIndex: "created_at_utc", width: 175, render: dt },
     { title: "操作", key: "actions", width: 110, fixed: "right", render: (_, row) => can("TASK_CREATE") ? <Popconfirm title="重新处理该批次？" description="将重跑现有清洗程序并归档旧结果。" onConfirm={() => reprocessMutation.mutate(row.import_batch_id)}><Button type="link" size="small" icon={<RedoOutlined />} loading={reprocessMutation.isPending && reprocessMutation.variables === row.import_batch_id}>重新处理</Button></Popconfirm> : null },
   ];
-  const metrics = useMemo(() => ({ total: new Set((uploads.data ?? []).map((r) => r.import_batch_id)).size, processing: (uploads.data ?? []).filter((r) => r.status === "PROCESSING").length, processed: results.data?.length ?? 0, failed: (uploads.data ?? []).filter((r) => r.status === "FAILED").length }), [uploads.data, results.data]);
+  const metrics = useMemo(() => ({ total: new Set((uploads.data ?? []).map((r) => r.import_batch_id)).size, processing: (uploads.data ?? []).filter((r) => ["QUEUED", "PROCESSING"].includes(r.status)).length, processed: results.data?.length ?? 0, failed: (uploads.data ?? []).filter((r) => r.status === "FAILED").length }), [uploads.data, results.data]);
 
   return <div className="workbench production-workbench">
     {contextHolder}
@@ -97,7 +97,7 @@ export function StageDataWorkbench({ businessDomain, testStage }: StageDataWorkb
       { key: "source", label: "原始文件", children: <Table rowKey={(r) => `${r.import_batch_id}-${r.sequence_no}`} columns={uploadColumns} dataSource={uploads.data ?? []} loading={uploads.isLoading} scroll={{ x: 1450 }} pagination={{ pageSize: 20, showSizeChanger: true }} /> },
       { key: "result", label: "清洗结果", children: <Table rowKey="result_summary_id" columns={resultColumns} dataSource={results.data ?? []} loading={results.isLoading} scroll={{ x: 1500 }} pagination={{ pageSize: 20, showSizeChanger: true }} /> },
     ]} /></Card>
-    <Modal title={`上传${domainName[businessDomain]}${testStage}数据`} open={open} width={700} onCancel={() => !mutation.isPending && setOpen(false)} onOk={() => form.submit()} okText="上传并自动清洗" confirmLoading={mutation.isPending} destroyOnHidden>
+    <Modal title={`上传${domainName[businessDomain]}${testStage}数据`} open={open} width={700} onCancel={() => !mutation.isPending && setOpen(false)} onOk={() => form.submit()} okText="上传并提交后台清洗" confirmLoading={mutation.isPending} destroyOnHidden>
       <Alert showIcon type="info" message={`上传身份：${user?.display_name}（${user?.login_name}）`} description="系统从当前登录账号自动记录上传人，无需填写。" />
       <Form form={form} layout="vertical" initialValues={{ factory_code: stageFactories[testStage][0].value }} onFinish={(values) => mutation.mutate(values)} className="cp-upload-form">
         <Form.Item label="业务分类"><Space><Tag color="blue">{domainName[businessDomain]}</Tag><Tag color="cyan">{testStage}数据</Tag></Space></Form.Item>

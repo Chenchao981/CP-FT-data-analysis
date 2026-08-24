@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from sqlalchemy import Engine, text
 
 from app.core.errors import DomainError
+from app.domain.auth import Principal
 from app.domain.enrichments import CreateFieldEnrichmentRequest, FieldEnrichmentRecord
 
 
@@ -12,7 +14,9 @@ def _record(row: Mapping[str, Any]) -> FieldEnrichmentRecord:
     return FieldEnrichmentRecord(
         enrichment_id=int(row["enrichment_id"]),
         import_batch_id=int(row["import_batch_id"]),
-        source_file_id=int(row["source_file_id"]) if row["source_file_id"] is not None else None,
+        source_file_id=int(row["source_file_id"])
+        if row["source_file_id"] is not None
+        else None,
         test_stage=str(row["test_stage"]),
         field_code=str(row["field_code"]),
         action=str(row["action"]),
@@ -27,17 +31,29 @@ class SqlFieldEnrichmentService:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
 
-    def create(self, request: CreateFieldEnrichmentRequest) -> FieldEnrichmentRecord:
+    @staticmethod
+    def _access_scope() -> str:
+        return "(owner_user_id=:user_id OR EXISTS(SELECT 1 FROM iam.user_role ur JOIN iam.role r ON r.role_id=ur.role_id WHERE ur.user_id=:user_id AND r.role_code='SYSTEM_ADMIN'))"
+
+    def create(
+        self, request: CreateFieldEnrichmentRequest, principal: Principal
+    ) -> FieldEnrichmentRecord:
         with self._engine.begin() as connection:
-            batch_exists = connection.execute(
+            batch_stage = connection.execute(
                 text(
-                    "SELECT import_batch_id FROM ingestion.import_batch "
-                    "WHERE import_batch_id=:batch_id"
+                    "SELECT test_stage FROM ingestion.import_batch "
+                    "WHERE import_batch_id=:batch_id AND " + self._access_scope()
                 ),
-                {"batch_id": request.import_batch_id},
+                {"batch_id": request.import_batch_id, "user_id": principal.user_id},
             ).scalar_one_or_none()
-            if batch_exists is None:
-                raise DomainError("IMPORT_BATCH_NOT_FOUND", "import batch was not found", 404)
+            if batch_stage is None:
+                raise DomainError(
+                    "IMPORT_BATCH_NOT_FOUND", "上传任务不存在或无权访问", 404
+                )
+            if str(batch_stage) != request.test_stage.value:
+                raise DomainError(
+                    "ENRICHMENT_STAGE_MISMATCH", "补录Stage与上传任务不一致", 409
+                )
             if request.source_file_id is not None:
                 linked = connection.execute(
                     text(
@@ -101,7 +117,9 @@ class SqlFieldEnrichmentService:
             )
         return _record(row)
 
-    def list_current(self, import_batch_id: int) -> tuple[FieldEnrichmentRecord, ...]:
+    def list_current(
+        self, import_batch_id: int, principal: Principal
+    ) -> tuple[FieldEnrichmentRecord, ...]:
         with self._engine.connect() as connection:
             rows = (
                 connection.execute(
@@ -109,9 +127,15 @@ class SqlFieldEnrichmentService:
                         "SELECT enrichment_id,import_batch_id,source_file_id,test_stage,field_code,"
                         "action,value_text,entered_by,reason,is_current "
                         "FROM ingestion.field_enrichment WHERE import_batch_id=:batch_id "
+                        "AND EXISTS(SELECT 1 FROM ingestion.import_batch b WHERE "
+                        "b.import_batch_id=ingestion.field_enrichment.import_batch_id AND "
+                        + self._access_scope().replace(
+                            "owner_user_id", "b.owner_user_id"
+                        )
+                        + ") "
                         "AND is_current=1 ORDER BY test_stage,field_code,source_file_id"
                     ),
-                    {"batch_id": import_batch_id},
+                    {"batch_id": import_batch_id, "user_id": principal.user_id},
                 )
                 .mappings()
                 .all()
