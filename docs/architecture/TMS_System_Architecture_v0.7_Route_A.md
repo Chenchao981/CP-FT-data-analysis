@@ -1,7 +1,9 @@
 # TMS 系统架构 v0.7（Route A：调用既有 Python Cleaner）
 
-状态：**开发架构候选，供评审后执行**  
-形成日期：2026-08-24  
+状态：**开发架构候选，供评审后执行**
+
+形成日期：2026-08-24
+
 业务依据：`docs/business/TMS_Business_Requirements_v0.2.md`
 
 ## 1. 结论先行

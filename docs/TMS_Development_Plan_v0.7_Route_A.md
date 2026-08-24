@@ -1,8 +1,11 @@
 # TMS 开发规划 v0.7（Route A）
 
-状态：**候选执行计划，待需求与架构评审确认**  
-形成日期：2026-08-24  
-业务基线：`docs/business/TMS_Business_Requirements_v0.2.md`  
+状态：**候选执行计划，待需求与架构评审确认**
+
+形成日期：2026-08-24
+
+业务基线：`docs/business/TMS_Business_Requirements_v0.2.md`
+
 架构基线：`docs/architecture/TMS_System_Architecture_v0.7_Route_A.md`
 
 ## 1. 开发目标
