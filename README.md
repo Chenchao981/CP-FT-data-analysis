@@ -4,16 +4,17 @@
 
 ## 当前开发基线
 
-当前唯一有效的开发入口是：
+当前唯一有效的业务、架构和开发入口是：
 
-- [`docs/TMS_Development_Baseline_v0.6_Unified_Cleaning_Analytics/`](docs/TMS_Development_Baseline_v0.6_Unified_Cleaning_Analytics/README.md)
-- [`docs/TMS_Implementation_Roadmap_v0.6.md`](docs/TMS_Implementation_Roadmap_v0.6.md)
-- [`docs/G0/G0_Execution_Plan_v0.6.md`](docs/G0/G0_Execution_Plan_v0.6.md)
 - [`docs/business/TMS_Business_Requirements_v0.2.md`](docs/business/TMS_Business_Requirements_v0.2.md)：当前业务需求口径；与旧业务流程冲突时优先。
+- [`docs/architecture/TMS_System_Architecture_v0.7_Route_A.md`](docs/architecture/TMS_System_Architecture_v0.7_Route_A.md)：Route A 系统架构与唯一 Canonical 决策。
+- [`docs/TMS_Development_Plan_v0.7_Route_A.md`](docs/TMS_Development_Plan_v0.7_Route_A.md)：后续开发阶段、交付物和验收门槛。
+- [`docs/TMS_Development_Baseline_v0.6_Unified_Cleaning_Analytics/`](docs/TMS_Development_Baseline_v0.6_Unified_Cleaning_Analytics/README.md)：已实现技术资产和历史基线；与 v0.2/v0.7 冲突时以后者为准。
+- [`docs/G0/G0_Execution_Plan_v0.6.md`](docs/G0/G0_Execution_Plan_v0.6.md)：已执行 G0 的历史计划与证据入口。
 
-本机的 `docs/0.1`、v0.2、v0.3 和 v0.5 目录只保留决策演进记录，不进入 GitHub；如旧文档与 v0.6 冲突，以 v0.6 为准。
+旧路线图和 v0.6 文档保留决策演进与已实现资产；如业务流程、事实源或 Cleaner 边界与 v0.2/v0.7 冲突，以 v0.2/v0.7 为准。
 
-当前目标环境确定为远端 Windows Server 2019 + SQL Server 2014。数据库按[ADR-0001](docs/adr/ADR-0001_SQLServer2014_Target.md)采用2014兼容实现；正式开发链位于 `db/alembic/`，开发库已升级到 `sql2014_0008`。文档包内原 `0001 → 0004` 2022+草案只作参考。
+当前目标环境确定为远端 Windows Server 2019 + SQL Server 2014。数据库按[ADR-0001](docs/adr/ADR-0001_SQLServer2014_Target.md)采用2014兼容实现；正式开发链位于 `db/alembic/`。当前代码已包含 `sql2014_0009`；实际数据库 revision 必须在 A0 只读盘点中确认，不能仅根据仓库文件名推断。文档包内原 `0001 → 0004` 2022+草案只作参考。
 
 当前实例实测为SQL Server 2014 SP2 Enterprise（12.0.5000.0）；隔离库开发可继续，正式环境验收前需升级SP3并复验，详见[G0执行状态](docs/G0/G0_Status_2026-08-20.md)。
 
@@ -31,19 +32,18 @@
 - 前端运行说明：[frontend/README.md](frontend/README.md)。
 - 华虹格式证据：[docs/formats/huahong/README.md](docs/formats/huahong/README.md)。
 
-## 产品主线
+## Route A 产品主线
 
 ```text
 原始文件 / 压缩包
-→ Format Profile + Cleaner Release
-→ Processing Run + Data Quality Gate
-→ Published Dataset Version
-→ Evaluation Run
-→ 清洗结果 / 良率与 Bin / 参数与空间图表
-→ Export Job / Report
+→ 调用已发布的原 Python Cleaner
+→ 临时 RawData / Spec / Statistics 三个 Excel
+→ 基础校验并自动写入唯一 Canonical
+→ 数据库历史查询 / 良率与 Bin / 参数与空间图表
+→ 最新 Cleaner 临时导出，或显式重清洗原子更新
 ```
 
-厂家和格式差异只存在于接入与清洗层。最终用户统一面对任务、数据质量、已发布数据集、分析图表和交付物。
+厂家和格式差异保留在原 CP/FT Cleaner。最终用户面对上传任务、正式结构化数据、补录、分析图表和临时下载，不需要执行人工 Dataset 审核发布。
 
 ## 参考项目边界
 

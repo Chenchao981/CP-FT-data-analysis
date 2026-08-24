@@ -1,5 +1,7 @@
 # TMS 开发基线 v0.6（统一清洗结果与图表分析）
 
+> **历史基线提示（2026-08-24）**：业务流程已由 `docs/business/TMS_Business_Requirements_v0.2.md` 调整为 Route A：既有 Python Cleaner 权威、清洗成功后自动正式入库、Owner/Admin 两级数据范围、最新版临时导出和显式重清洗更新。当前系统架构与开发计划分别见 `docs/architecture/TMS_System_Architecture_v0.7_Route_A.md`、`docs/TMS_Development_Plan_v0.7_Route_A.md`。本目录继续作为已实现数据库与工程资产参考，冲突口径不再作为新功能入口。
+
 > 状态：**候选开发基线**。v0.6 保留 v0.5 的免费前端选型，并补齐多文件输入、正式数据集版本、评价运行、异步导出、RBAC 和可执行 Migration。
 >
 > 产品定位：厂家和格式差异在接入层被确定性消化；最终用户主要使用统一的清洗结果、质量验收、良率/Bin、参数统计和图表分析。

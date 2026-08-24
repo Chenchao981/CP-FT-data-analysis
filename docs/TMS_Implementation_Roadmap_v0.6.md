@@ -1,5 +1,7 @@
 # TMS 实施路线图 v0.6
 
+> **历史文档提示（2026-08-24）**：本路线图中的人工 DQ 审核/发布、复杂 Data Scope、评价闭环和长期 Export Artifact 已被业务需求 v0.2 调整。当前执行规划为 `docs/TMS_Development_Plan_v0.7_Route_A.md`，系统架构为 `docs/architecture/TMS_System_Architecture_v0.7_Route_A.md`。本文件只保留已完成资产和决策演进记录。
+
 > 业务身份与复用约束以 `docs/business/CP_FT_Analysis_Business_Facts_v0.1.md` 为准：CP与FT采用独立Cleaner和独立补录表单，只在清洗后映射到公共模型；接入复用既有CP/FT Cleaner，图表迁移复用VDMOS HTML逻辑。基础人工补录属于当前需求，自动格式识别仅在大量未知格式形成实际需求后启动。
 
 > 编制日期：2026-08-20  
