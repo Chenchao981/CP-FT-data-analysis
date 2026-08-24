@@ -14,12 +14,12 @@
 | 阶段 | 当前判断 | 已有成果 | 尚未达到原计划的地方 |
 |---|---|---|---|
 | A0 基线收敛 | 核心完成、正式门禁部分完成 | 真实盘点 Route B；冻结当前 CP/FT 实际输出合同；明确 Route A 和四入口规则 | FTP/Storage Adapter 未完成；BR-01～BR-10 的正式验收映射和签字未完成 |
-| A1 Schema/队列/运行合同 | 核心完成 | `sql2014_0010/0011`；Cleaner Release；SQL Job Queue；租约/心跳/恢复；Owner/Admin 查询边界；异步上传 | Worker 仍以开发脚本方式运行，尚未成为 Windows 服务；监控、自动重试操作界面和 Artifact TTL 清理未完成 |
+| A1 Schema/队列/运行合同 | 核心完成 | `sql2014_0010/0011`；Cleaner Release；SQL Job Queue；租约/心跳/恢复；Owner/Admin 查询边界；异步上传；Worker在Windows Server 2019后台常驻运行 | 监控、自动重试操作界面和 Artifact TTL 清理未完成 |
 | A2 华虹 CP | 可运行、厂家现有固定格式已通过 | Cleaner → CSV Adapter → Canonical → Dataset Current → 结果页 → 分析图表已跑通；真实 ZIP、7z、TXT 目录样本对账通过 | 系统还需增加服务器可访问文件/目录的路径型任务入口；缺 Product/Lot 能力提示和完整 Statistics 快照仍可后续补齐 |
 | A3 日月新 FT | 未开始正式结构化入库 | FT Cleaner Release、上传入口和调用合同已有 | 需要根据 Cleaner 的三个业务输出设计结构化表和字段，完成 FT Output Adapter、Canonical、Spec/Bin/参数映射及查询图表 |
 | A4 历史查询与通用图表 | CP 局部完成 | Dataset/Version、Lot/Wafer、Yield、Bin、参数趋势、Pareto、Bin Map、Wafer Map 已可用 | 多任务/多 Dataset 通用筛选、服务端分页、BoxPlot/Histogram/Correlation、统一 Filter Context 未完整实现 |
 | A5 下载/重清洗/删除 | 部分完成 | 重新处理已异步化；成功后生成新 Dataset Version，失败事务回滚，旧 Current 可保留 | `EXPORT_LATEST`、授权临时下载、TTL、Owner/Admin 物理删除、完整故障注入未完成 |
-| A6 生产硬化 | 未开始 | 前后端开发服务可运行，生产构建已通过 | Windows 服务/安装包、备份恢复、并发压测、监控、UAT、用户手册和正式发布未完成 |
+| A6 生产硬化 | 未开始 | 前后端开发服务可运行，生产构建已通过；Worker已在Windows Server 2019后台运行 | 服务器部署状态核验、安装/升级包、备份恢复、并发压测、监控、UAT、用户手册和正式发布未完成 |
 | A7 新厂家接入 | 未开始 | Adapter/Release 框架已具备扩展方向 | 尚无新增厂家完整 Golden 接入案例 |
 
 ### 2. 已冻结的业务决定继续有效
@@ -128,9 +128,9 @@ GUI 工具时代的三个输出文件是数据合同，不要求 TMS 继续以�
 
 这些数字包含 Python Cleaner、输出文件读取、数据校验、Canonical 写入和 Dataset 发布全过程，不能据此判断“清洗太慢”，也不能直接判断“Canonical 写入太慢”。当前真正缺少的是分阶段计时。功能优先阶段不据此启动性能改造；后续只在实际使用出现等待问题时，再根据分段数据定位 Cleaner、文件解析或数据库写入。
 
-### 4. Worker 的问题属于生产部署方式，不是当前数据处理逻辑故障
+### 4. Worker 当前没有已知功能问题
 
-当前 Worker 由 `run_route_a_worker.py` 命令启动，运行时会持续领取任务并执行 Python Cleaner。具体潜在现象只有：如果该命令窗口被关闭、进程异常退出或服务器重启后未重新启动，上传任务会停在 `QUEUED`，直到 Worker 再次启动；Cleaner 和已入库数据不会因此改变。开发跑通阶段不把它列为功能缺陷，生产发布时再注册为 Windows 自动启动服务即可。
+业务确认 Worker 已在 Windows Server 2019 后台持续运行。代码中的 Worker 会持续轮询 SQL Job Queue、领取任务并执行 Python Cleaner；只要服务器实际部署会在开机后启动该独立 Worker 进程，当前不存在任务因开发命令窗口关闭而中断的问题。后续只需在正式发布核验中确认 Worker 进程状态和服务器重启后的自动恢复，不再把它列为“完成得不好”的问题。
 
 ### 5. 日志当前满足 AI 诊断要求
 
@@ -176,7 +176,7 @@ GUI 工具时代的三个输出文件是数据合同，不要求 TMS 继续以�
 
 ### P4：A6 生产硬化与发布
 
-1. Worker 安装为 Windows 服务，增加自动启动、健康检查、失败告警和管理员重试。
+1. 核验 Windows Server 2019 上现有 Worker 后台进程、开机启动和异常恢复；保持现有可用部署方式，不要求为了形式重新改造。
 2. 使用真实规模验证 1～2 个 Worker、查询并发和数据库执行计划。
 3. 完成备份恢复、Worker 重启、源文件不可用和数据库中断演练。
 4. 形成 Windows Server 安装/升级/回滚包、运维手册和用户手册。
