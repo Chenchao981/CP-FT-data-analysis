@@ -8,7 +8,7 @@
 
 ## 1. 结论先行
 
-首版采用**模块化单体 + 独立 Worker + SQL Server 数据库队列**。现有 CP/FT Python Cleaner 是唯一清洗权威；TMS 不重写厂家解析、单位转换、Bin、参数拆解或统计逻辑，只负责调度 Cleaner、校验三个标准 Excel、写入统一结构化模型，以及提供权限、补录、查询、图表、导出、重清洗和删除。
+首版采用**模块化单体 + 独立 Worker + SQL Server 数据库队列**。现有 CP Cleaner 与 FT Cleaner 继续作为两个独立程序运行；TMS 不统一或重写厂家解析、单位转换、Bin、参数拆解或统计逻辑，只负责从四个固定业务入口调度对应 Cleaner、校验其版本化输出、写入正式结构化存储，以及提供补录、查询、图表、导出、重清洗和删除。
 
 数据库只保留一套明细事实源：
 
@@ -27,7 +27,8 @@ ingestion.processing_run
 ### 2.1 必须满足
 
 - 最大约 8 人并发、通常 2～3 人在线，不为假设中的大规模并发引入微服务或消息中间件；
-- CP 与 FT 独立选择和调用 Cleaner，但共用任务、权限、运行、结构化存储和分析框架；
+- CP 与 FT 分别调用原有独立 Cleaner，不合并程序和清洗逻辑；
+- 工程-CP、工程-FT、量产-CP、量产-FT 是四个固定入口，入口直接确定业务域和测试阶段，不再自动识别；
 - Cleaner 成功且基础校验通过后自动成为正式数据，不设置人工审核/发布页面；
 - 一个任务支持多个 Lot；每条 Unit 保留 Cleaner 给出的 Lot_ID；
 - Product、Lot_ID 等允许为空并可任务级补录，补录不覆盖 Cleaner 原始值；
@@ -85,7 +86,7 @@ FastAPI 模块化单体
 ### 4.1 前端 React
 
 - 登录与用户/管理员菜单；
-- CP、FT 独立上传页；
+- 工程-CP、工程-FT、量产-CP、量产-FT 四个独立上传页；
 - 任务列表、状态、Cleaner 版本、缺失字段能力提示；
 - 任务补录、历史查询、明细和图表；
 - “使用最新版 Cleaner 生成下载文件”；
@@ -195,7 +196,7 @@ iam.app_user
                                                           1 ── N test.measurement
 
 ingestion.field_enrichment ──> import_batch（任务级人工上下文）
-test.test_run / Lot Spec Binding ──> mdm.spec_set / mdm.spec_item
+test.test_run / 第一批次 Spec ──> mdm.spec_set / mdm.spec_item
 ```
 
 ### 7.2 数据语义
@@ -210,14 +211,13 @@ test.test_run / Lot Spec Binding ──> mdm.spec_set / mdm.spec_item
 
 ### 7.3 多 Lot 与 Spec
 
-先对每个 Lot 的“参数名 + 单位 + 测试条件 + LSL/USL”生成稳定 fingerprint：
+首版沿用现有程序规则：
 
-- fingerprint 完全相同：复用一个 Spec/Test Item 定义，但每个 Lot 都保留显式 Binding；
-- 参数相同而 fingerprint 不同：创建不同 Spec Item/Set，并绑定各自 Lot；
-- 某 Lot 缺 Spec：该 Lot Binding 为空，不能回退到第一个 Lot 或其他 Lot；
-- 多 Lot 图表按每条 Unit 的 Raw/Effective Lot 找到对应 Binding；没有唯一匹配时只展示分布，不做超限判定。
-
-现有 `mdm.spec_binding` 没有 Lot 维度，Route A migration 需要新增 Dataset Version/Lot 级绑定表，或在 `test_run` 上增加明确 `spec_set_id`。推荐单独的 `dataset.lot_spec_binding(dataset_version_id, test_run_id, lot_id, spec_set_id, fingerprint)`，避免把上传输出误当企业级长期主数据。
+- 每条 Unit 继续保留 Cleaner 给出的 Lot_ID；
+- 业务用户只把相同 Spec 的批次纳入同一次比较；
+- 多批次分析使用用户所选批次顺序中的第一批次 Spec；
+- 首版不新增多 Lot Spec fingerprint、自动比对或 Lot Binding；
+- 不同 Spec 的自动识别和逐 Lot 使用不属于当前功能启动范围，待核心功能完成后另行设计。
 
 ### 7.4 缺失字段和补录
 
@@ -295,7 +295,6 @@ FTP URI 只是外部引用，删除流程禁止调用 FTP 删除。若 `source_f
 - 记录状态时间、Cleaner 版本、退出码、耗时、输入/输出行数和错误摘要；
 - 管理员看到失败原因和重试入口，普通用户看到可行动的业务提示；
 - SQL Server 做全量/差异/日志备份并进行恢复演练；FTP 原始文件由现有机制保障；
-- 正式环境需先将 SQL Server 2014 SP2 升级至 SP3 或更高更新并复验；
 - Worker 重启测试需证明租约过期后可恢复，且不会产生两个 Current Version。
 
 ## 13. 从当前实现迁移
@@ -317,7 +316,7 @@ FTP URI 只是外部引用，删除流程禁止调用 FTP 删除。若 `source_f
 ## 14. 架构验收门槛
 
 - BR-01～BR-05：三个 Excel 均可追溯写入 Run/Unit/Measurement/Spec，缺失字段不伪造；
-- BR-02/BR-03：相同 Spec 共用且绑定不丢，不同 Spec 与 Lot 精确匹配；
+- BR-02/BR-03：多批次比较沿用第一批次 Spec，并在界面说明只允许选择相同 Spec 批次；
 - BR-06/BR-10：列表、明细、图表、下载、补录、重清洗和删除均通过越权测试；
 - BR-07：最新版导出不产生新的 Current Version，数据库行数和版本不变；
 - BR-08：故意让新 Cleaner 失败，旧数据仍完整可查；成功时只存在一个 Current；

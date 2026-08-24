@@ -67,16 +67,21 @@ integration cleanup=PASS
 ## 当前仍未完成
 
 - A2 的三个 Cleaner 输出 → `test.test_run/unit_result/measurement` 正式结构化 Writer；
-- 多 Lot 相同/不同 Spec 的 Lot Binding；
 - 首次成功后内部 Dataset Current 自动切换；
 - 缺失能力提示弹窗；
 - 数据库结构化明细、Yield/Bin/Wafer Map 查询；
 - A5 最新版临时导出、显式重清洗原子更新和物理删除；
 - 日月新 FT 的 Route A 正式结构化导入；
-- SQL Server 正式环境 SP3 升级复验。
+
+已冻结且不再阻塞当前开发：
+
+- CP/FT 保持两个独立程序，工程/量产 × CP/FT 四个入口直接确定数据类型；
+- 多批次分析沿用第一批次 Spec，业务端只选择相同 Spec 批次；
+- 隔离内网数据库安全不再作为本阶段讨论项；
+- 前端包体积在功能完成后再优化。
 
 当前上传 Worker 仍只形成结果摘要和临时 Artifact，不能把它误称为 A2 正式结构化入库完成。
 
 ## 下一开发入口
 
-进入 A2 华虹 CP：先实现 `CP_CSV_TRIPLET_V1` Output Adapter 和运行级参数/Spec 定义，再写入唯一 `test.*` Canonical；使用真实华虹 Golden 样例对账 Lot、Wafer、Die、Bin、X/Y、参数、Measurement、Spec 和 Yield。等原 Cleaner 发布三个 XLSX 新合同后，再增加新的 Output Adapter，不修改旧合同。
+进入 A2 华虹 CP：先实现 `CP_CSV_TRIPLET_V1` Output Adapter 和运行级参数/Spec 定义，再写入唯一 `test.*` Canonical；使用真实华虹 Golden 样例对账 Lot、Wafer、Die、Bin、X/Y、参数、Measurement、第一批次 Spec 和 Yield。等原 Cleaner 发布三个 XLSX 新合同后，再增加新的 Output Adapter，不修改旧合同。

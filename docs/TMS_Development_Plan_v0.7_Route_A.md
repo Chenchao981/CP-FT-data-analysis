@@ -35,7 +35,6 @@
 - 当前重清洗在成功前删除旧输出目录，不满足失败保护；
 - 旧 v0.6 的人工审核/发布、复杂 Data Scope 和长期 Export Artifact 与 v0.2 业务口径冲突；
 - 现有 `mdm.test_program.product_id` 等主数据约束可能把缺 Product 的合法任务挡在 Canonical 之外，需要增加任务级/运行级定义边界，不能用伪造 Product 过约束；
-- SQL Server 当前为 2014 SP2，正式环境验收前需升级 SP3 并复验。
 
 ## 3. 开发原则
 
@@ -104,7 +103,7 @@
 - 华虹 Cleaner Release 与三个 Excel Output Adapter；
 - RawData → test_run/unit_result/measurement 导入；
 - Spec/参数 → Test Item/Spec/测试条件导入；Statistics → 带来源统计快照；
-- 单 Lot、多 Lot、相同 Spec 共用、不同 Spec 分 Lot、缺 Spec；
+- 单 Lot、多 Lot 入库；多批次分析沿用第一批次 Spec；
 - 缺 Product/Lot 弹窗和任务级补录；
 - 任务列表、运行详情、缺失能力说明；
 - CP 查询筛选、明细、Yield、Bin、Wafer Map 和第一批参数图。
@@ -113,7 +112,7 @@
 
 - BR-01～BR-05 全部自动化；
 - Golden 样例逐 Lot/Wafer 对账 Unit、Measurement、Bin、X/Y、Yield 和 Spec；
-- 多 Lot 不得被首个 Lot/Spec 覆盖；
+- 每条明细的 Lot_ID 不得被第一批次覆盖；多批次分析按已冻结业务规则使用第一批次 Spec；
 - 缺 Lot 数据补录前后只改变 Effective Context，不改变 Raw 值；
 - 图表筛选后的计数与 SQL 明细一致。
 
@@ -188,11 +187,10 @@ PAT、Cpk、SPC 只有在算法口径和业务 Owner 批准后进入本阶段增
 
 交付：
 
-- SQL Server 2014 SP3+ 环境复验；
 - 用真实规模做查询、导入、图表和并发压测，决定 Worker=1 或 2 及必要索引；
 - 数据库备份/恢复演练、FTP 不可用演练、Worker 重启演练；
-- 服务账户最小权限、密钥管理、日志脱敏、下载授权到期；
 - 管理员运行监控、失败任务重试、Cleaner Release 管理；
+- 核心功能全部完成后再进行前端按页面加载和拆包优化；
 - Windows Server 部署包、安装/升级/回滚说明、运维手册、用户手册；
 - 华虹 CP + 日月新 FT 业务 UAT 和签字结果。
 
@@ -221,7 +219,7 @@ PAT、Cpk、SPC 只有在算法口径和业务 Owner 批准后进入本阶段增
 
 | 层级 | 重点 |
 |---|---|
-| Unit | 状态机、fingerprint、Spec 绑定、Effective Context、权限谓词、Manifest 校验 |
+| Unit | 状态机、第一批次 Spec 选择、Effective Context、权限谓词、Manifest 校验 |
 | Contract | 每个 Cleaner Release 的输入/输出 Manifest 和三个 Excel Schema |
 | Integration | SQL Server migration、队列租约、Canonical 导入、Current 切换、删除事务 |
 | Golden | 原 Cleaner 输出与数据库逐层对账，未知/相似格式拒绝 |
@@ -257,12 +255,11 @@ PAT、Cpk、SPC 只有在算法口径和业务 Owner 批准后进入本阶段增
 | 三个 Excel 实际合同与当前描述不一致 | Writer 返工或错入库 | A0 用现行包和真实样例冻结 Sheet/列/类型 |
 | 两套 Canonical 继续并存 | 查询和重清洗出现不同真相 | A1 前向迁移收敛，禁止新 Route B 写入 |
 | Cleaner 内部调用不稳定 | 新厂家需要改 TMS | 标准 CLI/Manifest；厂家参数留在 Cleaner Release |
-| 多 Lot Spec 串用 | 超限判断错误 | Lot Binding + fingerprint + Golden 冲突样例 |
+| 业务用户混入不同 Spec 批次 | 第一批次 Spec 不适用于其他批次 | 业务端只允许相同 Spec 批次一起比较；首版界面明确提示 |
 | 重清洗破坏旧数据 | 历史分析不可用 | 新 Version 隔离写入 + 短事务 Current 切换 |
 | Owner 授权遗漏 | 用户数据泄露 | 统一 Task Authorization + 每个对象的直接 URL 越权测试 |
 | Measurement 查询变慢 | 图表不可用 | 服务端聚合、真实执行计划、按证据加索引 |
 | FTP 原始文件不可取 | 无法导出/重清洗 | 任务页提前显示可用性；明确失败，不伪造结果 |
-| SQL Server SP2 不受正式环境基线支持 | 生产风险 | A6 前升级 SP3+ 并完整复验 |
 
 ## 9. 时间和资源说明
 
@@ -277,5 +274,6 @@ PAT、Cpk、SPC 只有在算法口径和业务 Owner 批准后进入本阶段增
 - 用户确认 `TMS_Business_Requirements_v0.2.md` 为业务基线；
 - 用户确认本架构采用 Route A、`test.*` 唯一事实源和内部自动 Current；
 - 用户确认本开发阶段先华虹 CP、再日月新 FT；
+- 用户确认维持工程/量产 × CP/FT 四个入口，入口直接确定数据类型；
 - 提供或指定可用于 Golden 对账的现行 Cleaner 三个 Excel 样例；
 - 允许只读盘点当前开发数据库中 `analysis.*` 的实际使用情况。
