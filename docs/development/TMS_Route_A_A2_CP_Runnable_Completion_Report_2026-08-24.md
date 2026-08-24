@@ -48,7 +48,9 @@ ZIP @203 / NCEVTG120EB60DB / FA59-8531：13 Wafer，1,950 Die，17 参数，1,85
 
 `@202/@203` 样本还验证了 cleaned 中 `02` 与 yield 中 `2` 的 Wafer ID 对账：Canonical 使用标准化值 `2`，同时在 Test Run 元数据中保留原始 `02`。
 
-其中 `@202` 样本已实际写入开发数据库：批次 25、Job 33、Dataset 11 Version 1、7,356 Units、125,052 Measurements，状态 `PUBLISHED/Current`，`CONT_present=False`。实际 Worker 用时 428 秒；原批次 10 的 50,375 Measurements 重跑用时 184 秒，记录为后续批量写入优化项，不阻塞当前功能跑通。
+其中 `@202` 样本已实际写入开发数据库：批次 25、Job 33、Dataset 11 Version 1、7,356 Units、125,052 Measurements，状态 `PUBLISHED/Current`，`CONT_present=False`。实际 Worker 总用时 428 秒；原批次 10 的 50,375 Measurements 重跑总用时 184 秒。该耗时包含 Python Cleaner、输出读取、校验、Canonical 写入和 Dataset 发布，当前没有分阶段计时，不能据此判断 Cleaner 或数据库写入慢，也不阻塞当前功能跑通。
+
+华虹数据类型和格式固定，上述 7z、ZIP `@202`、ZIP `@203` 和原始 TXT 目录真实样本已经覆盖现有输入类型，按业务确认作为华虹格式通过结论；其余同格式文件用于后续回归，不设置全量重跑门槛。
 
 ## 验证结果
 

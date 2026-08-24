@@ -14,7 +14,7 @@ A0、A1 核心底座已完成；A2 华虹 CP 首条可运行纵向链路已经�
 - `analysis.saved_analysis` 属于分析配置而非第二套明细事实，予以保留；
 - 当前 CP 发布包实测合同为 `cleaned/yield/spec CSV`；
 - 当前 FT 发布包实测合同为 `cleaned XLSX + scatter data/spec/manifest`；
-- 当前发布包与业务目标“三个 XLSX”不一致，已按真实输出分别登记版本化合同，后续 Cleaner 更新必须发布新合同版本。
+- Cleaner 的三个输出是数据合同而不是系统最终存储形式；系统按真实输出登记版本化合同，并分别映射到明细、汇总和 Spec 结构化表，后续 Cleaner 更新发布新合同版本。
 
 ### A1 已实现
 

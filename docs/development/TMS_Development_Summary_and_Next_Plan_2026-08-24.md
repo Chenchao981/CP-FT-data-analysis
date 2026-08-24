@@ -4,8 +4,8 @@
 
 - **当前结论：系统已经从“有上传页面和 Cleaner”推进到“华虹 CP 可以真实上传、后台清洗、正式入库、版本发布并进入分析页面”，但还不能称为整个 TMS 已完成。** A0/A1 核心底座已经形成，A2 华虹 CP 是可运行的首条纵向链路；A3 日月新 FT、A4 通用历史分析、A5 下载/删除闭环和 A6 生产发布尚未完成。
 - **做得最好的地方是技术路线已经收敛，并且用真实数据发现和纠正了业务语义问题。** CP 与 FT 保持两个独立 Cleaner，工程/量产 × CP/FT 四个入口直接确定数据类型；明细只写入 `test.*`；多批次沿用第一批次 Spec；`CONT` 已按业务确认从参数、Spec 和 Measurement 中排除。
-- **当前最大的功能缺口不是前端体积，而是 FT 尚未正式入库、原始 TXT 的 Web 上传不能保留 Product/Lot 目录身份、华虹大批量 Measurement 写入过慢，以及 A5 的导出/删除/TTL 未完成。** 这些问题应按功能闭环顺序处理，前端拆包继续后置。
-- **建议下一阶段先关闭 A2 的真实使用缺口，再立即进入 A3 日月新 FT。** A2 关闭范围只包含原始 TXT 目录上传、Golden 自动验收、写入性能、能力提示和统计快照；不重新讨论已冻结的 CP/FT 合并、数据库安全或前端拆包。
+- **当前最大的功能缺口不是前端体积，而是 FT 的三个 Cleaner 输出尚未完成结构化入库，以及 A5 的导出/删除/TTL 未完成。** 这些问题应按功能闭环顺序处理，前端拆包继续后置。
+- **建议下一阶段补齐系统的路径型任务入口，然后立即进入 A3 日月新 FT。** CP/FT Cleaner 都继续作为独立 Python CLI 程序运行，系统只负责传入文件或目录路径、读取输出并写入数据库；不重新讨论已冻结的 CP/FT 合并、数据库安全或前端拆包。
 
 ## 一、当前真实状态
 
@@ -13,10 +13,10 @@
 
 | 阶段 | 当前判断 | 已有成果 | 尚未达到原计划的地方 |
 |---|---|---|---|
-| A0 基线收敛 | 核心完成、正式门禁部分完成 | 真实盘点 Route B；冻结当前 CP/FT 实际输出合同；明确 Route A 和四入口规则 | FTP/Storage Adapter 未完成；BR-01～BR-10 的正式验收映射和签字未完成；实际输出仍不是原规划中的三个 XLSX |
+| A0 基线收敛 | 核心完成、正式门禁部分完成 | 真实盘点 Route B；冻结当前 CP/FT 实际输出合同；明确 Route A 和四入口规则 | FTP/Storage Adapter 未完成；BR-01～BR-10 的正式验收映射和签字未完成 |
 | A1 Schema/队列/运行合同 | 核心完成 | `sql2014_0010/0011`；Cleaner Release；SQL Job Queue；租约/心跳/恢复；Owner/Admin 查询边界；异步上传 | Worker 仍以开发脚本方式运行，尚未成为 Windows 服务；监控、自动重试操作界面和 Artifact TTL 清理未完成 |
-| A2 华虹 CP | 可运行、未完全验收 | Cleaner → CSV Adapter → Canonical → Dataset Current → 结果页 → 分析图表已跑通；真实 ZIP、7z、TXT 目录样本对账通过 | 原始 TXT 的 Web 多文件上传会丢失目录身份；缺 Product/Lot 能力提示弹窗未完成；Statistics 仍主要是摘要而非完整快照；Golden 尚未覆盖全部样本库；性能未达生产水平 |
-| A3 日月新 FT | 未开始正式结构化入库 | FT Cleaner Release、上传入口和调用合同已有 | FT Output Adapter、Canonical、Spec/Bin/参数映射、查询图表和 Golden 对账未完成 |
+| A2 华虹 CP | 可运行、厂家现有固定格式已通过 | Cleaner → CSV Adapter → Canonical → Dataset Current → 结果页 → 分析图表已跑通；真实 ZIP、7z、TXT 目录样本对账通过 | 系统还需增加服务器可访问文件/目录的路径型任务入口；缺 Product/Lot 能力提示和完整 Statistics 快照仍可后续补齐 |
+| A3 日月新 FT | 未开始正式结构化入库 | FT Cleaner Release、上传入口和调用合同已有 | 需要根据 Cleaner 的三个业务输出设计结构化表和字段，完成 FT Output Adapter、Canonical、Spec/Bin/参数映射及查询图表 |
 | A4 历史查询与通用图表 | CP 局部完成 | Dataset/Version、Lot/Wafer、Yield、Bin、参数趋势、Pareto、Bin Map、Wafer Map 已可用 | 多任务/多 Dataset 通用筛选、服务端分页、BoxPlot/Histogram/Correlation、统一 Filter Context 未完整实现 |
 | A5 下载/重清洗/删除 | 部分完成 | 重新处理已异步化；成功后生成新 Dataset Version，失败事务回滚，旧 Current 可保留 | `EXPORT_LATEST`、授权临时下载、TTL、Owner/Admin 物理删除、完整故障注入未完成 |
 | A6 生产硬化 | 未开始 | 前后端开发服务可运行，生产构建已通过 | Windows 服务/安装包、备份恢复、并发压测、监控、UAT、用户手册和正式发布未完成 |
@@ -57,7 +57,7 @@
 
 ### 4. 真实样本验证扩大了格式覆盖
 
-测试源目录共有 455 个文件、63,311,689 Bytes，包括 92 个 ZIP、1 个 7z 和 362 个 TXT。本轮选取四类代表样本：
+测试源目录共有 455 个文件、63,311,689 Bytes，包括 92 个 ZIP、1 个 7z 和 362 个 TXT。华虹数据类型和格式固定，本轮四类真实样本已经覆盖现有输入类型，可作为华虹格式验收结论：
 
 | 样本 | Product/Lot | Wafer | Die | 参数数 | Pass | 结果 |
 |---|---|---:|---:|---:|---:|---|
@@ -103,6 +103,14 @@
 - Route A Schema、Cleaner Registry、Initial Worker、租约恢复：PASS。
 - 关键里程碑有独立完成报告，代码变更有本地 Git 提交。
 
+### 7. 现有 Python Cleaner 的复用方式正确
+
+系统没有重写 CP 清洗逻辑。`ExistingCleanerRunner` 使用独立 Python 子进程执行既有 Cleaner，并把输入文件或目录路径及输出目录传给 CLI。对于原始 TXT，只要系统提交服务器可访问的源目录路径，Cleaner 就能保留原有 Product/Lot 目录语义；因此应增加路径型任务入口，而不是把 TXT 扁平上传后再推断目录。
+
+### 8. 三个 Cleaner 输出可以直接映射为系统数据库结构
+
+GUI 工具时代的三个输出文件是数据合同，不要求 TMS 继续以三个 Excel/CSV 文件作为最终使用形式。系统可以保持相同清洗逻辑，将 cleaned 明细映射到 Run/Unit/Measurement，将 yield 映射到批次、晶圆和 Bin 汇总，将 spec 映射到 Spec Set/Spec Item/Test Item；文件仍作为可追溯 Artifact 保存，业务查询和分析使用结构化数据库。
+
 ## 四、完成得不够好的地方
 
 ### 1. 先前报告一度把 A2 写得过于完整
@@ -113,62 +121,44 @@
 
 原 A2 报告曾把 Dataset 9 Version 1 写成 13 参数、50,375 Measurements；数据库事实是 Version 1 有 54,250 Measurements，纠正后的数据属于 Version 2。报告必须随版本切换同步更新，不能只修改数字而不修改 Version/Spec Set。
 
-### 3. 原始 TXT 的 Web 上传目前不是真正可用
+### 3. 任务耗时没有分阶段记录，原报告归因不准确
 
-现有上传界面允许选择多个 TXT，但普通浏览器多文件上传会丢失 Product/Lot 目录层级。Cleaner 可以处理保留目录身份的 TXT 目录，但不能从一组扁平 TXT 文件可靠推断 Product。当前应视为明确功能缺口，不能继续把“支持多个 TXT”作为已完成功能宣传。
+- Job 33 总用时 428 秒，处理 7,356 Units、125,052 Measurements。
+- Job 35 总用时 184 秒，处理 3,875 Units、50,375 Measurements。
 
-### 4. Canonical 写入性能明显不足
+这些数字包含 Python Cleaner、输出文件读取、数据校验、Canonical 写入和 Dataset 发布全过程，不能据此判断“清洗太慢”，也不能直接判断“Canonical 写入太慢”。当前真正缺少的是分阶段计时。功能优先阶段不据此启动性能改造；后续只在实际使用出现等待问题时，再根据分段数据定位 Cleaner、文件解析或数据库写入。
 
-- 7,356 Units、125,052 Measurements 的 Job 33 用时 428 秒，约 292 Measurements/秒。
-- 3,875 Units、50,375 Measurements 的 Job 35 用时 184 秒，约 274 Measurements/秒。
+### 4. Worker 的问题属于生产部署方式，不是当前数据处理逻辑故障
 
-当前 Writer 在一个长事务中批量插入，处理期间普通查询出现锁等待。功能能够完成，但真实批量使用前需要改为高效 Staging/Bulk Insert，并把 Current 切换缩短为短事务。
+当前 Worker 由 `run_route_a_worker.py` 命令启动，运行时会持续领取任务并执行 Python Cleaner。具体潜在现象只有：如果该命令窗口被关闭、进程异常退出或服务器重启后未重新启动，上传任务会停在 `QUEUED`，直到 Worker 再次启动；Cleaner 和已入库数据不会因此改变。开发跑通阶段不把它列为功能缺陷，生产发布时再注册为 Windows 自动启动服务即可。
 
-### 5. 代表样本通过不等于整个样本库通过
+### 5. 日志当前满足 AI 诊断要求
 
-本轮覆盖了 7z、`@202`、`@203` 和原始 TXT 目录，但没有自动遍历验证全部 92 个 ZIP。当前证据说明“代表格式可运行”，不能说明“所有历史华虹文件 100% 通过”。
+系统已保存任务状态、错误代码、错误消息和 Cleaner 输出尾部。只要 AI 能读取原始日志并结合结构化状态定位问题，就不要求为人工阅读单独美化历史 Cleaner 控制台文字；后续只需确保原始信息不丢失。
 
-### 6. Worker 还不是可运维的后台服务
+### 6. 真正尚未完成的是 FT 三类输出的结构化映射
 
-开发环境通过命令启动 Worker；尚无 Windows 服务安装、自动启动、健康监控、失败告警和管理员重试页面。Web 服务正常不代表 Worker 一定正在消费队列。
-
-### 7. Cleaner 日志编码仍不理想
-
-Cleaner 能成功运行，但部分历史程序输出按 GBK 产生，当前 UTF-8 捕获后的 stdout 尾部仍有乱码。错误代码和任务状态可用，但运维人员阅读详细 Cleaner 日志不够友好。
-
-### 8. 输出合同与原规划仍不一致
-
-原规划写“三个 XLSX”，当前实际合同是：
-
-- 华虹 CP：cleaned/yield/spec CSV；
-- 日月新 FT：cleaned XLSX + scatter data/spec/manifest。
-
-当前按真实程序工作是正确选择，但规划文档仍需统一改成“按 Cleaner Release 的版本化输出合同”，不能继续把三个 XLSX 当作现状。
-
-### 9. 远程代码尚未同步
-
-本地提交 `fdf8be4` 和 `bcea4e9` 已完成，但 GitHub HTTPS 多次出现 `SSL_ERROR_SYSCALL`。远程分支仍停留在 `d055b07`，当前成果尚未形成远程备份或 PR。
+问题不在于 Cleaner 输出是 Excel 还是 CSV，而在于日月新 FT 的 cleaned、统计/汇总和 spec 数据尚未全部转换为系统表。应基于三个输出的数据字段设计 FT 的 Run、Unit、Measurement、Test Item、Spec 和汇总结构，保持原 GUI 工具的业务逻辑不变。
 
 ## 五、下一阶段规划
 
-### P0：关闭 A2 华虹 CP 的真实使用缺口
+### P0：补齐路径型任务入口并稳定 A2 使用流程
 
-1. **原始 TXT 目录上传**：前端提供目录选择或明确只接收 ZIP/7z；后端保留相对目录，确保 Product/Lot 身份不丢失。
-2. **Golden 自动验收**：建立样本清单、输入 SHA256、预期 Product/Lot/Wafer/Die/Bin/参数/Spec/Yield；先覆盖四类代表样本，再批量扫描 92 个 ZIP。
-3. **高效 Canonical 写入**：使用 SQL Server Staging + Bulk Insert/`fast_executemany`；大数据写入在 Staging 完成，发布 Current 只做短事务校验和切换。
-4. **缺失能力提示**：缺 Product、Lot、Wafer/X/Y、Spec 时明确告诉用户哪些分析不可用，并提供任务级补录入口。
-5. **Statistics 快照**：将 Cleaner 的统计输出作为可追溯快照保存，并与数据库重算结果对账。
-6. **日志可读性**：识别 Cleaner 控制台编码，保留原始日志文件和可读的结构化错误摘要。
-7. **A2 正式验收**：BR-01～BR-05、图表与 SQL 对账、失败回滚和真实用户操作全部通过后，才把 A2 标记为完成。
+1. 前端选择工程/量产 CP 后，允许提交服务器可访问的文件或目录路径。
+2. Worker 继续将路径直接传给现有 Python CLI Cleaner，输出写入任务独立目录。
+3. 保留源路径、输入 SHA256、Cleaner Release 和三个输出 Artifact 的追溯关系。
+4. 为 Cleaner、文件解析、Canonical 写入和 Dataset 发布增加分阶段耗时，只采集事实，不提前优化。
+5. 保留缺字段能力提示和 Statistics 快照作为后续完善项，不阻塞华虹固定格式投入使用。
 
 ### P1：完成 A3 日月新 FT 纵向链路
 
-1. 用真实日月新 FT 样本冻结当前 Output Contract 和 Golden Manifest。
-2. 实现独立 FT Output Adapter，不修改 CP Cleaner 或 CP Writer。
-3. 映射 Product、Lot、Unit、PASS/FAIL、Bin、参数、测试条件和 Spec。
-4. 写入同一套任务/Dataset/Canonical 框架，但保留 FT 独立字段语义。
-5. 完成 FT 结果页、Yield/Bin、参数分布和 Scatter。
-6. 验证工程-FT与量产-FT两个入口、Owner 隔离和缺字段提示。
+1. 用真实日月新 FT 样本确认三个 Cleaner 输出文件及字段。
+2. 基于三个输出设计 FT 的结构化数据库表和字段；文件作为输入合同和 Artifact，不作为系统查询主数据源。
+3. 实现独立 FT Output Adapter，不修改 CP Cleaner 或 CP Writer。
+4. 映射 Product、Lot、Unit、PASS/FAIL、Bin、参数、测试条件和 Spec。
+5. 写入同一套任务/Dataset/Canonical 框架，但保留 FT 独立字段语义。
+6. 完成 FT 结果页、Yield/Bin、参数分布和 Scatter。
+7. 验证工程-FT与量产-FT两个入口、Owner 隔离和缺字段提示。
 
 ### P2：扩展 A4 历史查询与通用分析
 
@@ -197,21 +187,19 @@ Cleaner 能成功运行，但部分历史程序输出按 GBK 产生，当前 UTF
 
 建议严格按以下顺序推进，避免同时铺开过多半成品：
 
-1. 修复原始 TXT 目录身份和 Canonical 写入性能。
-2. 将华虹代表样本变成可重复执行的 Golden Test，并关闭 A2 验收缺口。
-3. 立即进入日月新 FT Adapter 和真实样本入库。
+1. 增加服务器路径型任务入口，直接把文件或目录路径交给 Python CLI Cleaner。
+2. 将已通过的华虹固定格式样本保留为回归测试，稳定 A2 使用流程。
+3. 立即进入日月新 FT 三个输出的表结构设计、Adapter 和真实样本入库。
 4. CP/FT 两条链路都稳定后，再统一扩展历史筛选和图表。
 5. 最后完成导出、删除、运维发布和前端体积优化。
 
 ## 七、需要业务继续确认的问题
 
-1. 原始 TXT 是否要求在 Web 中直接选择目录，还是业务端统一先压缩成 ZIP/7z 后上传？
-2. 日月新 FT 用于 Golden 对账的源数据目录和批准样本是哪一批？
-3. A2 正式验收是否以四类代表样本为首批门槛，还是要求 92 个 ZIP 全量通过后再进入 FT？
+1. 日月新 FT 用于三个输出字段对账的源数据目录和批准样本是哪一批？
 
 ## 八、报告口径与限制
 
 - “已完成”只使用当前代码、SQL Server 开发库结果、真实 Cleaner 产物、自动测试和实际界面验证作为证据。
-- 当前样本验证是代表性覆盖，不是全部历史数据兼容性声明。
-- 性能数据来自单 Worker、开发数据库和本机环境，只能作为当前瓶颈证据，不能直接当作生产容量承诺。
+- 华虹现有数据类型和固定格式已经由真实样本覆盖；后续样本继续作为回归验证，不再设置“92个ZIP全量通过”的额外门槛。
+- 任务总耗时来自单 Worker、开发数据库和本机环境，未做分阶段计时，不能据此归因 Cleaner 或数据库性能。
 - 本报告不重新讨论已冻结的数据库安全、CP/FT 合并和前端体积优先级。
