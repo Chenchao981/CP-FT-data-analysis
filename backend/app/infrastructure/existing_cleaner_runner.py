@@ -84,10 +84,23 @@ class ExistingCleanerRunner:
 
         target = Path(output_root).resolve()
         target.mkdir(parents=True, exist_ok=True)
-        if stage == "CP" and factory_code in {"huahong", "hh", "华虹"}:
+        cp_scripts = {
+            "huahong": _CP_HUAHONG_SCRIPT,
+            "hh": _CP_HUAHONG_SCRIPT,
+            "华虹": _CP_HUAHONG_SCRIPT,
+            "jetech": _CP_JETECH_SCRIPT,
+            "jt": _CP_JETECH_SCRIPT,
+            "捷特": _CP_JETECH_SCRIPT,
+            "lion": _CP_LION_SCRIPT,
+            "立昂微": _CP_LION_SCRIPT,
+            "guoyu": _CP_GUOYU_SCRIPT,
+            "国宇": _CP_GUOYU_SCRIPT,
+            "国宇frd": _CP_GUOYU_SCRIPT,
+        }
+        if stage == "CP" and factory_code in cp_scripts:
             release_dir = self.cp_release_dir
             package = release_dir / "app.pyz"
-            script = _CP_HUAHONG_SCRIPT
+            script = cp_scripts[factory_code]
         elif stage == "FT" and factory_code in {"riyuexin", "ase", "日月新"}:
             if len(normalized_inputs) != 1 or not normalized_inputs[0].is_dir():
                 raise ValueError("日月新 FT DC adapter requires one input directory")
@@ -132,6 +145,9 @@ class ExistingCleanerRunner:
         target.mkdir(parents=True, exist_ok=True)
         scripts = {
             "HUAHONG_CP_PYZ": _CP_HUAHONG_SCRIPT,
+            "JETECH_CP_PYZ": _CP_JETECH_SCRIPT,
+            "LION_CP_PYZ": _CP_LION_SCRIPT,
+            "GUOYU_CP_PYZ": _CP_GUOYU_SCRIPT,
             "RIYUEXIN_FT_PYZ": _FT_RIYUEXIN_DC_SCRIPT,
         }
         try:
@@ -318,6 +334,102 @@ elif all(item.is_file() and item.suffix.lower() == '.txt' for item in inputs):
 else:
     with prepare_dcp_input(inputs, progress=print) as prepared:
         run(prepared.directory)
+"""
+
+
+_CP_JETECH_SCRIPT = """
+import json, os, sys
+from pathlib import Path
+sys.path.insert(0, os.environ['TMS_EXISTING_CLEANER_PACKAGE'])
+from cp_data_processor.processing.archive_input import prepare_archive_input
+from jt_data_processor.jt_main_processor import process_jt_files
+inputs = [Path(item) for item in json.loads(os.environ['TMS_EXISTING_CLEANER_INPUTS'])]
+output = os.environ['TMS_EXISTING_CLEANER_OUTPUT']
+if all(path.is_file() and path.suffix.lower() in ('.xls', '.xlsx') for path in inputs):
+    result = process_jt_files([str(path) for path in inputs], output_dir=output, pass_bin=1)
+else:
+    with prepare_archive_input(
+        inputs,
+        allowed_suffixes=('.xls', '.xlsx'),
+        source_label='JT Excel',
+        temporary_prefix='tms_cp_jt_',
+    ) as prepared:
+        result = process_jt_files(
+            [str(path) for path in prepared.data_files], output_dir=output, pass_bin=1
+        )
+if not result:
+    raise SystemExit('Jetech CP cleaner returned no result')
+"""
+
+
+_CP_LION_SCRIPT = """
+import json, os, sys
+from pathlib import Path
+sys.path.insert(0, os.environ['TMS_EXISTING_CLEANER_PACKAGE'])
+from cp_data_processor.processing.archive_input import prepare_archive_input
+from lion_batch_processor import (
+    create_batch_lot,
+    discover_batch_files,
+    generate_lion_run_csvs,
+    process_lion_batch_files,
+)
+inputs = [Path(item) for item in json.loads(os.environ['TMS_EXISTING_CLEANER_INPUTS'])]
+output = os.environ['TMS_EXISTING_CLEANER_OUTPUT']
+def run(directory):
+    batches = discover_batch_files(directory)
+    if not batches:
+        raise SystemExit('Lion CP cleaner found no batch')
+    lots = [
+        create_batch_lot(process_lion_batch_files(paths))
+        for paths in batches.values()
+    ]
+    if not generate_lion_run_csvs(lots, output):
+        raise SystemExit('Lion CP cleaner returned no result')
+if all(path.is_file() and path.suffix.lower() in ('.xls', '.xlsx') for path in inputs):
+    individual = process_lion_batch_files([str(path) for path in inputs])
+    grouped = {}
+    for source_path, lot in individual.items():
+        grouped.setdefault(lot.lot_id, {})[source_path] = lot
+    lots = [create_batch_lot(group) for group in grouped.values()]
+    if not lots or not generate_lion_run_csvs(lots, output):
+        raise SystemExit('Lion CP cleaner returned no result')
+else:
+    with prepare_archive_input(
+        inputs,
+        allowed_suffixes=('.xls', '.xlsx'),
+        source_label='Lion Excel',
+        temporary_prefix='tms_cp_lion_',
+    ) as prepared:
+        run(prepared.directory)
+"""
+
+
+_CP_GUOYU_SCRIPT = """
+import json, os, shutil, sys, tempfile
+from pathlib import Path
+sys.path.insert(0, os.environ['TMS_EXISTING_CLEANER_PACKAGE'])
+from cp_data_processor.processing.archive_input import prepare_archive_input
+from guoyu_batch_processor import process_guoyu_directory
+inputs = [Path(item) for item in json.loads(os.environ['TMS_EXISTING_CLEANER_INPUTS'])]
+output = os.environ['TMS_EXISTING_CLEANER_OUTPUT']
+if all(path.is_file() and path.suffix.lower() in ('.xls', '.xlsx') for path in inputs):
+    with tempfile.TemporaryDirectory(prefix='tms_cp_guoyu_files_') as temporary:
+        directory = Path(temporary) / 'SOURCE' / 'EDS'
+        directory.mkdir(parents=True)
+        for path in inputs:
+            shutil.copy2(path, directory / path.name)
+        result = process_guoyu_directory(str(directory.parent), output)
+else:
+    with prepare_archive_input(
+        inputs,
+        allowed_suffixes=('.xls', '.xlsx'),
+        source_label='Guoyu FRD Excel',
+        preserve_member_paths=True,
+        temporary_prefix='tms_cp_guoyu_',
+    ) as prepared:
+        result = process_guoyu_directory(str(prepared.directory), output)
+if not result:
+    raise SystemExit('Guoyu FRD CP cleaner returned no result')
 """
 
 

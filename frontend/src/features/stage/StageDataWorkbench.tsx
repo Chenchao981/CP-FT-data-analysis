@@ -10,19 +10,26 @@ import { useAuth } from "../auth/AuthContext";
 const statusColor: Record<string, string> = { RECEIVED: "blue", QUEUED: "gold", PROCESSING: "processing", PROCESSED: "success", FAILED: "error" };
 const statusName: Record<string, string> = { RECEIVED: "已接收", QUEUED: "排队中", PROCESSING: "处理中", PROCESSED: "已处理", FAILED: "失败" };
 const domainName: Record<BusinessDomain, string> = { ENGINEERING: "工程", PRODUCTION: "量产" };
-const factoryName: Record<string, string> = { huahong: "华虹", riyuexin: "日月新" };
+const factoryName: Record<string, string> = { huahong: "华虹", jetech: "Jetech", lion: "立昂微", guoyu: "国宇FRD", riyuexin: "日月新" };
 const stageDescription: Record<TestStage, string> = {
-  CP: "上传华虹CP源文件后，系统自动调用现有CP清洗程序并形成Lot/Wafer分析数据。",
+  CP: "选择晶圆厂并上传对应CP源文件后，系统自动调用该厂现有清洗程序并形成Wafer分析数据。",
   FT: "上传日月新FT源文件后，系统自动调用现有FT清洗程序并形成以产品型号为主线的分析数据。",
 };
 const stageFactories: Record<TestStage, { value: string; label: string }[]> = {
-  CP: [{ value: "huahong", label: "华虹" }],
+  CP: [
+    { value: "huahong", label: "华虹" },
+    { value: "jetech", label: "Jetech" },
+    { value: "lion", label: "立昂微" },
+    { value: "guoyu", label: "国宇FRD" },
+  ],
   FT: [{ value: "riyuexin", label: "日月新" }],
 };
-const stageAccept: Record<TestStage, string> = { CP: ".zip,.7z,.txt", FT: ".xlsx" };
-const stageHint: Record<TestStage, string> = {
-  CP: "支持华虹 ZIP、7Z 或多个 TXT；上传后自动复用现有清洗逻辑。",
-  FT: "支持日月新 DC XLSX 源文件；上传后自动复用现有清洗逻辑。",
+const factoryInput: Record<string, { accept: string; hint: string }> = {
+  huahong: { accept: ".zip,.7z,.txt", hint: "华虹支持 ZIP、7Z 或保留目录身份的TXT数据。" },
+  jetech: { accept: ".zip,.xls,.xlsx", hint: "Jetech支持 ZIP、XLS、XLSX。" },
+  lion: { accept: ".zip,.xls,.xlsx", hint: "立昂微支持 ZIP、XLS、XLSX；系统严格区分已验收格式。" },
+  guoyu: { accept: ".zip,.xls,.xlsx", hint: "国宇FRD支持 ZIP、XLS、XLSX；没有业务批次号时仍按片号清洗。" },
+  riyuexin: { accept: ".xlsx", hint: "日月新支持 DC XLSX源文件。" },
 };
 const dt = (value?: string | null) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
 const size = (value: number) => value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(2)} MB`;
@@ -37,7 +44,9 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
   const { user, can } = useAuth();
   const [open, setOpen] = useState(false);
   const [files, setFiles] = useState<UploadFile[]>([]);
-  const [form] = Form.useForm<{ factory_code: string; remark?: string }>();
+  const [form] = Form.useForm<{ factory_code: string; remark?: string; source_path?: string }>();
+  const selectedFactory = Form.useWatch("factory_code", form) ?? stageFactories[testStage][0].value;
+  const selectedInput = factoryInput[selectedFactory];
   const [messageApi, contextHolder] = message.useMessage();
   const queryClient = useQueryClient();
   const scopeKey = ["stage", businessDomain, testStage];
@@ -45,10 +54,11 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
   const results = useQuery({ queryKey: [...scopeKey, "results"], queryFn: () => listStageResults(businessDomain, testStage), refetchInterval: (query) => (uploads.data ?? []).some((row) => ["QUEUED", "PROCESSING"].includes(row.status)) ? 3000 : false });
   const refresh = async () => Promise.all([uploads.refetch(), results.refetch()]);
   const mutation = useMutation({
-    mutationFn: async (values: { factory_code: string; remark?: string }) => {
+    mutationFn: async (values: { factory_code: string; remark?: string; source_path?: string }) => {
       const nativeFiles = files.flatMap((item) => item.originFileObj ? [item.originFileObj as File] : []);
-      if (!nativeFiles.length) throw new Error(`请选择${testStage}源文件`);
-      return uploadStageData(businessDomain, testStage, nativeFiles, values.factory_code, values.remark);
+      if (!nativeFiles.length && !values.source_path?.trim()) throw new Error(`请选择${testStage}源文件或填写服务器数据路径`);
+      if (nativeFiles.length && values.source_path?.trim()) throw new Error("源文件上传和服务器数据路径只能选择一种");
+      return uploadStageData(businessDomain, testStage, nativeFiles, values.factory_code, values.remark, values.source_path);
     },
     onSuccess: async (data) => { messageApi.success(`批次 ${data.import_batch_id} 已进入后台清洗队列（任务 ${data.job_id}）`); setOpen(false); setFiles([]); form.resetFields(); await queryClient.invalidateQueries({ queryKey: scopeKey }); },
     onError: (error) => messageApi.error(error.message),
@@ -106,7 +116,8 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
       <Form form={form} layout="vertical" initialValues={{ factory_code: stageFactories[testStage][0].value }} onFinish={(values) => mutation.mutate(values)} className="cp-upload-form">
         <Form.Item label="业务分类"><Space><Tag color="blue">{domainName[businessDomain]}</Tag><Tag color="cyan">{testStage}数据</Tag></Space></Form.Item>
         <Form.Item label={testStage === "CP" ? "晶圆厂" : "封测厂"} name="factory_code" rules={[{ required: true }]}><Select options={stageFactories[testStage]} /></Form.Item>
-        <Form.Item label={`${testStage}源文件`} required><Upload.Dragger multiple accept={stageAccept[testStage]} fileList={files} beforeUpload={() => false} onChange={({ fileList }) => setFiles(fileList)}><p className="ant-upload-drag-icon"><FileSearchOutlined /></p><p className="ant-upload-text">点击或拖入{testStage}源文件</p><p className="ant-upload-hint">{stageHint[testStage]}</p></Upload.Dragger></Form.Item>
+        {testStage === "CP" && <Form.Item label="服务器数据路径（与文件上传二选一）" name="source_path"><Input placeholder="例如 F:\\data\\CP源数据\\厂家\\批次目录" /></Form.Item>}
+        <Form.Item label={`${testStage}源文件`} required><Upload.Dragger multiple accept={selectedInput.accept} fileList={files} beforeUpload={() => false} onChange={({ fileList }) => setFiles(fileList)}><p className="ant-upload-drag-icon"><FileSearchOutlined /></p><p className="ant-upload-text">点击或拖入{factoryName[selectedFactory]}{testStage}源文件</p><p className="ant-upload-hint">{selectedInput.hint} 上传后自动复用现有清洗逻辑。</p></Upload.Dragger></Form.Item>
         <Form.Item label="备注（可选）" name="remark"><Input.TextArea maxLength={500} rows={3} placeholder="可填写本次上传说明" /></Form.Item>
       </Form>
     </Modal>

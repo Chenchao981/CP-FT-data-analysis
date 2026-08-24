@@ -16,9 +16,12 @@ from app.domain.jobs import CreateJobRequest, JobType, TriggerType
 from app.domain.stage_data import StoredUpload
 
 router = APIRouter()
-ALLOWED_SUFFIXES = {
-    "CP": {".zip", ".7z", ".txt"},
-    "FT": {".xlsx"},
+FACTORY_ALLOWED_SUFFIXES = {
+    "huahong": {".zip", ".7z", ".txt"},
+    "jetech": {".zip", ".xls", ".xlsx"},
+    "lion": {".zip", ".xls", ".xlsx"},
+    "guoyu": {".zip", ".xls", ".xlsx"},
+    "riyuexin": {".xlsx"},
 }
 BUSINESS_DOMAINS = {"engineering": "ENGINEERING", "production": "PRODUCTION"}
 LIST_TEST_STAGES = {
@@ -33,10 +36,10 @@ LIST_TEST_STAGES = {
 }
 UPLOAD_TEST_STAGES = {"cp": "CP", "ft": "FT"}
 STAGE_FACTORIES = {
-    "CP": {"huahong", "hh", "华虹"},
+    "CP": {"huahong", "jetech", "lion", "guoyu"},
     "FT": {"riyuexin", "ase", "日月新"},
 }
-CP_FACTORIES = {"huahong", "hh", "华虹"}
+CP_FACTORIES = STAGE_FACTORIES["CP"]
 
 
 def service(request: Request):
@@ -76,11 +79,13 @@ def _normalize_list_stage(value: str) -> str:
 
 
 def _save_uploads(
-    business_domain: str, test_stage: str, files: list[UploadFile]
+    business_domain: str,
+    test_stage: str,
+    files: list[UploadFile],
+    allowed_suffixes: set[str],
 ) -> tuple[StoredUpload, ...]:
     if not files:
         raise DomainError("STAGE_UPLOAD_EMPTY", "请选择需要上传的源文件", 422)
-    allowed = ALLOWED_SUFFIXES[test_stage]
     target = (
         Path(os.getenv("TMS_UPLOAD_ROOT", r"F:\CP-FT数据分析\data\raw"))
         / business_domain.lower()
@@ -92,7 +97,7 @@ def _save_uploads(
     for uploaded in files:
         original = Path(uploaded.filename or "").name
         suffix = Path(original).suffix.lower()
-        if not original or suffix not in allowed:
+        if not original or suffix not in allowed_suffixes:
             raise DomainError(
                 "FILE_TYPE_UNSUPPORTED",
                 f"不支持的{test_stage}源文件：{original or '未命名文件'}",
@@ -112,6 +117,40 @@ def _save_uploads(
     return tuple(stored)
 
 
+def _register_server_path(
+    source_path: str, allowed_suffixes: set[str]
+) -> tuple[StoredUpload, ...]:
+    source = Path(source_path.strip().strip('"')).resolve()
+    if not source.exists():
+        raise DomainError("SOURCE_PATH_NOT_FOUND", f"服务器数据路径不存在：{source}", 422)
+    candidates = [source] if source.is_file() else sorted(
+        (
+            path
+            for path in source.rglob("*")
+            if path.is_file() and path.suffix.lower() in allowed_suffixes
+        ),
+        key=lambda path: str(path).casefold(),
+    )
+    if not candidates:
+        raise DomainError("SOURCE_PATH_EMPTY", "服务器路径中没有该厂家支持的源文件", 422)
+    unsupported = [path for path in candidates if path.suffix.lower() not in allowed_suffixes]
+    if unsupported:
+        raise DomainError(
+            "FILE_TYPE_UNSUPPORTED", f"不支持的源文件：{unsupported[0].name}", 422
+        )
+    stored = []
+    for path in candidates:
+        digest = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
+        original = path.name if source.is_file() else str(path.relative_to(source))
+        stored.append(
+            StoredUpload(original, path.resolve(), path.stat().st_size, digest.hexdigest())
+        )
+    return tuple(stored)
+
+
 @router.post(
     "/{business_domain}/{test_stage}/uploads", status_code=status.HTTP_201_CREATED
 )
@@ -119,8 +158,9 @@ def upload_stage_data(
     request: Request,
     business_domain: str,
     test_stage: str,
-    files: list[UploadFile] = File(...),
+    files: list[UploadFile] | None = File(None),
     factory_code: str = Form(""),
+    source_path: str | None = Form(None),
     remark: str | None = Form(None),
     principal: Principal = Depends(require_permission("TASK_CREATE")),
 ) -> dict:
@@ -135,6 +175,11 @@ def upload_stage_data(
     factory_aliases = {
         "华虹": "huahong",
         "hh": "huahong",
+        "jt": "jetech",
+        "捷特": "jetech",
+        "立昂微": "lion",
+        "国宇": "guoyu",
+        "国宇frd": "guoyu",
         "日月新": "riyuexin",
         "ase": "riyuexin",
     }
@@ -144,14 +189,37 @@ def upload_stage_data(
     if factory not in STAGE_FACTORIES[stage]:
         raise DomainError(
             "FACTORY_UNSUPPORTED",
-            f"当前{stage}首版支持{'华虹' if stage == 'CP' else '日月新'}源数据",
+            f"当前{stage}不支持该厂家源数据",
             422,
         )
-    stored = _save_uploads(domain, stage, files)
+    if source_path and source_path.strip():
+        if stage != "CP":
+            raise DomainError(
+                "SOURCE_PATH_UNSUPPORTED",
+                "当前服务器数据路径仅用于CP；FT请上传源文件",
+                422,
+            )
+        if files:
+            raise DomainError(
+                "SOURCE_INPUT_CONFLICT", "源文件上传和服务器数据路径只能选择一种", 422
+            )
+        stored = _register_server_path(
+            source_path, FACTORY_ALLOWED_SUFFIXES[factory]
+        )
+    else:
+        stored = _save_uploads(
+            domain, stage, files or [], FACTORY_ALLOWED_SUFFIXES[factory]
+        )
     batch_id = service(request).register_upload(
         principal, domain, stage, factory, stored, remark.strip() if remark else None
     )
-    registry_factory = {"huahong": "HUAHONG", "riyuexin": "RIYUEXIN"}[factory]
+    registry_factory = {
+        "huahong": "HUAHONG",
+        "jetech": "JETECH",
+        "lion": "LION",
+        "guoyu": "GUOYU",
+        "riyuexin": "RIYUEXIN",
+    }[factory]
     release = cleaner_registry(request).latest_released(stage, registry_factory)
     job = job_service(request).create(
         CreateJobRequest(
@@ -260,6 +328,11 @@ def reprocess_batch(
     factory_aliases = {
         "华虹": "HUAHONG",
         "hh": "HUAHONG",
+        "jt": "JETECH",
+        "捷特": "JETECH",
+        "立昂微": "LION",
+        "国宇": "GUOYU",
+        "国宇frd": "GUOYU",
         "日月新": "RIYUEXIN",
         "ase": "RIYUEXIN",
     }

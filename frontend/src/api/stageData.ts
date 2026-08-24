@@ -46,10 +46,11 @@ export const listStageUploads = (businessDomain: BusinessDomain, testStage: Test
 export const listStageResults = (businessDomain: BusinessDomain, testStage: TestStage) =>
   apiRequest<StageResultRow[]>(`${stageBase(businessDomain, testStage)}/results`);
 
-export function uploadStageData(businessDomain: BusinessDomain, testStage: TestStage, files: File[], factoryCode: string, remark?: string) {
+export function uploadStageData(businessDomain: BusinessDomain, testStage: TestStage, files: File[], factoryCode: string, remark?: string, sourcePath?: string) {
   const body = new FormData();
   files.forEach((file) => body.append("files", file));
   body.append("factory_code", factoryCode);
+  if (sourcePath?.trim()) body.append("source_path", sourcePath.trim());
   if (remark) body.append("remark", remark);
   return apiRequest<{
     import_batch_id: number;

@@ -41,15 +41,19 @@ def _read_cp_summary(run_result) -> dict[str, object]:
                     products.append(product)
                 if lot or wafer:
                     wafers.add((lot, wafer))
-                units += int(float(row.get("Total") or 0))
-                passes += int(float(row.get("Pass") or 0))
+                units += int(float(row.get("Total") or row.get("Gross_die") or 0))
+                passes += int(float(row.get("Pass") or row.get("Good_die") or 0))
     with cleaned_files[0].open("r", encoding="utf-8-sig", newline="") as stream:
         header = next(csv.reader(stream), [])
-    base = {"Lot_ID", "Wafer_ID", "Seq", "Bin", "X", "Y"}
+    base = {
+        "Lot_ID", "LotID", "Wafer_ID", "WaferID", "Seq", "Bin", "X", "Y",
+        "CONT", "SITE_NUM", "T_TIME", "TEST_NUM",
+    }
+    has_business_lot = run_result.factory.strip().lower() != "guoyu"
     return {
         "data_name": "、".join(lots) or cleaned_files[0].stem,
         "product_name": "、".join(products) or None,
-        "lot_id": "、".join(lots) or None,
+        "lot_id": ("、".join(lots) or None) if has_business_lot else None,
         "wafer_count": len(wafers),
         "factory_code": run_result.factory,
         "output_uri": run_result.output_root,

@@ -1,8 +1,8 @@
-# TMS Route A A2 华虹 CP 跑通报告（2026-08-24）
+# TMS Route A A2 CP 跑通报告（2026-08-24）
 
 ## 结论
 
-华虹 CP 已从“工程/量产 CP 上传”跑通到 Cleaner、Canonical 入库、Dataset Current、数据结果和分析图表。CP 与 FT 仍是两个独立程序；四个上传入口直接确定工程/量产及 CP/FT，不增加统一识别层。
+华虹、Jetech、立昂微和国宇 FRD CP 已从“工程/量产 CP 上传”跑通到各自现有 Cleaner、Canonical 入库、Dataset Current 和数据结果；华虹已继续验证分析图表。CP 与 FT 仍是两个独立程序；四个上传入口直接确定工程/量产及 CP/FT，不增加统一识别层。
 
 ## 本次完成
 
@@ -12,6 +12,9 @@
 4. 按业务规则使用排序后第一批次 Spec，并记录 `FIRST_BATCH` 规则；不设计多批次 Spec 合并。
 5. 首次成功后自动发布 Dataset Current，结果页可一键进入对应版本的数据分析。
 6. “重新处理”也改为排队并复用同一条 Worker/Writer 链路。
+7. CP 页面增加 Jetech、立昂微和国宇 FRD，后台复用现有 `F:\cp_data_ansys` Python Cleaner，不重写成熟清洗逻辑。
+8. 增加服务器文件/目录路径提交方式，解决 Web 上传导致目录层级和 Lot 语义丢失的问题；路径与文件上传二选一。
+9. 国宇 FRD 没有业务批次号时仍可清洗，Canonical 中 `lot_id=NULL`；目录名只作为源数据分组信息保留。
 
 ## 真实数据验收
 
@@ -52,10 +55,20 @@ ZIP @203 / NCEVTG120EB60DB / FA59-8531：13 Wafer，1,950 Die，17 参数，1,85
 
 华虹数据类型和格式固定，上述 7z、ZIP `@202`、ZIP `@203` 和原始 TXT 目录真实样本已经覆盖现有输入类型，按业务确认作为华虹格式通过结论；其余同格式文件用于后续回归，不设置全量重跑门槛。
 
+## CP 多厂家真实 SQL 验收
+
+```text
+Jetech / Batch 28 / Dataset 13：Lot C146808.02，1 Wafer，2,581 Die，22 参数，2,393 Pass，PROCESSED
+立昂微 / Batch 29 / Dataset 14：Lot F25191360，1 Wafer，682 Die，10 参数，675 Pass，PROCESSED
+国宇 FRD / Batch 30 / Dataset 15：Lot NULL，1 Wafer，3,266 Die，7 参数，3,226 Pass，PROCESSED
+```
+
+以上三项均通过“前端同合同上传 API/服务器路径 → SQL Job → Worker → 现有 Python Cleaner → cleaned/yield/spec Adapter → Canonical → Dataset Current → 结果 API”完整链路。国宇 FRD 的目录 `25B103`没有被当作业务批次写入。`立昂微-管芯数`是独立低频功能，现有工具继续可用，不并入常规 CP Die 明细流程。
+
 ## 验证结果
 
 ```text
-backend unit tests=75 passed
+backend unit tests=83 passed
 frontend tests=13 passed
 frontend production build=PASS
 route_a_schema=PASS
@@ -69,4 +82,4 @@ targeted ruff（忽略既有 FastAPI B008 基线）=PASS
 
 ## 下一步
 
-下一条链路是日月新 FT 正式结构化入库。FT 继续使用独立 Cleaner、独立 Output Adapter 和 FT 明细语义，不与 CP 强行统一。
+下一条链路是日月新 FT 正式结构化入库。FT 继续使用独立 Cleaner、独立 Output Adapter 和 FT 明细语义，不与 CP 强行统一。CP 的分阶段性能计时、Statistics 快照和前端拆包在核心功能完成后再做。

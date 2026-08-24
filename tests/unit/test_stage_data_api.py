@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from app.domain.cleaner_registry import CleanerRelease
 from app.domain.stage_data import (
     BatchFileInfo,
@@ -24,15 +25,17 @@ class StubStageService:
         self.archived: list[int] = []
         self.stored_path = Path("unused")
         self.queued: list[int] = []
+        self.registered_files = ()
 
     def register_upload(
         self, principal, business_domain, test_stage, factory_code, files, remark
     ):
         self.principal = principal
+        self.registered_files = files
         self.calls.append((business_domain, test_stage))
         assert business_domain in {"ENGINEERING", "PRODUCTION"}
         assert test_stage in {"CP", "FT"}
-        assert factory_code in {"huahong", "riyuexin"}
+        assert factory_code in {"huahong", "jetech", "lion", "guoyu", "riyuexin"}
         assert files[0].sha256
         return 41
 
@@ -301,6 +304,69 @@ def test_production_cp_upload_returns_queue_identity(
     assert response.status_code == 201
     assert service.calls == [("PRODUCTION", "CP")]
     assert response.json()["job_id"] > 0
+
+
+@pytest.mark.parametrize(
+    ("factory", "filename"),
+    [
+        ("jetech", "sample.xls"),
+        ("lion", "sample.xlsx"),
+        ("guoyu", "sample.zip"),
+    ],
+)
+def test_cp_upload_accepts_registered_existing_company_cleaners(
+    monkeypatch, tmp_path: Path, factory: str, filename: str
+) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+    service = StubStageService()
+    response = _client(service).post(
+        "/api/v1/production/cp/uploads",
+        files={"files": (filename, b"sample", "application/octet-stream")},
+        data={"factory_code": factory},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["cleaner_release"]["cleaner_code"] == f"{factory.upper()}_CP"
+
+
+def test_cp_upload_accepts_server_directory_and_preserves_source_paths(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+    source = tmp_path / "C146808.02"
+    source.mkdir()
+    first = source / "C146808-01.xls"
+    second = source / "C146808-02.xls"
+    first.write_bytes(b"one")
+    second.write_bytes(b"two")
+    service = StubStageService()
+    response = _client(service).post(
+        "/api/v1/engineering/cp/uploads",
+        data={"factory_code": "jetech", "source_path": str(source)},
+    )
+
+    assert response.status_code == 201
+    assert service.calls == [("ENGINEERING", "CP")]
+    assert tuple(item.path.parent for item in service.registered_files) == (
+        source,
+        source,
+    )
+
+
+def test_ft_upload_rejects_server_path_until_ft_path_adapter_exists(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+    source = tmp_path / "ft"
+    source.mkdir()
+    (source / "sample.xlsx").write_bytes(b"sample")
+    response = _client(StubStageService()).post(
+        "/api/v1/production/ft/uploads",
+        data={"factory_code": "riyuexin", "source_path": str(source)},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "SOURCE_PATH_UNSUPPORTED"
 
 
 def test_upload_rejects_unsupported_test_stage(monkeypatch, tmp_path: Path) -> None:

@@ -54,7 +54,7 @@ def test_parse_cp_triplet_reconciles_cleaned_yield_and_first_spec(tmp_path: Path
     assert parsed.product_name == "P"
     assert parsed.parameters == ("P1", "P2")
     assert parsed.spec_items[0].test_condition == "10V | 1ms"
-    assert parsed.rows[0].logical_key == "CP:L1:1:10:20"
+    assert parsed.rows[0].logical_key == "CP:L1:1:10:20:1"
     assert parsed.rows[1].values[0] == ""
     assert parsed.pass_count == 1
 
@@ -102,3 +102,53 @@ def test_parse_cp_triplet_rejects_yield_mismatch(tmp_path: Path) -> None:
 
     with pytest.raises(CpCsvTripletError, match="Total reconciliation"):
         parse_cp_csv_triplet(tuple(artifacts))
+
+
+@pytest.mark.parametrize(
+    ("cleaned_header", "cleaned_row", "spec_text", "expected_parameters"),
+    [
+        (
+            "LotID,WaferID,Seq,Bin,X,Y,CONT,TEST_NUM,P1",
+            "L1,1,1,1,10,20,1,3,2.5",
+            "Parameter,TEST_NUM,P1\nUnit,,V\nLimitL,,0\nLimitU,,5\n",
+            ("P1",),
+        ),
+        (
+            "Lot_ID,Wafer_ID,X,Y,Seq,Bin,SITE_NUM,CONT,T_TIME,TEST_NUM,P1",
+            "L1,1,0.0,0.0,1.0,1.0,1,1,10,3,2.5",
+            "Parameter,TEST_NUM,P1\nUNIT,,V\nLIMIT_LOW,,0\nLIMIT_HIGH,,5\n",
+            ("P1",),
+        ),
+        (
+            "Lot_ID,Wafer_ID,X,Y,Seq,Bin,P1",
+            "SOURCE_GROUP,1,0,0,1.0,1,2.5",
+            "Parameter,Unit,LimitL,LimitU,LSL,USL,Target\nP1,V,0,5,0,5,\n",
+            ("P1",),
+        ),
+    ],
+)
+def test_parse_cp_triplet_accepts_existing_company_standard_csv_variants(
+    tmp_path: Path,
+    cleaned_header: str,
+    cleaned_row: str,
+    spec_text: str,
+    expected_parameters: tuple[str, ...],
+) -> None:
+    cleaned = tmp_path / "source_cleaned_1.csv"
+    cleaned.write_text(f"{cleaned_header}\n{cleaned_row}\n", encoding="utf-8")
+    spec = tmp_path / "source_spec_1.csv"
+    spec.write_text(spec_text, encoding="utf-8")
+    yield_file = tmp_path / "source_yield_1.csv"
+    yield_file.write_text(
+        "Lot_ID,Wafer_ID,Gross_die,Good_die,Yield\n"
+        f"{cleaned_row.split(',')[0]},{cleaned_row.split(',')[1]},1,1,100%\n",
+        encoding="utf-8",
+    )
+
+    parsed = parse_cp_csv_triplet(
+        (_artifact("cleaned", cleaned), _artifact("yield", yield_file), _artifact("spec", spec))
+    )
+
+    assert parsed.product_name is None
+    assert parsed.parameters == expected_parameters
+    assert parsed.pass_count == 1

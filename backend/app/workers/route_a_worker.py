@@ -50,6 +50,11 @@ class RouteAInitialImportHandler:
         aliases = {
             "HH": "HUAHONG",
             "华虹": "HUAHONG",
+            "JT": "JETECH",
+            "捷特": "JETECH",
+            "立昂微": "LION",
+            "国宇": "GUOYU",
+            "国宇FRD": "GUOYU",
             "ASE": "RIYUEXIN",
             "日月新": "RIYUEXIN",
         }

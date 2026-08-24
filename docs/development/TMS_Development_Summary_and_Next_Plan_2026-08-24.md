@@ -2,10 +2,10 @@
 
 ## Executive Summary
 
-- **当前结论：系统已经从“有上传页面和 Cleaner”推进到“华虹 CP 可以真实上传、后台清洗、正式入库、版本发布并进入分析页面”，但还不能称为整个 TMS 已完成。** A0/A1 核心底座已经形成，A2 华虹 CP 是可运行的首条纵向链路；A3 日月新 FT、A4 通用历史分析、A5 下载/删除闭环和 A6 生产发布尚未完成。
+- **当前结论：CP 已支持华虹、Jetech、立昂微和国宇 FRD 的真实源数据进入后台清洗、正式入库、版本发布和分析链路，但还不能称为整个 TMS 已完成。** A0/A1 核心底座已经形成，A2 CP 是可运行的首条纵向链路；A3 日月新 FT、A4 通用历史分析、A5 下载/删除闭环和 A6 生产发布尚未完成。
 - **做得最好的地方是技术路线已经收敛，并且用真实数据发现和纠正了业务语义问题。** CP 与 FT 保持两个独立 Cleaner，工程/量产 × CP/FT 四个入口直接确定数据类型；明细只写入 `test.*`；多批次沿用第一批次 Spec；`CONT` 已按业务确认从参数、Spec 和 Measurement 中排除。
 - **当前最大的功能缺口不是前端体积，而是 FT 的三个 Cleaner 输出尚未完成结构化入库，以及 A5 的导出/删除/TTL 未完成。** 这些问题应按功能闭环顺序处理，前端拆包继续后置。
-- **建议下一阶段补齐系统的路径型任务入口，然后立即进入 A3 日月新 FT。** CP/FT Cleaner 都继续作为独立 Python CLI 程序运行，系统只负责传入文件或目录路径、读取输出并写入数据库；不重新讨论已冻结的 CP/FT 合并、数据库安全或前端拆包。
+- **服务器文件/目录路径入口已经补齐，下一阶段直接进入 A3 日月新 FT。** CP/FT Cleaner 都继续作为独立 Python CLI 程序运行，系统只负责传入文件或目录路径、读取输出并写入数据库；不重新讨论已冻结的 CP/FT 合并、数据库安全或前端拆包。
 
 ## 一、当前真实状态
 
@@ -15,12 +15,12 @@
 |---|---|---|---|
 | A0 基线收敛 | 核心完成、正式门禁部分完成 | 真实盘点 Route B；冻结当前 CP/FT 实际输出合同；明确 Route A 和四入口规则 | FTP/Storage Adapter 未完成；BR-01～BR-10 的正式验收映射和签字未完成 |
 | A1 Schema/队列/运行合同 | 核心完成 | `sql2014_0010/0011`；Cleaner Release；SQL Job Queue；租约/心跳/恢复；Owner/Admin 查询边界；异步上传；Worker在Windows Server 2019后台常驻运行 | 监控、自动重试操作界面和 Artifact TTL 清理未完成 |
-| A2 华虹 CP | 可运行、厂家现有固定格式已通过 | Cleaner → CSV Adapter → Canonical → Dataset Current → 结果页 → 分析图表已跑通；真实 ZIP、7z、TXT 目录样本对账通过 | 系统还需增加服务器可访问文件/目录的路径型任务入口；缺 Product/Lot 能力提示和完整 Statistics 快照仍可后续补齐 |
+| A2 CP | 可运行、四家公司现有格式已通过 | 华虹、Jetech、立昂微、国宇 FRD 已复用原 Python Cleaner；服务器文件/目录路径入口、CSV Adapter、Canonical、Dataset Current 和结果页已跑通 | 缺 Product/Lot 能力提示和完整 Statistics 快照仍可后续补齐；`立昂微-管芯数`保持独立低频功能，不进入常规 Die 明细链路 |
 | A3 日月新 FT | 未开始正式结构化入库 | FT Cleaner Release、上传入口和调用合同已有 | 需要根据 Cleaner 的三个业务输出设计结构化表和字段，完成 FT Output Adapter、Canonical、Spec/Bin/参数映射及查询图表 |
 | A4 历史查询与通用图表 | CP 局部完成 | Dataset/Version、Lot/Wafer、Yield、Bin、参数趋势、Pareto、Bin Map、Wafer Map 已可用 | 多任务/多 Dataset 通用筛选、服务端分页、BoxPlot/Histogram/Correlation、统一 Filter Context 未完整实现 |
 | A5 下载/重清洗/删除 | 部分完成 | 重新处理已异步化；成功后生成新 Dataset Version，失败事务回滚，旧 Current 可保留 | `EXPORT_LATEST`、授权临时下载、TTL、Owner/Admin 物理删除、完整故障注入未完成 |
 | A6 生产硬化 | 未开始 | 前后端开发服务可运行，生产构建已通过；Worker已在Windows Server 2019后台运行 | 服务器部署状态核验、安装/升级包、备份恢复、并发压测、监控、UAT、用户手册和正式发布未完成 |
-| A7 新厂家接入 | 未开始 | Adapter/Release 框架已具备扩展方向 | 尚无新增厂家完整 Golden 接入案例 |
+| A7 新厂家接入 | 已有可复用案例 | Jetech、立昂微、国宇 FRD 已按现有输出合同接入并完成真实 SQL 全链路验证 | 后续新厂家仍需按其固定格式增加 Adapter 和真实样本验收 |
 
 ### 2. 已冻结的业务决定继续有效
 
@@ -66,6 +66,16 @@
 | ZIP `@203` | NCEVTG120EB60DB / FA59-8531 | 13 | 1,950 | 17 | 1,855 | Cleaner + Canonical 对账通过 |
 | 原始 TXT 目录 | NCETG65EV30DA / 2 Lot | 25 | 4,000 | 17 | 3,718 | 保留目录身份时对账通过 |
 
+同一 CP 页面已新增 Jetech、立昂微和国宇 FRD 选择，并使用服务器源路径完成真实清洗、Canonical 入库和结果查询：
+
+| 厂家 | 真实源数据 | Lot | Wafer | Die | 参数数 | Pass | 结果 |
+|---|---|---|---:|---:|---:|---:|---|
+| Jetech | `jetech\2025-04\C146808.02` | C146808.02 | 1 | 2,581 | 22 | 2,393 | Batch 28 / Dataset 13，PROCESSED |
+| 立昂微 | `立昂微\F25191360\F25191360_1.xlsx` | F25191360 | 1 | 682 | 10 | 675 | Batch 29 / Dataset 14，PROCESSED |
+| 国宇 FRD | `国宇FRD\25B103\EDS\01#-759.xls` | `NULL` | 1 | 3,266 | 7 | 3,226 | Batch 30 / Dataset 15，PROCESSED |
+
+国宇 FRD 源数据只有片号、没有业务批次号。系统允许其正常清洗，并在数据库中保留 `lot_id=NULL`，不使用目录名伪造批次。`立昂微-管芯数`属于独立、低频的晶圆管芯数功能，现有工具可用，本次没有将它混入常规 CP Die 明细流程。
+
 ### 5. `CONT` 业务语义已经纠正
 
 - 业务确认 `CONT` 是计数符号，不是参数。
@@ -97,7 +107,7 @@
 
 ### 6. 测试和文档已经开始形成可持续基线
 
-- 后端 Unit Tests：75 passed。
+- 后端 Unit Tests：83 passed。
 - 前端 Tests：13 passed。
 - 前端 Production Build：PASS。
 - Route A Schema、Cleaner Registry、Initial Worker、租约恢复：PASS。
@@ -110,6 +120,10 @@
 ### 8. 三个 Cleaner 输出可以直接映射为系统数据库结构
 
 GUI 工具时代的三个输出文件是数据合同，不要求 TMS 继续以三个 Excel/CSV 文件作为最终使用形式。系统可以保持相同清洗逻辑，将 cleaned 明细映射到 Run/Unit/Measurement，将 yield 映射到批次、晶圆和 Bin 汇总，将 spec 映射到 Spec Set/Spec Item/Test Item；文件仍作为可追溯 Artifact 保存，业务查询和分析使用结构化数据库。
+
+### 9. CP 多厂家没有重写成熟清洗逻辑
+
+Jetech、立昂微和国宇 FRD 都由系统后台把服务器文件或目录路径传给现有 `F:\cp_data_ansys` Python Cleaner，再读取 cleaned、yield、spec 输出。系统新增的是厂家注册、输入格式边界和数据库适配，不复制或改写已经能用的 GUI 清洗算法。
 
 ## 四、完成得不够好的地方
 
@@ -142,13 +156,13 @@ GUI 工具时代的三个输出文件是数据合同，不要求 TMS 继续以�
 
 ## 五、下一阶段规划
 
-### P0：补齐路径型任务入口并稳定 A2 使用流程
+### P0：路径型任务入口和 CP 多厂家接入（已完成）
 
-1. 前端选择工程/量产 CP 后，允许提交服务器可访问的文件或目录路径。
-2. Worker 继续将路径直接传给现有 Python CLI Cleaner，输出写入任务独立目录。
-3. 保留源路径、输入 SHA256、Cleaner Release 和三个输出 Artifact 的追溯关系。
-4. 为 Cleaner、文件解析、Canonical 写入和 Dataset 发布增加分阶段耗时，只采集事实，不提前优化。
-5. 保留缺字段能力提示和 Statistics 快照作为后续完善项，不阻塞华虹固定格式投入使用。
+1. 前端工程/量产 CP 均可选择华虹、Jetech、立昂微、国宇 FRD。
+2. 用户可上传文件，也可提交服务器可访问的文件或目录路径，两者二选一。
+3. Worker 将路径传给现有 Python CLI Cleaner，输出写入任务独立目录。
+4. 已保留源路径、输入 SHA256、Cleaner Release 和三个输出 Artifact 的追溯关系。
+5. 分阶段计时、缺字段能力提示和 Statistics 快照留作完善项，不阻塞四家公司固定格式投入使用。
 
 ### P1：完成 A3 日月新 FT 纵向链路
 
@@ -187,11 +201,10 @@ GUI 工具时代的三个输出文件是数据合同，不要求 TMS 继续以�
 
 建议严格按以下顺序推进，避免同时铺开过多半成品：
 
-1. 增加服务器路径型任务入口，直接把文件或目录路径交给 Python CLI Cleaner。
-2. 将已通过的华虹固定格式样本保留为回归测试，稳定 A2 使用流程。
-3. 立即进入日月新 FT 三个输出的表结构设计、Adapter 和真实样本入库。
-4. CP/FT 两条链路都稳定后，再统一扩展历史筛选和图表。
-5. 最后完成导出、删除、运维发布和前端体积优化。
+1. 将已通过的华虹、Jetech、立昂微、国宇 FRD 固定格式样本保留为回归测试，稳定 A2 使用流程。
+2. 立即进入日月新 FT 三个输出的表结构设计、Adapter 和真实样本入库。
+3. CP/FT 两条链路都稳定后，再统一扩展历史筛选和图表。
+4. 最后完成导出、删除、运维发布和前端体积优化。
 
 ## 七、需要业务继续确认的问题
 

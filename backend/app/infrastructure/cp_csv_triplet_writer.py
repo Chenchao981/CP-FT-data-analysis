@@ -44,12 +44,12 @@ class CpCleanedRow:
 
     @property
     def logical_key(self) -> str:
-        return f"CP:{self.lot_id}:{self.wafer_id}:{self.x}:{self.y}"
+        return f"CP:{self.lot_id}:{self.wafer_id}:{self.x}:{self.y}:{self.seq_no}"
 
 
 @dataclass(frozen=True, slots=True)
 class CpCsvTriplet:
-    product_name: str
+    product_name: str | None
     parameters: tuple[str, ...]
     spec_items: tuple[CpSpecItem, ...]
     rows: tuple[CpCleanedRow, ...]
@@ -102,17 +102,60 @@ def _artifact_paths(
     return paths
 
 
+CP_PROCESS_COLUMNS = {"CONT", "SITE_NUM", "T_TIME", "TEST_NUM"}
+
+
 def _read_spec(path: Path) -> tuple[tuple[str, ...], tuple[CpSpecItem, ...]]:
     with path.open("r", encoding="utf-8-sig", newline="") as stream:
         rows = list(csv.reader(stream))
-    if len(rows) < 4 or not rows[0] or rows[0][0].strip() != "Parameter":
+    if not rows or not rows[0] or rows[0][0].strip() != "Parameter":
         raise CpCsvTripletError("CP spec CSV has an unsupported header")
+    if len(rows[0]) >= 4 and rows[0][1].strip().upper() == "UNIT":
+        with path.open("r", encoding="utf-8-sig", newline="") as stream:
+            reader = csv.DictReader(stream)
+            columns = set(reader.fieldnames or ())
+            if not {"Parameter", "Unit", "LimitL", "LimitU"}.issubset(columns):
+                raise CpCsvTripletError("CP row spec CSV is incomplete")
+            items = []
+            for row in reader:
+                name = (row.get("Parameter") or "").strip()
+                if not name or name in CP_PROCESS_COLUMNS:
+                    continue
+                raw_lsl = (row.get("LimitL") or row.get("LSL") or "").strip() or None
+                raw_usl = (row.get("LimitU") or row.get("USL") or "").strip() or None
+                items.append(
+                    CpSpecItem(
+                        name=name,
+                        unit=(row.get("Unit") or "").strip() or None,
+                        lsl=_number(raw_lsl or "", field=f"{name} LSL", allow_blank=True),
+                        usl=_number(raw_usl or "", field=f"{name} USL", allow_blank=True),
+                        raw_lsl=raw_lsl,
+                        raw_usl=raw_usl,
+                        test_condition=(row.get("Test_Condition") or "").strip() or None,
+                    )
+                )
+        if not items or len({item.name for item in items}) != len(items):
+            raise CpCsvTripletError("CP row spec parameters are empty or duplicated")
+        return tuple(item.name for item in items), tuple(items)
+    if len(rows) < 4:
+        raise CpCsvTripletError("CP matrix spec CSV is incomplete")
     parameters = tuple(value.strip() for value in rows[0][1:])
     if not parameters or any(not value for value in parameters):
         raise CpCsvTripletError("CP spec CSV contains a blank parameter")
     if len(set(parameters)) != len(parameters):
         raise CpCsvTripletError("CP spec CSV contains duplicate parameters")
-    indexed = {row[0].strip(): row[1:] for row in rows[1:4] if row}
+    label_aliases = {
+        "UNIT": "Unit",
+        "LIMITU": "LimitU",
+        "LIMITL": "LimitL",
+        "LIMITHIGH": "LimitU",
+        "LIMITLOW": "LimitL",
+    }
+    indexed = {
+        label_aliases.get(row[0].strip().upper().replace("_", ""), row[0].strip()): row[1:]
+        for row in rows[1:4]
+        if row
+    }
     if set(indexed) != {"Unit", "LimitU", "LimitL"}:
         raise CpCsvTripletError("CP spec CSV must contain Unit, LimitU and LimitL")
     conditions: list[list[str]] = [[] for _ in parameters]
@@ -138,7 +181,7 @@ def _read_spec(path: Path) -> tuple[tuple[str, ...], tuple[CpSpecItem, ...]]:
                 test_condition=" | ".join(conditions[index]) or None,
             )
         )
-    parameter_items = tuple(item for item in items if item.name != "CONT")
+    parameter_items = tuple(item for item in items if item.name not in CP_PROCESS_COLUMNS)
     return tuple(item.name for item in parameter_items), parameter_items
 
 
@@ -149,7 +192,14 @@ def parse_cp_csv_triplet(
     yield_paths = _artifact_paths(artifacts, "yield")
     spec_path = _artifact_paths(artifacts, "spec")[0]
     spec_parameters, declared_spec_items = _read_spec(spec_path)
-    base_columns = ("Lot_ID", "Wafer_ID", "Seq", "Bin", "X", "Y")
+    identity_aliases = {
+        "Lot_ID": ("Lot_ID", "LotID"),
+        "Wafer_ID": ("Wafer_ID", "WaferID"),
+        "Seq": ("Seq",),
+        "Bin": ("Bin",),
+        "X": ("X",),
+        "Y": ("Y",),
+    }
     parameters: tuple[str, ...] | None = None
     source_parameter_columns: tuple[str, ...] | None = None
     cleaned_rows: list[CpCleanedRow] = []
@@ -158,11 +208,20 @@ def parse_cp_csv_triplet(
         with path.open("r", encoding="utf-8-sig", newline="") as stream:
             reader = csv.DictReader(stream)
             columns = tuple(reader.fieldnames or ())
-            if columns[: len(base_columns)] != base_columns:
+            resolved = {
+                target: next((name for name in aliases if name in columns), None)
+                for target, aliases in identity_aliases.items()
+            }
+            if any(name is None for name in resolved.values()):
                 raise CpCsvTripletError(
                     f"CP cleaned identity columns are unsupported: {path.name}"
                 )
-            measured_columns = columns[len(base_columns) :]
+            identity_columns = {str(name) for name in resolved.values()}
+            measured_columns = tuple(
+                name
+                for name in columns
+                if name not in identity_columns and name not in CP_PROCESS_COLUMNS
+            )
             if not measured_columns or len(set(measured_columns)) != len(
                 measured_columns
             ):
@@ -171,9 +230,7 @@ def parse_cp_csv_triplet(
                 )
             if parameters is None:
                 source_parameter_columns = measured_columns
-                parameters = tuple(
-                    name for name in measured_columns if name != "CONT"
-                )
+                parameters = measured_columns
                 if parameters != spec_parameters:
                     raise CpCsvTripletError(
                         "CP cleaned parameters do not match first Spec after excluding CONT"
@@ -183,8 +240,8 @@ def parse_cp_csv_triplet(
                     f"CP cleaned measurement columns differ: {path.name}"
                 )
             for source_row_no, row in enumerate(reader, start=2):
-                lot_id = (row["Lot_ID"] or "").strip()
-                raw_wafer_id = (row["Wafer_ID"] or "").strip()
+                lot_id = (row[str(resolved["Lot_ID"])] or "").strip()
+                raw_wafer_id = (row[str(resolved["Wafer_ID"])] or "").strip()
                 wafer_id = _wafer_id(raw_wafer_id)
                 if not lot_id or not raw_wafer_id:
                     raise CpCsvTripletError(
@@ -195,10 +252,10 @@ def parse_cp_csv_triplet(
                         lot_id=lot_id,
                         wafer_id=wafer_id,
                         raw_wafer_id=raw_wafer_id,
-                        seq_no=int(row["Seq"]),
-                        bin_value=str(int(row["Bin"])),
-                        x=int(row["X"]),
-                        y=int(row["Y"]),
+                        seq_no=int(Decimal(row[str(resolved["Seq"])])),
+                        bin_value=str(int(Decimal(row[str(resolved["Bin"])]))),
+                        x=int(Decimal(row[str(resolved["X"])])),
+                        y=int(Decimal(row[str(resolved["Y"])])),
                         values=tuple((row[name] or "").strip() for name in parameters),
                         source_row_no=source_row_no,
                     )
@@ -224,23 +281,26 @@ def parse_cp_csv_triplet(
     for path in yield_paths:
         with path.open("r", encoding="utf-8-sig", newline="") as stream:
             reader = csv.DictReader(stream)
-            required = {"Product_Name", "Lot_ID", "Wafer_ID", "Total", "Pass"}
-            if not required.issubset(reader.fieldnames or ()):
+            columns = set(reader.fieldnames or ())
+            required = {"Lot_ID", "Wafer_ID"}
+            total_name = "Total" if "Total" in columns else "Gross_die"
+            pass_name = "Pass" if "Pass" in columns else "Good_die"
+            if not required.issubset(columns) or total_name not in columns or pass_name not in columns:
                 raise CpCsvTripletError(f"CP yield columns are incomplete: {path.name}")
             for row in reader:
                 lot_id = (row["Lot_ID"] or "").strip()
                 wafer_id = _wafer_id((row["Wafer_ID"] or "").strip())
-                product = (row["Product_Name"] or "").strip()
+                product = (row.get("Product_Name") or "").strip()
                 if lot_id.upper() == "ALL" or wafer_id.upper() == "ALL":
                     continue
                 if product:
                     products.add(product)
                 key = (lot_id, wafer_id)
-                expected_counts[key] += int(row["Total"])
-                expected_passes[key] += int(row["Pass"])
-    if len(products) != 1:
+                expected_counts[key] += int(float(row[total_name]))
+                expected_passes[key] += int(float(row[pass_name]))
+    if len(products) > 1:
         raise CpCsvTripletError(
-            "CP Route A currently requires one explicit Product per upload task"
+            "CP Route A requires at most one explicit Product per upload task"
         )
     actual_counts = Counter((row.lot_id, row.wafer_id) for row in cleaned_rows)
     actual_passes = Counter(
@@ -251,7 +311,7 @@ def parse_cp_csv_triplet(
     if actual_passes != expected_passes:
         raise CpCsvTripletError("CP Bin=1/yield Pass reconciliation failed")
     return CpCsvTriplet(
-        product_name=next(iter(products)),
+        product_name=next(iter(products)) if products else None,
         parameters=parameters,
         spec_items=declared_spec_items,
         rows=tuple(cleaned_rows),
@@ -304,46 +364,66 @@ class CpCsvTripletWriter:
                 raise CpCsvTripletError("CP import job must be RUNNING")
             if context["test_stage"] != "CP":
                 raise CpCsvTripletError("CP writer received a non-CP upload task")
-            if context["output_contract_version"] != "CP_CSV_TRIPLET_V1":
+            if context["output_contract_version"] not in {
+                "CP_CSV_TRIPLET_V1",
+                "CP_STANDARD_CSV_TRIPLET_V1",
+            }:
                 raise CpCsvTripletError("CP Cleaner output contract is not supported")
 
+            supplier_code = str(context["factory_code"]).strip().upper()
+            supplier_names = {
+                "HUAHONG": "华虹",
+                "JETECH": "Jetech",
+                "LION": "立昂微",
+                "GUOYU": "国宇FRD",
+            }
+            supplier_name = supplier_names.get(supplier_code, supplier_code)
             supplier_id = connection.execute(
-                text("SELECT supplier_id FROM mdm.supplier WHERE supplier_code='HUAHONG'"),
+                text("SELECT supplier_id FROM mdm.supplier WHERE supplier_code=:code"),
+                {"code": supplier_code},
             ).scalar_one_or_none()
             if supplier_id is None:
                 supplier_id = self._scalar(
                     connection,
                     "INSERT mdm.supplier(supplier_code,supplier_name,supplier_type,active) "
-                    "OUTPUT INSERTED.supplier_id VALUES('HUAHONG',N'华虹','WAFER_FAB',1)",
-                    {},
+                    "OUTPUT INSERTED.supplier_id VALUES(:code,:name,'WAFER_FAB',1)",
+                    {"code": supplier_code, "name": supplier_name},
                 )
-            product_id = connection.execute(
-                text("SELECT product_id FROM mdm.product WHERE product_code=:code"),
-                {"code": triplet.product_name},
-            ).scalar_one_or_none()
-            if product_id is None:
-                product_id = self._scalar(
-                    connection,
-                    "INSERT mdm.product(product_code,product_name,active) OUTPUT INSERTED.product_id "
-                    "VALUES(:code,:name,1)",
+            product_id = None
+            if triplet.product_name:
+                product_id = connection.execute(
+                    text("SELECT product_id FROM mdm.product WHERE product_code=:code"),
                     {"code": triplet.product_name, "name": triplet.product_name},
-                )
+                ).scalar_one_or_none()
+                if product_id is None:
+                    product_id = self._scalar(
+                        connection,
+                        "INSERT mdm.product(product_code,product_name,active) OUTPUT INSERTED.product_id "
+                        "VALUES(:code,:name,1)",
+                        {"code": triplet.product_name, "name": triplet.product_name},
+                    )
+            program_code = str(context["output_contract_version"])
             program_id = connection.execute(
                 text(
                     "SELECT test_program_id FROM mdm.test_program WHERE supplier_id=:supplier "
-                    "AND product_id=:product AND test_stage='CP' AND program_code='CP_CSV_TRIPLET_V1'"
+                    "AND ((product_id=:product) OR (product_id IS NULL AND :product IS NULL)) "
+                    "AND test_stage='CP' AND program_code=:program"
                 ),
-                {"supplier": supplier_id, "product": product_id},
+                {"supplier": supplier_id, "product": product_id, "program": program_code},
             ).scalar_one_or_none()
             if program_id is None:
                 program_id = self._scalar(
                     connection,
                     "INSERT mdm.test_program(supplier_id,product_id,test_stage,program_code,program_name,active) "
-                    "OUTPUT INSERTED.test_program_id VALUES(:supplier,:product,'CP','CP_CSV_TRIPLET_V1',"
-                    "N'华虹 CP Cleaner 标准输出',1)",
-                    {"supplier": supplier_id, "product": product_id},
+                    "OUTPUT INSERTED.test_program_id VALUES(:supplier,:product,'CP',:program,:name,1)",
+                    {
+                        "supplier": supplier_id,
+                        "product": product_id,
+                        "program": program_code,
+                        "name": f"{supplier_name} CP Cleaner 标准输出",
+                    },
                 )
-            version_code = f"SPEC-{triplet.spec_sha256[:16].upper()}-CONT-NONPARAM"
+            version_code = f"SPEC-{triplet.spec_sha256[:16].upper()}"
             program_version_id = connection.execute(
                 text(
                     "SELECT program_version_id FROM mdm.test_program_version "
@@ -355,15 +435,16 @@ class CpCsvTripletWriter:
                 program_version_id = self._scalar(
                     connection,
                     "INSERT mdm.test_program_version(test_program_id,version_code,raw_program_name,program_checksum,metadata_json) "
-                    "OUTPUT INSERTED.program_version_id VALUES(:program,:version,N'CP_CSV_TRIPLET_V1',:sha,:metadata)",
+                    "OUTPUT INSERTED.program_version_id VALUES(:program,:version,:raw_program,:sha,:metadata)",
                     {
                         "program": program_id,
                         "version": version_code,
+                        "raw_program": program_code,
                         "sha": triplet.spec_sha256,
                         "metadata": json.dumps(
                             {
                                 "first_batch_spec": True,
-                                "non_parameter_columns": ["CONT"],
+                                "non_parameter_columns": sorted(CP_PROCESS_COLUMNS),
                             }
                         ),
                     },
@@ -390,7 +471,7 @@ class CpCsvTripletWriter:
                             "condition": json.dumps(
                                 {"text": item.test_condition}, ensure_ascii=False
                             ),
-                            "column_index": index + 5,
+                            "column_index": index + 6,
                         }
                         for index, item in enumerate(triplet.spec_items, start=1)
                     ],
@@ -406,32 +487,41 @@ class CpCsvTripletWriter:
             if tuple(item_ids) != triplet.parameters:
                 raise CpCsvTripletError("stored CP test items differ from the Cleaner Spec")
 
+            parser_format = f"{supplier_code}_CP_CSV_TRIPLET"
+            parser_version = "1.1" if supplier_code == "HUAHONG" else "1.0"
             parser_profile_id = connection.execute(
                 text(
                     "SELECT parser_profile_id FROM ingestion.parser_profile "
-                    "WHERE format_code='HUAHONG_CP_CSV_TRIPLET' AND parser_version='1.1'"
-                )
+                    "WHERE format_code=:format AND parser_version=:version"
+                ),
+                {"format": parser_format, "version": parser_version},
             ).scalar_one_or_none()
             if parser_profile_id is None:
                 connection.execute(
                     text(
                         "UPDATE ingestion.parser_profile SET is_default=0 "
-                        "WHERE format_code='HUAHONG_CP_CSV_TRIPLET' AND is_default=1"
-                    )
+                        "WHERE format_code=:format AND is_default=1"
+                    ),
+                    {"format": parser_format},
                 )
                 parser_profile_id = self._scalar(
                     connection,
                     "INSERT ingestion.parser_profile(format_code,supplier_id,test_stage,parser_name,parser_version,"
                     "canonical_model_version,detect_rules_json,active,is_default) OUTPUT INSERTED.parser_profile_id "
-                    "VALUES('HUAHONG_CP_CSV_TRIPLET',:supplier,'CP','CP_CSV_TRIPLET_V1','1.1','1.0',"
-                    "'{\"non_parameter_columns\":[\"CONT\"]}',1,1)",
-                    {"supplier": supplier_id},
+                    "VALUES(:format,:supplier,'CP',:parser,:version,'1.0',:rules,1,1)",
+                    {
+                        "format": parser_format,
+                        "supplier": supplier_id,
+                        "parser": program_code,
+                        "version": parser_version,
+                        "rules": json.dumps({"non_parameter_columns": sorted(CP_PROCESS_COLUMNS)}),
+                    },
                 )
             spec_set_id = connection.execute(
                 text(
                     "SELECT spec_set_id FROM mdm.spec_set WHERE test_stage='CP' AND source_ref=:source"
                 ),
-                {"source": f"sha256:{triplet.spec_sha256}:CONT_NON_PARAMETER"},
+                {"source": f"sha256:{triplet.spec_sha256}:{supplier_code}"},
             ).scalar_one_or_none()
             if spec_set_id is None:
                 spec_set_id = self._scalar(
@@ -440,13 +530,13 @@ class CpCsvTripletWriter:
                     "OUTPUT INSERTED.spec_set_id VALUES(:product,'CP',:name,:version,'RELEASED','CLEANER_OUTPUT',:source,:metadata)",
                     {
                         "product": product_id,
-                        "name": f"{triplet.product_name} first-batch Spec",
+                        "name": f"{triplet.product_name or supplier_name} first-batch Spec",
                         "version": version_code,
-                        "source": f"sha256:{triplet.spec_sha256}:CONT_NON_PARAMETER",
+                        "source": f"sha256:{triplet.spec_sha256}:{supplier_code}",
                         "metadata": json.dumps(
                             {
                                 "selection_rule": "FIRST_BATCH",
-                                "non_parameter_columns": ["CONT"],
+                                "non_parameter_columns": sorted(CP_PROCESS_COLUMNS),
                             }
                         ),
                     },
@@ -482,17 +572,18 @@ class CpCsvTripletWriter:
                 "INSERT ingestion.processing_run(job_id,source_file_id,parser_profile_id,parser_version,"
                 "canonical_model_version,status,is_current,row_count_input,unit_count_output,measurement_count_output,"
                 "started_at_utc,finished_at_utc,metadata_json) OUTPUT INSERTED.processing_run_id "
-                "VALUES(:job,:source,:parser,'1.1','1.0','READY',0,:units,:units,:measurements,"
+                "VALUES(:job,:source,:parser,:parser_version,'1.0','READY',0,:units,:units,:measurements,"
                 "SYSUTCDATETIME(),SYSUTCDATETIME(),:metadata)",
                 {
                     "job": job_id,
                     "source": context["source_file_id"],
                     "parser": parser_profile_id,
+                    "parser_version": parser_version,
                     "units": len(triplet.rows),
                     "measurements": measurement_count,
                     "metadata": json.dumps(
                         {
-                            "output_contract": "CP_CSV_TRIPLET_V1",
+                            "output_contract": program_code,
                             "business_domain": context["business_domain"],
                             "source_paths": triplet.source_paths,
                             "spec_set_id": spec_set_id,
@@ -506,6 +597,7 @@ class CpCsvTripletWriter:
                 (row.lot_id, row.wafer_id): row.raw_wafer_id for row in triplet.rows
             }
             for lot_id, wafer_id in sorted({(row.lot_id, row.wafer_id) for row in triplet.rows}):
+                business_lot_id = None if supplier_code == "GUOYU" else lot_id
                 run_ids[(lot_id, wafer_id)] = self._scalar(
                     connection,
                     "INSERT test.test_run(processing_run_id,supplier_id,product_id,program_version_id,test_stage,"
@@ -517,12 +609,14 @@ class CpCsvTripletWriter:
                         "supplier": supplier_id,
                         "product": product_id,
                         "program": program_version_id,
-                        "lot": lot_id,
+                        "lot": business_lot_id,
                         "wafer": wafer_id,
                         "metadata": json.dumps(
                             {
                                 "spec_set_id": spec_set_id,
                                 "raw_wafer_id": raw_wafer_ids[(lot_id, wafer_id)],
+                                "source_group": lot_id,
+                                "business_lot_available": business_lot_id is not None,
                             }
                         ),
                     },
