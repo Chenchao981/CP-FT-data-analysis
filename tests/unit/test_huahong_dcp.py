@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pytest
-
 from app.cleaners.huahong_dcp import (
     HuaHongDcpParser,
     HuaHongFormatError,
@@ -46,10 +45,11 @@ def test_parses_approved_huahong_schema_without_changing_measurements() -> None:
     assert parsed.wafer_number == "1"
     assert parsed.row_count == 1
     assert parsed.pass_count == 1
-    assert parsed.units[0].measurements[0].raw == "1E-3"
-    assert parsed.units[0].measurements[0].value_numeric == 1e-3
-    assert parsed.specs[1].upper.unit_base == "A"
-    assert parsed.specs[1].upper.value_base == pytest.approx(99e-6)
+    assert "CONT" not in parsed.parameters
+    assert parsed.units[0].measurements[0].raw == "2E-8"
+    assert parsed.units[0].measurements[0].value_numeric == 2e-8
+    assert parsed.specs[0].upper.unit_base == "A"
+    assert parsed.specs[0].upper.value_base == pytest.approx(99e-6)
 
 
 def test_fail_bin_is_retained_and_not_reclassified() -> None:
@@ -59,7 +59,7 @@ def test_fail_bin_is_retained_and_not_reclassified() -> None:
     )
     assert parsed.units[0].soft_bin == 7
     assert parsed.units[0].overall_result == "FAIL"
-    assert parsed.units[0].measurements[1].status == "NOT_TESTED"
+    assert parsed.units[0].measurements[0].status == "NOT_TESTED"
 
 
 def test_unknown_parameter_schema_fails_closed() -> None:

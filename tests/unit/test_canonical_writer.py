@@ -4,7 +4,6 @@ from contextlib import contextmanager
 from typing import Any
 
 import pytest
-
 from app.cleaners.huahong_dcp import HuaHongDcpParser
 from app.infrastructure.canonical_writer import (
     CanonicalWriteError,
@@ -13,6 +12,7 @@ from app.infrastructure.canonical_writer import (
     SourceFileRepository,
     SourceRegistration,
 )
+
 from tests.unit.test_huahong_dcp import source_text
 
 
@@ -169,8 +169,8 @@ def test_writer_persists_traceable_canonical_rows_in_one_transaction() -> None:
         params for sql, params in connection.executions if "INSERT test.measurement" in sql
     ]
     assert sum(len(batch) for batch in measurement_batches) == len(file.parameters)
-    assert measurement_batches[0][0]["source_column_index"] == 4
-    assert measurement_batches[0][0]["raw_value"] == "1E-3"
+    assert measurement_batches[0][0]["source_column_index"] == 5
+    assert measurement_batches[0][0]["raw_value"] == "2E-8"
 
 
 def test_cp_writer_accepts_missing_optional_product() -> None:

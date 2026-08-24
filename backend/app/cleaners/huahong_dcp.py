@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, time
 from pathlib import Path
-from typing import Iterable
-
 
 BASE_COLUMNS = ("No.U", "X", "Y", "Bin")
 PASS_BIN = 1
@@ -116,6 +115,7 @@ class HuaHongDcpFile:
     source_time: time
     schema_id: str
     parameters: tuple[str, ...]
+    source_column_indexes: tuple[int, ...]
     specs: tuple[ParameterSpec, ...]
     units: tuple[HuaHongUnitRecord, ...]
 
@@ -324,13 +324,19 @@ class HuaHongDcpParser:
         header = tuple(_split_tab_line(lines[6]))
         if header[:4] != BASE_COLUMNS:
             raise HuaHongFormatError("required identity header is not No.U/X/Y/Bin")
-        parameters = header[4:]
-        if not parameters or any(not item for item in parameters):
+        raw_parameters = header[4:]
+        if not raw_parameters or any(not item for item in raw_parameters):
             raise HuaHongFormatError("parameter names must be non-empty")
-        if len(parameters) != len(set(parameters)):
+        if len(raw_parameters) != len(set(raw_parameters)):
             raise HuaHongFormatError("duplicate parameter names are not allowed")
-        if parameters not in APPROVED_PARAMETER_SCHEMAS:
+        if raw_parameters not in APPROVED_PARAMETER_SCHEMAS:
             raise HuaHongFormatError("parameter schema is not approved for HuaHong DCP")
+        parameter_columns = tuple(
+            (column, name)
+            for column, name in enumerate(raw_parameters, start=4)
+            if name != "CONT"
+        )
+        parameters = tuple(name for _, name in parameter_columns)
 
         limit_upper = _normalize_row(_split_tab_line(lines[7]), len(header), 8)
         limit_lower = _normalize_row(_split_tab_line(lines[8]), len(header), 9)
@@ -346,7 +352,7 @@ class HuaHongDcpParser:
             bias_rows.append(row)
 
         specs: list[ParameterSpec] = []
-        for index, parameter in enumerate(parameters, start=4):
+        for index, parameter in parameter_columns:
             upper = _parse_engineering_value(limit_upper[index])
             lower = _parse_engineering_value(limit_lower[index])
             if upper.unit_base and lower.unit_base and upper.unit_base != lower.unit_base:
@@ -386,7 +392,7 @@ class HuaHongDcpParser:
             measurements = (
                 tuple(
                     _parse_measurement(row[column], index, parameter)
-                    for column, parameter in enumerate(parameters, start=4)
+                    for column, parameter in parameter_columns
                 )
                 if include_units
                 else ()
@@ -425,6 +431,7 @@ class HuaHongDcpParser:
             source_time=source_time,
             schema_id=_schema_id(parameters),
             parameters=parameters,
+            source_column_indexes=tuple(column for column, _ in parameter_columns),
             specs=tuple(specs),
             units=tuple(units),
         )

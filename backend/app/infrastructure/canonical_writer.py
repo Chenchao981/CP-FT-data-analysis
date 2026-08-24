@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Mapping
 
 from sqlalchemy import Engine, text
 
@@ -367,8 +367,11 @@ class HuaHongCanonicalWriter:
                         },
                     ).scalar_one()
                 )
-                for column_index, (parameter, measurement) in enumerate(
-                    zip(file.parameters, unit.measurements, strict=True), start=4
+                for column_index, parameter, measurement in zip(
+                    file.source_column_indexes,
+                    file.parameters,
+                    unit.measurements,
+                    strict=True,
                 ):
                     measurement_rows.append(
                         {

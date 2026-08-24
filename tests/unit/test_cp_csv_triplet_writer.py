@@ -59,6 +59,37 @@ def test_parse_cp_triplet_reconciles_cleaned_yield_and_first_spec(tmp_path: Path
     assert parsed.pass_count == 1
 
 
+def test_parse_cp_triplet_excludes_cont_count_symbol(
+    tmp_path: Path,
+) -> None:
+    artifacts = list(_triplet(tmp_path))
+    cleaned_path = Path(artifacts[0].path)
+    cleaned_path.write_text(
+        "Lot_ID,Wafer_ID,Seq,Bin,X,Y,CONT,P1,P2\n"
+        "L1,1,1,1,10,20,0.02,1E-3,2.5\n"
+        "L1,1,2,7,11,20,0.03,,3.5\n",
+        encoding="utf-8",
+    )
+    artifacts[0] = _artifact("cleaned", cleaned_path)
+    spec_path = Path(artifacts[2].path)
+    spec_path.write_text(
+        "Parameter,CONT,P1,P2\n"
+        "Unit,,A,V\n"
+        "LimitU,,1,5\n"
+        "LimitL,,0,2\n"
+        "TestCond:,,10V,1A\n"
+        ",,1ms,2ms\n",
+        encoding="utf-8",
+    )
+    artifacts[2] = _artifact("spec", spec_path)
+
+    parsed = parse_cp_csv_triplet(tuple(artifacts))
+
+    assert parsed.parameters == ("P1", "P2")
+    assert tuple(item.name for item in parsed.spec_items) == ("P1", "P2")
+    assert parsed.rows[0].values == ("1E-3", "2.5")
+
+
 def test_parse_cp_triplet_rejects_yield_mismatch(tmp_path: Path) -> None:
     artifacts = list(_triplet(tmp_path))
     yield_path = Path(artifacts[1].path)

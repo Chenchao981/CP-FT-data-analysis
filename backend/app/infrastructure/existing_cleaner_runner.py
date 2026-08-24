@@ -300,15 +300,24 @@ from clean_dcp_data import process_directory
 inputs = [Path(item) for item in json.loads(os.environ['TMS_EXISTING_CLEANER_INPUTS'])]
 output = os.environ['TMS_EXISTING_CLEANER_OUTPUT']
 config = json.loads(os.environ.get('TMS_CLEANER_EXECUTION_CONFIG', '{}'))
-with prepare_dcp_input(inputs, progress=print) as prepared:
+def run(prepared_directory):
     result = process_directory(
-        str(prepared.directory),
+        str(prepared_directory),
         output_dir=output,
         outlier_method=config.get('outlier_method', 'iqr'),
         convert_units=bool(config.get('convert_units', True)),
     )
     if not result:
         raise SystemExit('华虹 CP cleaner returned no result')
+if len(inputs) == 1 and inputs[0].is_dir():
+    run(inputs[0])
+elif all(item.is_file() and item.suffix.lower() == '.txt' for item in inputs):
+    raise SystemExit(
+        'raw TXT files require a source directory or archive preserving Product/Lot identity'
+    )
+else:
+    with prepare_dcp_input(inputs, progress=print) as prepared:
+        run(prepared.directory)
 """
 
 

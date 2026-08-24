@@ -53,7 +53,9 @@ def _read_cp_summary(run_result) -> dict[str, object]:
         "wafer_count": len(wafers),
         "factory_code": run_result.factory,
         "output_uri": run_result.output_root,
-        "test_item_count": sum(1 for name in header if name not in base),
+        "test_item_count": sum(
+            1 for name in header if name not in base and name != "CONT"
+        ),
         "unit_count": units,
         "pass_count": passes,
         "yield_rate": passes / units if units else None,
