@@ -2,14 +2,12 @@ from __future__ import annotations
 
 from dataclasses import asdict
 
-from fastapi.testclient import TestClient
-
 from app.domain.datasets import (
     BinCountPoint,
     CreateDatasetRequest,
     CreateDatasetVersionRequest,
-    DatasetRecord,
     DatasetChartData,
+    DatasetRecord,
     DatasetResultSummary,
     DatasetVersionRecord,
     DqGateResult,
@@ -19,6 +17,7 @@ from app.domain.datasets import (
     WaferYieldPoint,
 )
 from app.main import create_app
+from fastapi.testclient import TestClient
 
 
 class StubDatasetService:
@@ -88,17 +87,28 @@ class StubDatasetService:
         version_no: int,
         lot_id: str | None = None,
         wafer_id: str | None = None,
+        source_id: str | None = None,
+        parameter: str | None = None,
     ) -> DatasetChartData:
         return DatasetChartData(
             dataset_id,
             version_no,
+            "CP",
+            "NCE-TEST",
             lot_id,
             wafer_id,
+            source_id,
+            parameter,
             ("LOT-1",),
             (WaferOption("LOT-1", "001"),),
+            (),
+            (),
             (WaferYieldPoint("LOT-1", "001", 10, 9, 1, 0.9),),
             (BinCountPoint("1", 9, 0.9), BinCountPoint("7", 1, 0.1)),
             (WaferMapPoint(1, 2, "1", "PASS"),) if wafer_id else (),
+            (),
+            0,
+            False,
         )
 
 

@@ -17,6 +17,7 @@ if str(BACKEND) not in sys.path:
 
 from app.domain.jobs import CreateJobRequest, JobStatus, JobType
 from app.infrastructure.cp_csv_triplet_writer import CpCsvTripletWriter
+from app.infrastructure.ft_xlsx_scatter_writer import FtXlsxScatterWriter
 from app.infrastructure.sql_cleaner_registry import SqlCleanerRegistry
 from app.infrastructure.sql_job_service import SqlJobService
 from app.infrastructure.sql_stage_data_service import SqlStageDataService
@@ -139,6 +140,7 @@ def main() -> None:
                     registry,
                     stage_data,
                     CpCsvTripletWriter(engine),
+                    FtXlsxScatterWriter(engine),
                     work_root=work_root,
                 )
             },

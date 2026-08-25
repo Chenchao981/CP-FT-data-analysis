@@ -25,9 +25,9 @@ describe("datasets api", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ wafer_yield: [] }), { status: 200 }),
     );
-    await getDatasetChartData(12, 3, "FA53-5465", "001");
+    await getDatasetChartData(12, 3, "FA53-5465", "001", "Source-1", "VTH");
     expect(fetchMock.mock.calls[0][0]).toBe(
-      "/api/v1/datasets/12/versions/3/charts?lot_id=FA53-5465&wafer_id=001",
+      "/api/v1/datasets/12/versions/3/charts?lot_id=FA53-5465&wafer_id=001&source_id=Source-1&parameter=VTH",
     );
   });
 });

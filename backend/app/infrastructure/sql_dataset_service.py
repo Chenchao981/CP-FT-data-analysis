@@ -19,6 +19,8 @@ from app.domain.datasets import (
     DatasetResultSummary,
     DatasetVersionRecord,
     DqGateResult,
+    FtParameterOption,
+    FtParameterPoint,
     GateReason,
     PublishDatasetVersionRequest,
     WaferMapPoint,
@@ -120,6 +122,8 @@ class SqlDatasetService:
         version_no: int,
         lot_id: str | None = None,
         wafer_id: str | None = None,
+        source_id: str | None = None,
+        parameter: str | None = None,
     ) -> DatasetChartData:
         if wafer_id and not lot_id:
             raise DomainError(
@@ -132,6 +136,8 @@ class SqlDatasetService:
             "version_no": version_no,
             "lot_id": lot_id,
             "wafer_id": wafer_id,
+            "source_id": source_id,
+            "parameter": parameter,
         }
         lot_filter = " AND (:lot_id IS NULL OR tr.lot_id=:lot_id)"
         wafer_filter = " AND (:wafer_id IS NULL OR tr.wafer_id=:wafer_id)"
@@ -141,7 +147,16 @@ class SqlDatasetService:
             "JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
         )
         with self._engine.connect() as connection:
-            self._version_context(connection, dataset_id, version_no, lock=False)
+            context = self._version_context(
+                connection, dataset_id, version_no, lock=False
+            )
+            if str(context["test_stage"]) == "FT":
+                return self._get_ft_chart_data(
+                    connection,
+                    context,
+                    parameters,
+                    version_join,
+                )
             option_rows = (
                 connection.execute(
                     text(
@@ -222,13 +237,19 @@ class SqlDatasetService:
         return DatasetChartData(
             dataset_id=dataset_id,
             version_no=version_no,
+            test_stage=str(context["test_stage"]),
+            product_name=context["product_name"],
             selected_lot_id=lot_id,
             selected_wafer_id=wafer_id,
+            selected_source_id=None,
+            selected_parameter=None,
             lot_options=tuple(dict.fromkeys(str(row["lot_id"]) for row in option_rows)),
             wafer_options=tuple(
                 WaferOption(str(row["lot_id"]), str(row["wafer_id"]))
                 for row in option_rows
             ),
+            source_options=(),
+            parameter_options=(),
             wafer_yield=wafer_yield,
             bin_counts=tuple(
                 BinCountPoint(
@@ -249,6 +270,156 @@ class SqlDatasetService:
                 )
                 for row in map_rows
             ),
+            ft_parameter_points=(),
+            ft_total_point_count=0,
+            ft_sampled=False,
+        )
+
+    def _get_ft_chart_data(
+        self,
+        connection: Connection,
+        context: Mapping[str, Any],
+        parameters: dict[str, Any],
+        version_join: str,
+    ) -> DatasetChartData:
+        option_rows = (
+            connection.execute(
+                text(
+                    "SELECT DISTINCT tr.lot_id,tr.tester_id"
+                    + version_join
+                    + "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
+                    "ORDER BY tr.lot_id,tr.tester_id"
+                ),
+                parameters,
+            )
+            .mappings()
+            .all()
+        )
+        parameter_rows = (
+            connection.execute(
+                text(
+                    "SELECT DISTINCT tid.sequence_no,tid.raw_item_name,si.unit_code,si.lsl,si.usl,"
+                    "tid.condition_json "
+                    + version_join
+                    + "JOIN mdm.test_item_definition tid ON tid.program_version_id=tr.program_version_id "
+                    "LEFT JOIN mdm.spec_item si ON si.spec_set_id=:spec_set_id "
+                    "AND si.test_item_id=tid.test_item_id "
+                    "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
+                    "AND tid.is_analysis_parameter=1 ORDER BY tid.sequence_no"
+                ),
+                {**parameters, "spec_set_id": context["spec_set_id"]},
+            )
+            .mappings()
+            .all()
+        )
+        names = {str(row["raw_item_name"]) for row in parameter_rows}
+        selected_parameter = parameters["parameter"]
+        if selected_parameter is not None and selected_parameter not in names:
+            raise DomainError(
+                "FT_PARAMETER_NOT_FOUND", "selected FT parameter was not found", 404
+            )
+        source_options = tuple(
+            dict.fromkeys(str(row["tester_id"] or "UNKNOWN") for row in option_rows)
+        )
+        if parameters["source_id"] and parameters["source_id"] not in source_options:
+            raise DomainError(
+                "FT_SOURCE_NOT_FOUND", "selected FT source was not found", 404
+            )
+        point_rows: list[Mapping[str, Any]] = []
+        total_count = 0
+        if selected_parameter:
+            point_params = {
+                **parameters,
+                "spec_set_id": context["spec_set_id"],
+            }
+            total_count = int(
+                connection.execute(
+                    text(
+                        "SELECT COUNT_BIG(*) "
+                        + version_join
+                        + "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
+                        "JOIN test.measurement m ON m.unit_id=ur.unit_id "
+                        "JOIN mdm.test_item_definition tid ON tid.test_item_id=m.test_item_id "
+                        "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
+                        "AND (:lot_id IS NULL OR tr.lot_id=:lot_id) "
+                        "AND (:source_id IS NULL OR tr.tester_id=:source_id) "
+                        "AND tid.raw_item_name=:parameter"
+                    ),
+                    point_params,
+                ).scalar_one()
+            )
+            stride = max(1, (total_count + 9_999) // 10_000)
+            point_rows = (
+                connection.execute(
+                    text(
+                        ";WITH points AS (SELECT ur.unit_sequence,tr.lot_id,tr.tester_id,"
+                        "m.value_numeric,m.measurement_status,si.lsl,si.usl,"
+                        "ROW_NUMBER() OVER(ORDER BY tr.tester_id,ur.unit_sequence,ur.unit_id) AS rn "
+                        + version_join
+                        + "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
+                        "JOIN test.measurement m ON m.unit_id=ur.unit_id "
+                        "JOIN mdm.test_item_definition tid ON tid.test_item_id=m.test_item_id "
+                        "LEFT JOIN mdm.spec_item si ON si.spec_set_id=:spec_set_id "
+                        "AND si.test_item_id=tid.test_item_id "
+                        "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
+                        "AND (:lot_id IS NULL OR tr.lot_id=:lot_id) "
+                        "AND (:source_id IS NULL OR tr.tester_id=:source_id) "
+                        "AND tid.raw_item_name=:parameter) "
+                        "SELECT unit_sequence,lot_id,tester_id,value_numeric,measurement_status "
+                        "FROM points WHERE (rn-1)%:stride=0 OR "
+                        "(value_numeric IS NOT NULL AND ((lsl IS NOT NULL AND value_numeric<lsl) "
+                        "OR (usl IS NOT NULL AND value_numeric>usl))) "
+                        "ORDER BY tester_id,unit_sequence"
+                    ),
+                    {**point_params, "stride": stride},
+                )
+                .mappings()
+                .all()
+            )
+        parameter_options = []
+        for row in parameter_rows:
+            condition = json.loads(row["condition_json"] or "{}")
+            parameter_options.append(
+                FtParameterOption(
+                    name=str(row["raw_item_name"]),
+                    unit=str(row["unit_code"]) if row["unit_code"] else None,
+                    lsl=float(row["lsl"]) if row["lsl"] is not None else None,
+                    usl=float(row["usl"]) if row["usl"] is not None else None,
+                    test_condition=condition.get("text"),
+                )
+            )
+        return DatasetChartData(
+            dataset_id=int(context["dataset_id"]),
+            version_no=int(context["version_no"]),
+            test_stage="FT",
+            product_name=context["product_name"],
+            selected_lot_id=parameters["lot_id"],
+            selected_wafer_id=None,
+            selected_source_id=parameters["source_id"],
+            selected_parameter=selected_parameter,
+            lot_options=tuple(
+                dict.fromkeys(str(row["lot_id"]) for row in option_rows)
+            ),
+            wafer_options=(),
+            source_options=source_options,
+            parameter_options=tuple(parameter_options),
+            wafer_yield=(),
+            bin_counts=(),
+            wafer_map=(),
+            ft_parameter_points=tuple(
+                FtParameterPoint(
+                    sequence=int(row["unit_sequence"]),
+                    lot_id=str(row["lot_id"]),
+                    source_id=str(row["tester_id"] or "UNKNOWN"),
+                    value=float(row["value_numeric"])
+                    if row["value_numeric"] is not None
+                    else None,
+                    status=str(row["measurement_status"]),
+                )
+                for row in point_rows
+            ),
+            ft_total_point_count=total_count,
+            ft_sampled=len(point_rows) < total_count,
         )
 
     def create_version(
@@ -374,9 +545,10 @@ class SqlDatasetService:
                 text(
                     "SELECT dv.dataset_version_id,dv.dataset_id,dv.version_no,"
                     "dv.input_batch_id,dv.canonical_model_version,dv.status,dv.is_current,"
-                    "d.supplier_id,d.product_id,d.test_stage "
+                    "d.supplier_id,d.product_id,d.test_stage,p.product_name,dv.spec_set_id "
                     f"FROM dataset.dataset_version dv{lock_hint} "
                     "JOIN dataset.dataset d ON d.dataset_id=dv.dataset_id "
+                    "LEFT JOIN mdm.product p ON p.product_id=d.product_id "
                     "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no"
                 ),
                 {"dataset_id": dataset_id, "version_no": version_no},

@@ -11,7 +11,13 @@ def get_engine() -> Engine:
     database_url = os.environ.get("TMS_DATABASE_URL")
     if not database_url:
         raise RuntimeError("TMS_DATABASE_URL is not configured")
-    return create_engine(database_url, pool_pre_ping=True, pool_recycle=1800)
+    options: dict[str, object] = {
+        "pool_pre_ping": True,
+        "pool_recycle": 1800,
+    }
+    if database_url.lower().startswith("mssql+pyodbc"):
+        options["fast_executemany"] = True
+    return create_engine(database_url, **options)
 
 
 def check_database() -> dict[str, str]:

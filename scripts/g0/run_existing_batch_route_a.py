@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import socket
 import sys
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -16,6 +17,7 @@ if str(BACKEND) not in sys.path:
 from app.domain.jobs import CreateJobRequest, JobStatus, JobType
 from app.infrastructure.cp_csv_triplet_writer import CpCsvTripletWriter
 from app.infrastructure.database import get_engine
+from app.infrastructure.ft_xlsx_scatter_writer import FtXlsxScatterWriter
 from app.infrastructure.sql_cleaner_registry import SqlCleanerRegistry
 from app.infrastructure.sql_job_service import SqlJobService
 from app.infrastructure.sql_stage_data_service import SqlStageDataService
@@ -58,14 +60,22 @@ def main() -> None:
         queue,
         {
             JobType.INITIAL_IMPORT: RouteAInitialImportHandler(
-                registry, stage_data, CpCsvTripletWriter(engine)
+                registry,
+                stage_data,
+                CpCsvTripletWriter(engine),
+                FtXlsxScatterWriter(engine),
             )
         },
         worker_id=f"{socket.gethostname()}-route-a-backfill",
         lease_for=timedelta(minutes=10),
         heartbeat_every=timedelta(seconds=30),
     )
-    finished = worker.run_once()
+    finished = None
+    for _attempt in range(10):
+        finished = worker.run_once()
+        if finished is not None:
+            break
+        time.sleep(0.2)
     if finished is None or finished.job_id != job.job_id or finished.status != JobStatus.SUCCESS:
         raise RuntimeError(f"Route A backfill failed: {finished}")
     with engine.connect() as connection:

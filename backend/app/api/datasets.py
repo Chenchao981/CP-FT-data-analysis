@@ -5,16 +5,14 @@ from dataclasses import asdict
 from fastapi import APIRouter, Depends, Request, status
 
 from app.api.dependencies import require_permission
-from app.domain.auth import Principal
-
 from app.core.errors import DomainError
+from app.domain.auth import Principal
 from app.domain.datasets import (
     CreateDatasetRequest,
     CreateDatasetVersionRequest,
     DatasetService,
     PublishDatasetVersionRequest,
 )
-
 
 router = APIRouter()
 
@@ -100,9 +98,13 @@ def chart_data(
     request: Request,
     lot_id: str | None = None,
     wafer_id: str | None = None,
+    source_id: str | None = None,
+    parameter: str | None = None,
     principal: Principal = Depends(require_permission("DATASET_READ")),
 ) -> dict:
     service(request).assert_dataset_access(dataset_id, principal)
     return asdict(
-        service(request).get_chart_data(dataset_id, version_no, lot_id, wafer_id)
+        service(request).get_chart_data(
+            dataset_id, version_no, lot_id, wafer_id, source_id, parameter
+        )
     )

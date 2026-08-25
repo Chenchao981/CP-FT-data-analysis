@@ -36,7 +36,7 @@ class CreateDatasetRequest(StrictRequest):
     owner_user_id: int = Field(gt=0)
 
     @model_validator(mode="after")
-    def stage_identity_is_complete(self) -> "CreateDatasetRequest":
+    def stage_identity_is_complete(self) -> CreateDatasetRequest:
         if self.test_stage == DatasetStage.CP and self.supplier_id is None:
             raise ValueError(
                 "CP dataset requires a wafer-fab/source identity from the file or manual input"
@@ -162,16 +162,43 @@ class WaferMapPoint:
 
 
 @dataclass(frozen=True, slots=True)
+class FtParameterOption:
+    name: str
+    unit: str | None
+    lsl: float | None
+    usl: float | None
+    test_condition: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class FtParameterPoint:
+    sequence: int
+    lot_id: str
+    source_id: str
+    value: float | None
+    status: str
+
+
+@dataclass(frozen=True, slots=True)
 class DatasetChartData:
     dataset_id: int
     version_no: int
+    test_stage: str
+    product_name: str | None
     selected_lot_id: str | None
     selected_wafer_id: str | None
+    selected_source_id: str | None
+    selected_parameter: str | None
     lot_options: tuple[str, ...]
     wafer_options: tuple[WaferOption, ...]
+    source_options: tuple[str, ...]
+    parameter_options: tuple[FtParameterOption, ...]
     wafer_yield: tuple[WaferYieldPoint, ...]
     bin_counts: tuple[BinCountPoint, ...]
     wafer_map: tuple[WaferMapPoint, ...]
+    ft_parameter_points: tuple[FtParameterPoint, ...]
+    ft_total_point_count: int
+    ft_sampled: bool
 
 
 class DatasetService(Protocol):
@@ -201,4 +228,6 @@ class DatasetService(Protocol):
         version_no: int,
         lot_id: str | None = None,
         wafer_id: str | None = None,
+        source_id: str | None = None,
+        parameter: str | None = None,
     ) -> DatasetChartData: ...

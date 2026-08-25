@@ -13,6 +13,7 @@ from app.infrastructure.existing_cleaner_results import (
     summarize_existing_cleaner_result,
 )
 from app.infrastructure.existing_cleaner_runner import ExistingCleanerRunner
+from app.infrastructure.ft_xlsx_scatter_writer import FtXlsxScatterWriter
 from app.infrastructure.sql_cleaner_registry import SqlCleanerRegistry
 from app.infrastructure.sql_stage_data_service import SqlStageDataService
 
@@ -26,12 +27,14 @@ class RouteAInitialImportHandler:
         registry: SqlCleanerRegistry,
         stage_data: SqlStageDataService,
         cp_writer: CpCsvTripletWriter,
+        ft_writer: FtXlsxScatterWriter | None = None,
         runner: ExistingCleanerRunner | None = None,
         work_root: str | Path | None = None,
     ) -> None:
         self._registry = registry
         self._stage_data = stage_data
         self._cp_writer = cp_writer
+        self._ft_writer = ft_writer
         self._runner = runner or ExistingCleanerRunner()
         self._work_root = Path(
             work_root or os.getenv("TMS_WORK_ROOT", r"F:\CP-FT数据分析\data\work")
@@ -84,6 +87,20 @@ class RouteAInitialImportHandler:
             self._stage_data.record_artifacts(job.job_id, result.artifacts, expires)
             if batch.test_stage == "CP":
                 canonical = self._cp_writer.write(
+                    job_id=job.job_id,
+                    import_batch_id=job.import_batch_id,
+                    artifacts=result.artifacts,
+                )
+                summary.update(
+                    {
+                        "dataset_id": canonical.dataset_id,
+                        "dataset_version_no": canonical.dataset_version_no,
+                    }
+                )
+            elif batch.test_stage == "FT":
+                if self._ft_writer is None:
+                    raise RuntimeError("FT Canonical Writer is not configured")
+                canonical = self._ft_writer.write(
                     job_id=job.job_id,
                     import_batch_id=job.import_batch_id,
                     artifacts=result.artifacts,

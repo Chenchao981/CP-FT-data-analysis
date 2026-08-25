@@ -16,6 +16,7 @@ from app.api.dependencies import current_principal
 from app.domain.jobs import JobType
 from app.infrastructure.cp_csv_triplet_writer import CpCsvTripletWriter
 from app.infrastructure.database import get_engine
+from app.infrastructure.ft_xlsx_scatter_writer import FtXlsxScatterWriter
 from app.infrastructure.sql_auth_service import SqlAuthService
 from app.infrastructure.sql_cleaner_registry import SqlCleanerRegistry
 from app.infrastructure.sql_job_service import SqlJobService
@@ -79,6 +80,7 @@ def main() -> None:
                     SqlCleanerRegistry(engine),
                     SqlStageDataService(engine),
                     CpCsvTripletWriter(engine),
+                    FtXlsxScatterWriter(engine),
                 )
             },
             worker_id=f"{socket.gethostname()}-cp-multi-company-verification",
