@@ -99,6 +99,17 @@ def _definitions() -> tuple[ExistingRelease, ...]:
             "FT_DIRECTORY_XLSX_V1",
             "FT_XLSX_SCATTER_V1",
         ),
+        ExistingRelease(
+            "FT",
+            "JIEQUN",
+            "JIEQUN_FT_QUICK_PAT_EXISTING",
+            "JIEQUN_FT_QUICK_PAT_EXISTING",
+            ft_package,
+            "JIEQUN_FT_QUICK_PAT_PYZ",
+            "factories.jiequn.pat_cleaner.generate_raw_pat",
+            "JIEQUN_UNIFIED_CSV_DIRECTORY_V1",
+            "FT_PAT_RESULT_V1",
+        ),
     )
 
 
@@ -125,8 +136,8 @@ def main() -> None:
         revision = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-        if revision != "sql2014_0011":
-            raise RuntimeError(f"sql2014_0011 is required, database is {revision}")
+        if revision != "sql2014_0012":
+            raise RuntimeError(f"sql2014_0012 is required, database is {revision}")
         approved_by = connection.execute(
             text(
                 "SELECT TOP (1) u.user_id FROM iam.app_user u "

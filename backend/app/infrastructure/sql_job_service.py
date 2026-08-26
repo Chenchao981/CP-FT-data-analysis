@@ -20,7 +20,7 @@ from app.domain.jobs import (
 )
 
 JOB_COLUMNS = """
-job_id, source_file_id, import_batch_id, cleaner_release_id, job_type,
+job_id, source_file_id, import_batch_id, analysis_session_id, cleaner_release_id, job_type,
 trigger_type, requested_by, requested_by_user_id, reason, status, requested_at_utc,
 started_at_utc, finished_at_utc, error_code, error_message, idempotency_key,
 not_before_utc, lease_token, lease_owner, lease_expires_at_utc, heartbeat_at_utc,
@@ -39,6 +39,7 @@ def _to_job(row: Mapping[str, Any]) -> Job:
         job_id=row["job_id"],
         source_file_id=row["source_file_id"],
         import_batch_id=row["import_batch_id"],
+        analysis_session_id=row["analysis_session_id"],
         cleaner_release_id=row["cleaner_release_id"],
         job_type=JobType(row["job_type"]),
         trigger_type=TriggerType(row["trigger_type"]),
@@ -70,13 +71,13 @@ class SqlJobService:
         statement = text(
             f"""
             INSERT ingestion.processing_job(
-                source_file_id, import_batch_id, cleaner_release_id,
+                source_file_id, import_batch_id, analysis_session_id, cleaner_release_id,
                 job_type, trigger_type, requested_by, requested_by_user_id,
                 reason, status, idempotency_key, max_attempts
             )
             OUTPUT {", ".join("INSERTED." + item.strip() for item in JOB_COLUMNS.split(","))}
             VALUES(
-                :source_file_id, :import_batch_id, :cleaner_release_id,
+                :source_file_id, :import_batch_id, :analysis_session_id, :cleaner_release_id,
                 :job_type, :trigger_type, :requested_by, :requested_by_user_id,
                 :reason, 'QUEUED', :idempotency_key, :max_attempts
             )
@@ -103,6 +104,7 @@ class SqlJobService:
                     {
                         "source_file_id": request.source_file_id,
                         "import_batch_id": request.import_batch_id,
+                        "analysis_session_id": request.analysis_session_id,
                         "cleaner_release_id": request.cleaner_release_id,
                         "job_type": request.job_type.value,
                         "trigger_type": request.trigger_type.value,
@@ -134,7 +136,7 @@ class SqlJobService:
                             "user_id": principal.user_id,
                         },
                     ).scalar_one_or_none()
-                else:
+                elif request.source_file_id is not None:
                     allowed = connection.execute(
                         text(
                             "SELECT TOP (1) 1 FROM ingestion.source_file_receipt r "
@@ -143,6 +145,17 @@ class SqlJobService:
                         ),
                         {
                             "source": request.source_file_id,
+                            "user_id": principal.user_id,
+                        },
+                    ).scalar_one_or_none()
+                else:
+                    allowed = connection.execute(
+                        text(
+                            "SELECT 1 FROM workspace.analysis_session "
+                            "WHERE analysis_session_id=:session AND owner_user_id=:user_id"
+                        ),
+                        {
+                            "session": request.analysis_session_id,
                             "user_id": principal.user_id,
                         },
                     ).scalar_one_or_none()
@@ -360,7 +373,9 @@ class SqlJobService:
                     "b.import_batch_id=j.import_batch_id AND b.owner_user_id=:user_id) OR "
                     "EXISTS(SELECT 1 FROM ingestion.source_file_receipt r "
                     "JOIN ingestion.import_batch b ON b.import_batch_id=r.import_batch_id "
-                    "WHERE r.source_file_id=j.source_file_id AND b.owner_user_id=:user_id))"
+                    "WHERE r.source_file_id=j.source_file_id AND b.owner_user_id=:user_id) OR "
+                    "EXISTS(SELECT 1 FROM workspace.analysis_session s WHERE "
+                    "s.analysis_session_id=j.analysis_session_id AND s.owner_user_id=:user_id))"
                 ),
                 {"job_id": job_id, "user_id": principal.user_id},
             ).scalar_one_or_none()

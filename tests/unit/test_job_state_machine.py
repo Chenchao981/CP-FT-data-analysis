@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import pytest
-from pydantic import ValidationError
-
 from app.core.errors import DomainError
 from app.domain.jobs import (
     CreateJobRequest,
@@ -10,6 +8,7 @@ from app.domain.jobs import (
     JobStatus,
     TransitionJobRequest,
 )
+from pydantic import ValidationError
 
 
 def create_request() -> CreateJobRequest:
@@ -55,6 +54,16 @@ def test_job_requires_exactly_one_input_identity() -> None:
             cleaner_release_id=3,
             requested_by="tester",
         )
+
+
+def test_quick_pat_accepts_analysis_session_as_its_only_input() -> None:
+    request = CreateJobRequest(
+        analysis_session_id=11,
+        cleaner_release_id=5,
+        job_type="QUICK_PAT",
+        requested_by="tester",
+    )
+    assert request.analysis_session_id == 11
 
 
 def test_parse_job_requires_cleaner_release() -> None:

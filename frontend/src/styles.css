@@ -66,6 +66,11 @@ body { margin: 0; min-width: 320px; }
 .production-table-card { border-color: #e3e9ef; box-shadow: 0 4px 18px rgba(16, 52, 77, 0.05); }
 .production-table-card .ant-card-body { padding-top: 8px; }
 .cp-upload-form { margin-top: 18px; }
+.quick-analysis-workbench { max-width: none; }
+.quick-analysis-alert { margin-bottom: 18px; }
+.quick-source-card { margin-bottom: 18px; border-color: #dce7ef; box-shadow: 0 4px 18px rgba(16, 52, 77, 0.05); }
+.quick-source-toolbar { margin-bottom: 16px; }
+.quick-session-card { margin-top: 0; }
 
 @media (max-width: 768px) {
   .workbench { padding: 18px 14px; }

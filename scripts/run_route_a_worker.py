@@ -16,10 +16,16 @@ from app.domain.jobs import JobType
 from app.infrastructure.cp_csv_triplet_writer import CpCsvTripletWriter
 from app.infrastructure.database import get_engine
 from app.infrastructure.ft_xlsx_scatter_writer import FtXlsxScatterWriter
+from app.infrastructure.source_catalog import SourceCatalog
 from app.infrastructure.sql_cleaner_registry import SqlCleanerRegistry
 from app.infrastructure.sql_job_service import SqlJobService
+from app.infrastructure.sql_quick_analysis_service import SqlQuickAnalysisService
 from app.infrastructure.sql_stage_data_service import SqlStageDataService
-from app.workers.route_a_worker import DatabaseJobWorker, RouteAInitialImportHandler
+from app.workers.route_a_worker import (
+    DatabaseJobWorker,
+    QuickPatHandler,
+    RouteAInitialImportHandler,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,15 +41,25 @@ def main() -> None:
     engine = get_engine()
     queue = SqlJobService(engine)
     stage_data = SqlStageDataService(engine)
+    registry = SqlCleanerRegistry(engine)
+    quick_analysis = SqlQuickAnalysisService(engine)
     handler = RouteAInitialImportHandler(
-        SqlCleanerRegistry(engine),
+        registry,
         stage_data,
         CpCsvTripletWriter(engine),
         FtXlsxScatterWriter(engine),
     )
+    quick_pat_handler = QuickPatHandler(
+        registry,
+        quick_analysis,
+        SourceCatalog.from_environment(),
+    )
     worker = DatabaseJobWorker(
         queue,
-        {JobType.INITIAL_IMPORT: handler},
+        {
+            JobType.INITIAL_IMPORT: handler,
+            JobType.QUICK_PAT: quick_pat_handler,
+        },
         worker_id=args.worker_id,
         lease_for=timedelta(minutes=5),
         heartbeat_every=timedelta(minutes=1),

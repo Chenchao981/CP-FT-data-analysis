@@ -1,6 +1,6 @@
 # TMS Backend
 
-> 当前执行主线为 Route A。上传接口只登记任务并返回 `QUEUED`，现有 Python Cleaner 由独立 Worker 调用。旧 Dataset 人工审核/发布接口暂时保留兼容，但不再是新业务主线。
+> 正式数据执行主线为 Route A；一次性PAT使用隔离的Quick Analysis Workspace。两条通道共享SQL队列和Worker，但只有正式导入写入Canonical。
 
 ## 开发环境
 
@@ -55,9 +55,26 @@ $env:TMS_JOB_REPOSITORY = "sql"
 - `POST /api/v1/enrichments`
 - `GET /api/v1/enrichments/batches/{import_batch_id}`
 - `GET /api/v1/enrichments/fields/{CP|FT}`
+- `GET /api/v1/quick-analysis/source-roots`
+- `GET /api/v1/quick-analysis/source-roots/{root_code}/directories`
+- `POST /api/v1/quick-analysis/pat`
+- `GET /api/v1/quick-analysis/sessions`
+- `GET /api/v1/quick-analysis/sessions/{analysis_session_id}`
+- `GET /api/v1/quick-analysis/sessions/{analysis_session_id}/download`
 - `/api/docs`
 
 Job Service默认使用进程内实现；Route A 联调和部署必须设置 `TMS_JOB_REPOSITORY=sql`。SQL Repository支持原子领取、租约、心跳、超时恢复、幂等键和最大重试次数。
+
+Quick Analysis通过`TMS_SOURCE_ROOTS_JSON`配置管理员受控根目录。浏览器和API只使用`source_root_code + relative_path`，不接受任意绝对路径。P0仅支持杰群统一CSV目录PAT；结果写入`TMS_QUICK_WORK_ROOT`并按`TMS_QUICK_RESULT_TTL_HOURS`登记过期时间。
+
+真实520文件的非数据库计算链验证：
+
+```powershell
+& .\.conda-env\python.exe scripts\g0\verify_quick_pat_e2e.py `
+  --source-root 'F:\共享数据\FT\杰群' `
+  --relative-path '520data' `
+  --output-root 'F:\CP-FT数据分析\artifacts\quick-pat-e2e'
+```
 
 华虹文件边界支持TXT、ZIP和7z。归档只在受控临时目录中展开TXT，并在退出上下文时清理；任何加密、损坏、路径穿越、符号链接、重复路径或容量超限均失败关闭。`HuaHongBatchInspector.inspect_input()` 是单文件/归档的统一检查入口。
 

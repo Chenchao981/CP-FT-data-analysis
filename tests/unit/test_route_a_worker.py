@@ -13,6 +13,7 @@ def _claimed_job() -> Job:
         job_id=41,
         source_file_id=None,
         import_batch_id=7,
+        analysis_session_id=None,
         cleaner_release_id=9,
         job_type=JobType.INITIAL_IMPORT,
         trigger_type=TriggerType.AUTO,

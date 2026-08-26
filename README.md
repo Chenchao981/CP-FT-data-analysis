@@ -8,6 +8,9 @@
 
 - [`docs/business/TMS_Business_Requirements_v0.2.md`](docs/business/TMS_Business_Requirements_v0.2.md)：当前业务需求口径；与旧业务流程冲突时优先。
 - [`docs/architecture/TMS_System_Architecture_v0.7_Route_A.md`](docs/architecture/TMS_System_Architecture_v0.7_Route_A.md)：Route A 系统架构与唯一 Canonical 决策。
+- [`docs/business/TMS_Quick_Analysis_Business_Requirements_v0.1.md`](docs/business/TMS_Quick_Analysis_Business_Requirements_v0.1.md)：一次性快速计算与正式入库的业务边界。
+- [`docs/architecture/TMS_System_Architecture_v0.8_Dual_Channel.md`](docs/architecture/TMS_System_Architecture_v0.8_Dual_Channel.md)：正式 Canonical 与临时 Workspace 双通道架构。
+- [`docs/TMS_Development_Plan_v0.8_Dual_Channel.md`](docs/TMS_Development_Plan_v0.8_Dual_Channel.md)：Quick Analysis、临时 Workspace、Storage Adapter 与 Local Agent 的阶段计划。
 - [`docs/TMS_Development_Plan_v0.7_Route_A.md`](docs/TMS_Development_Plan_v0.7_Route_A.md)：后续开发阶段、交付物和验收门槛。
 - [`docs/TMS_Development_Baseline_v0.6_Unified_Cleaning_Analytics/`](docs/TMS_Development_Baseline_v0.6_Unified_Cleaning_Analytics/README.md)：已实现技术资产和历史基线；与 v0.2/v0.7 冲突时以后者为准。
 - [`docs/G0/G0_Execution_Plan_v0.6.md`](docs/G0/G0_Execution_Plan_v0.6.md)：已执行 G0 的历史计划与证据入口。
@@ -20,7 +23,7 @@
 
 ## 当前开发状态
 
-- SQL Server 2014兼容Migration：开发库已前向升级至 `sql2014_0011`；
+- SQL Server 2014兼容Migration：仓库 head 为 `sql2014_0012`；开发库在线升级等待数据库网络恢复后复验；
 - 隔离开发数据库：`TMS_G0_DEV`，空库升级与Schema验证通过；
 - Measurement：Rowstore聚集主键 + 普通非聚集索引；
 - FastAPI后端骨架：存活检查、数据库就绪检查；
@@ -28,6 +31,7 @@
 - 华虹CP首条能力：严格DCP/TXT Parser、10套Schema、ZIP/7z安全输入、Canonical Writer和批量DQ；
 - Route A Worker：Cleaner Release执行合同、SHA256校验、SQL队列租约/心跳/恢复、上传与重新处理异步化，华虹CP已写入Canonical并可直接进入数据分析；
 - Route B空明细表已退出，`test.*`确定为唯一Canonical明细入口；
+- 快速分析P0：受控服务器目录无需上传即可调用已发布杰群低内存PAT；只保存Workspace会话、Manifest和结果Artifact，不写入`test.*`；
 - Dataset发布链：版本创建、输入血缘和身份门禁、阻断DQ检查、原子发布及Yield/Bin结果摘要；
 - 真实SQL Server集成：Canonical写入、DQ Gate、Dataset发布、结果查询及测试数据清理通过；
 - 开发运行说明：[backend/README.md](backend/README.md)。
@@ -47,6 +51,18 @@
 ```
 
 厂家和格式差异保留在原 CP/FT Cleaner。最终用户面对上传任务、正式结构化数据、补录、分析图表和临时下载，不需要执行人工 Dataset 审核发布。
+
+## 快速分析产品主线
+
+```text
+管理员配置的服务器目录
+→ 用户只选择数据源代码与相对目录
+→ SQL队列 QUICK_PAT
+→ 调用已发布 FT 工具包
+→ PAT Excel + 来源Manifest + 统计摘要（带TTL）
+```
+
+快速分析用于一次性PAT等需求，不上传原始文件，也不创建正式Measurement。需要长期追溯、跨批次比较或正式报表时仍走Route A正式入库。
 
 ## 参考项目边界
 

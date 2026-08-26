@@ -17,6 +17,7 @@ EXPECTED_SCHEMAS = {
     "evaluation",
     "analysis",
     "delivery",
+    "workspace",
 }
 EXPECTED_VIEWS = {
     "analytics.v_current_dataset_version",
@@ -39,6 +40,7 @@ EXPECTED_TABLES = {
     "evaluation.evaluation_run",
     "delivery.export_job",
     "governance.audit_log",
+    "workspace.analysis_session",
 }
 
 
@@ -64,7 +66,7 @@ def main() -> None:
         cursor = connection.cursor()
         cursor.execute("SELECT version_num FROM alembic_version")
         revision = cursor.fetchone()[0]
-        assert revision == "sql2014_0011", revision
+        assert revision == "sql2014_0012", revision
 
         cursor.execute("SELECT name FROM sys.schemas")
         schemas = {row[0] for row in cursor.fetchall()}
@@ -126,6 +128,7 @@ def main() -> None:
             "heartbeat_at_utc",
             "attempt_count",
             "max_attempts",
+            "analysis_session_id",
         }
         assert not (required_job_columns - job_columns), (
             required_job_columns - job_columns

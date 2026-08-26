@@ -7,18 +7,120 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from app.domain.cleaner_registry import CleanerRegistry
 from app.domain.jobs import Job, JobStatus, JobType, WorkerJobQueue
+from app.domain.quick_analysis import QuickAnalysisService
 from app.infrastructure.cp_csv_triplet_writer import CpCsvTripletWriter
 from app.infrastructure.existing_cleaner_results import (
     summarize_existing_cleaner_result,
 )
 from app.infrastructure.existing_cleaner_runner import ExistingCleanerRunner
 from app.infrastructure.ft_xlsx_scatter_writer import FtXlsxScatterWriter
+from app.infrastructure.quick_pat_runner import QuickPatRunner
+from app.infrastructure.source_catalog import SourceCatalog
 from app.infrastructure.sql_cleaner_registry import SqlCleanerRegistry
 from app.infrastructure.sql_stage_data_service import SqlStageDataService
 
 logger = logging.getLogger(__name__)
 JobHandler = Callable[[Job], None]
+
+
+class QuickPatHandler:
+    def __init__(
+        self,
+        registry: CleanerRegistry,
+        quick_analysis: QuickAnalysisService,
+        source_catalog: SourceCatalog,
+        *,
+        runner: QuickPatRunner | None = None,
+        work_root: str | Path | None = None,
+    ) -> None:
+        self._registry = registry
+        self._quick_analysis = quick_analysis
+        self._source_catalog = source_catalog
+        self._runner = runner or QuickPatRunner()
+        self._work_root = Path(
+            work_root
+            or os.getenv(
+                "TMS_QUICK_WORK_ROOT", r"F:\CP-FT数据分析\data\workspace"
+            )
+        )
+
+    def __call__(self, job: Job) -> None:
+        if job.analysis_session_id is None or job.cleaner_release_id is None:
+            raise RuntimeError(
+                "QUICK_PAT requires analysis_session_id and cleaner_release_id"
+            )
+        session = self._quick_analysis.worker_session_info(job.analysis_session_id)
+        self._quick_analysis.mark_running(session.analysis_session_id)
+        try:
+            if datetime.now(UTC) >= session.expires_at_utc:
+                raise RuntimeError("Quick PAT session expired before execution")
+            if session.analysis_type != "QUICK_PAT":
+                raise RuntimeError(
+                    f"unsupported Quick Analysis type: {session.analysis_type}"
+                )
+            if session.cleaner_release_id != job.cleaner_release_id:
+                raise RuntimeError("Quick PAT job and session Release do not match")
+            release = self._registry.get_released(job.cleaner_release_id)
+            if (
+                release.test_stage != session.test_stage
+                or release.factory_code != session.factory_code
+            ):
+                raise RuntimeError(
+                    "PAT Release does not match Quick Analysis session: "
+                    f"{release.test_stage}/{release.factory_code} != "
+                    f"{session.test_stage}/{session.factory_code}"
+                )
+            source = self._source_catalog.resolve_directory(
+                session.source_root_code, session.source_relative_path
+            )
+            current_manifest = self._source_catalog.build_manifest(
+                session.source_root_code, session.source_relative_path
+            )
+            if (
+                current_manifest.mode != session.source_manifest_mode
+                or current_manifest.sha256 != session.source_manifest_sha256
+                or current_manifest.as_json() != session.source_manifest_json
+            ):
+                raise RuntimeError(
+                    "Source directory changed after the Quick PAT session was queued"
+                )
+            output_root = (
+                self._work_root
+                / str(job.job_id)
+                / f"attempt-{job.attempt_count}"
+            )
+            result = self._runner.run_release(
+                release=release,
+                input_directory=source,
+                output_root=output_root,
+                source_manifest_json=session.source_manifest_json,
+                source_manifest_sha256=session.source_manifest_sha256,
+            )
+            completed_manifest = self._source_catalog.build_manifest(
+                session.source_root_code, session.source_relative_path
+            )
+            if (
+                completed_manifest.sha256 != session.source_manifest_sha256
+                or completed_manifest.as_json() != session.source_manifest_json
+            ):
+                raise RuntimeError(
+                    "Source directory changed while Quick PAT was running"
+                )
+            self._quick_analysis.record_success(
+                session.analysis_session_id,
+                job.job_id,
+                parameter_count=result.parameter_count,
+                record_count=result.record_count,
+                summary=result.summary,
+                artifacts=result.artifacts,
+            )
+        except Exception as exc:
+            self._quick_analysis.mark_failed(
+                session.analysis_session_id, "QUICK_PAT_FAILED", str(exc)
+            )
+            raise
 
 
 class RouteAInitialImportHandler:

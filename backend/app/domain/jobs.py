@@ -16,6 +16,7 @@ class JobType(StrEnum):
     EXPORT_LATEST = "EXPORT_LATEST"
     REPROCESS_UPDATE = "REPROCESS_UPDATE"
     DELETE_TASK = "DELETE_TASK"
+    QUICK_PAT = "QUICK_PAT"
     # Historical values remain readable during the forward migration.
     PARSE = "PARSE"
     REPROCESS = "REPROCESS"
@@ -44,6 +45,7 @@ class CreateJobRequest(BaseModel):
 
     source_file_id: int | None = Field(default=None, gt=0)
     import_batch_id: int | None = Field(default=None, gt=0)
+    analysis_session_id: int | None = Field(default=None, gt=0)
     cleaner_release_id: int | None = Field(default=None, gt=0)
     job_type: JobType = JobType.PARSE
     trigger_type: TriggerType = TriggerType.MANUAL
@@ -55,14 +57,24 @@ class CreateJobRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_input(self) -> CreateJobRequest:
-        if (self.source_file_id is None) == (self.import_batch_id is None):
+        input_count = sum(
+            value is not None
+            for value in (
+                self.source_file_id,
+                self.import_batch_id,
+                self.analysis_session_id,
+            )
+        )
+        if input_count != 1:
             raise ValueError(
-                "exactly one of source_file_id or import_batch_id is required"
+                "exactly one of source_file_id, import_batch_id or "
+                "analysis_session_id is required"
             )
         cleaner_jobs = {
             JobType.INITIAL_IMPORT,
             JobType.EXPORT_LATEST,
             JobType.REPROCESS_UPDATE,
+            JobType.QUICK_PAT,
             JobType.PARSE,
             JobType.REPROCESS,
         }
@@ -94,6 +106,7 @@ class Job:
     job_id: int
     source_file_id: int | None
     import_batch_id: int | None
+    analysis_session_id: int | None
     cleaner_release_id: int | None
     job_type: JobType
     trigger_type: TriggerType
@@ -137,6 +150,7 @@ class InMemoryJobService:
                 job_id=self._next_id,
                 source_file_id=request.source_file_id,
                 import_batch_id=request.import_batch_id,
+                analysis_session_id=request.analysis_session_id,
                 cleaner_release_id=request.cleaner_release_id,
                 job_type=request.job_type,
                 trigger_type=request.trigger_type,

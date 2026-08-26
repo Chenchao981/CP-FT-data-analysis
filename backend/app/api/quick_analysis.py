@@ -1,0 +1,167 @@
+from __future__ import annotations
+
+import os
+from dataclasses import asdict
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi.responses import FileResponse
+
+from app.api.dependencies import require_permission
+from app.core.errors import DomainError
+from app.domain.auth import Principal
+from app.domain.jobs import CreateJobRequest, JobType, TriggerType
+from app.domain.quick_analysis import CreateQuickPatRequest, NewQuickAnalysisSession
+
+router = APIRouter(prefix="/quick-analysis")
+
+
+def quick_service(request: Request):
+    return request.app.state.quick_analysis_service
+
+
+def source_catalog(request: Request):
+    return request.app.state.source_catalog
+
+
+def cleaner_registry(request: Request):
+    instance = getattr(request.app.state, "cleaner_registry", None)
+    if instance is None:
+        raise DomainError(
+            "DATABASE_NOT_CONFIGURED", "Cleaner Registry 尚未连接数据库", 503
+        )
+    return instance
+
+
+def job_service(request: Request):
+    return request.app.state.job_service
+
+
+@router.get("/source-roots")
+def list_source_roots(
+    request: Request,
+    _principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
+) -> tuple[dict[str, object], ...]:
+    return source_catalog(request).list_roots()
+
+
+@router.get("/source-roots/{root_code}/directories")
+def list_source_directories(
+    root_code: str,
+    request: Request,
+    relative_path: str = Query(default=".", max_length=1000),
+    _principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
+) -> dict[str, object]:
+    current, parent, directories = source_catalog(request).browse(
+        root_code, relative_path
+    )
+    return {
+        "root_code": root_code.strip().upper(),
+        "current_relative_path": current,
+        "parent_relative_path": parent,
+        "directories": [asdict(item) for item in directories],
+    }
+
+
+@router.post("/pat", status_code=status.HTTP_201_CREATED)
+def create_quick_pat(
+    payload: CreateQuickPatRequest,
+    request: Request,
+    principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
+) -> dict:
+    catalog = source_catalog(request)
+    root = catalog.get_root(payload.source_root_code)
+    if root.test_stage != "FT" or root.factory_code != "JIEQUN":
+        raise DomainError(
+            "QUICK_PAT_SOURCE_UNSUPPORTED", "当前快速 PAT 仅支持杰群 FT 数据源", 422
+        )
+    manifest = catalog.build_manifest(root.code, payload.source_relative_path)
+    release = cleaner_registry(request).latest_released("FT", "JIEQUN")
+    ttl_hours = int(os.getenv("TMS_QUICK_RESULT_TTL_HOURS", "168"))
+    if ttl_hours < 1 or ttl_hours > 8760:
+        raise RuntimeError("TMS_QUICK_RESULT_TTL_HOURS must be between 1 and 8760")
+    session = quick_service(request).create(
+        principal,
+        NewQuickAnalysisSession(
+            analysis_type="QUICK_PAT",
+            test_stage="FT",
+            factory_code="JIEQUN",
+            source_root_code=root.code,
+            source_relative_path=manifest.selected_relative_path,
+            source_manifest_mode=manifest.mode,
+            source_manifest_json=manifest.as_json(),
+            source_manifest_sha256=manifest.sha256,
+            source_file_count=manifest.file_count,
+            source_total_bytes=manifest.total_bytes,
+            retention_mode="RESULT_ONLY",
+            cleaner_release_id=release.cleaner_release_id,
+            expires_at_utc=datetime.now(UTC) + timedelta(hours=ttl_hours),
+        ),
+    )
+    try:
+        job = job_service(request).create(
+            CreateJobRequest(
+                analysis_session_id=session.analysis_session_id,
+                cleaner_release_id=release.cleaner_release_id,
+                job_type=JobType.QUICK_PAT,
+                trigger_type=TriggerType.MANUAL,
+                requested_by=principal.login_name,
+                requested_by_user_id=principal.user_id,
+                reason="受控服务器目录直接执行杰群低内存 PAT，不写入 Canonical",
+                idempotency_key=f"quick-pat:{session.analysis_session_id}",
+            )
+        )
+        quick_service(request).attach_job(session.analysis_session_id, job.job_id)
+    except Exception as exc:
+        quick_service(request).mark_failed(
+            session.analysis_session_id, "QUEUE_CREATE_FAILED", str(exc)
+        )
+        raise
+    created = quick_service(request).get_for_principal(
+        session.analysis_session_id, principal
+    )
+    return asdict(created)
+
+
+@router.get("/sessions")
+def list_quick_sessions(
+    request: Request,
+    principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
+) -> list[dict]:
+    return [asdict(item) for item in quick_service(request).list_for_principal(principal)]
+
+
+@router.get("/sessions/{analysis_session_id}")
+def get_quick_session(
+    analysis_session_id: int,
+    request: Request,
+    principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
+) -> dict:
+    return asdict(
+        quick_service(request).get_for_principal(analysis_session_id, principal)
+    )
+
+
+@router.get("/sessions/{analysis_session_id}/download")
+def download_quick_pat(
+    analysis_session_id: int,
+    request: Request,
+    principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
+) -> FileResponse:
+    artifact = quick_service(request).result_artifact(analysis_session_id, principal)
+    path = Path(artifact.path).resolve()
+    work_root = Path(
+        os.getenv("TMS_QUICK_WORK_ROOT", r"F:\CP-FT数据分析\data\workspace")
+    ).resolve()
+    try:
+        contained = os.path.commonpath(
+            (os.path.normcase(str(work_root)), os.path.normcase(str(path)))
+        ) == os.path.normcase(str(work_root))
+    except ValueError:
+        contained = False
+    if not contained or path.suffix.lower() != ".xlsx":
+        raise DomainError("QUICK_RESULT_PATH_INVALID", "PAT 结果存储路径无效", 409)
+    if not path.is_file():
+        raise DomainError("QUICK_RESULT_MISSING", "PAT 结果已不在存储位置", 404)
+    return FileResponse(path, filename=path.name)

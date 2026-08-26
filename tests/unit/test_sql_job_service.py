@@ -13,6 +13,7 @@ def test_database_job_row_maps_to_domain() -> None:
         "job_id": 1,
         "source_file_id": None,
         "import_batch_id": 7,
+        "analysis_session_id": None,
         "cleaner_release_id": 2,
         "job_type": "PARSE",
         "trigger_type": "MANUAL",
