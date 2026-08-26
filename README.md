@@ -23,7 +23,7 @@
 
 ## 当前开发状态
 
-- SQL Server 2014兼容Migration：仓库 head 为 `sql2014_0012`；开发库在线升级等待数据库网络恢复后复验；
+- SQL Server 2014兼容Migration：仓库和 `TMS_G0_DEV` 开发库均为 `sql2014_0012`；真实520文件SQL队列全链已通过；
 - 隔离开发数据库：`TMS_G0_DEV`，空库升级与Schema验证通过；
 - Measurement：Rowstore聚集主键 + 普通非聚集索引；
 - FastAPI后端骨架：存活检查、数据库就绪检查；

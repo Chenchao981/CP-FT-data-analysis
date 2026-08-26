@@ -76,6 +76,17 @@ Quick Analysis通过`TMS_SOURCE_ROOTS_JSON`配置管理员受控根目录。浏�
   --output-root 'F:\CP-FT数据分析\artifacts\quick-pat-e2e'
 ```
 
+真实开发库的API、SQL Queue、Worker、Artifact下载、所有权隔离与正式事实零增长验证：
+
+```powershell
+. .\.env.runtime.ps1
+& .\.conda-env\python.exe scripts\g0\verify_quick_pat_sql_e2e.py `
+  --source-root 'JIEQUN_FT_SHARED' `
+  --relative-path '520data'
+```
+
+脚本要求开发库存在一个系统管理员和一个具备`ANALYSIS_RUN`的普通用户。它保留成功的Quick Analysis会话、任务与临时Artifact作为验收记录，但不会向`test.test_run`、`test.unit_result`或`test.measurement`写入数据。
+
 华虹文件边界支持TXT、ZIP和7z。归档只在受控临时目录中展开TXT，并在退出上下文时清理；任何加密、损坏、路径穿越、符号链接、重复路径或容量超限均失败关闭。`HuaHongBatchInspector.inspect_input()` 是单文件/归档的统一检查入口。
 
 Canonical写入分两步：`SourceFileRepository.register()`先登记来源和接收记录，调用方据此创建并启动Processing Job；CP Writer要求Supplier、Program Version、Parser Profile和完整Test Item映射，Product可由源数据或人工补录提供，也可以为空。CP和FT使用独立Writer/Adapter，只在清洗后写入公共Run/Unit/Measurement模型。
@@ -88,7 +99,7 @@ Dataset发布链要求先建立Dataset Version并显式关联Processing Run。DQ
 
 ```powershell
 & .\.conda-env\python.exe scripts\g0\verify_canonical_dataset_pipeline.py `
-  --server 192.168.18.132 --user <SQL登录名>
+  --server <SQL服务器> --user <SQL登录名>
 ```
 
 脚本通过安全密码提示读取凭据，使用带随机标识的合成G0数据验证完整链路，并在结束时按外键顺序清理及独立复核测试数据。成功输出同时包含 `canonical_dataset_pipeline=PASS` 和 `integration_cleanup=PASS`。

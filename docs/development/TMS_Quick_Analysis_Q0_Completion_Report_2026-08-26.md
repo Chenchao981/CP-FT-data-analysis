@@ -2,8 +2,8 @@
 
 - 日期：2026-08-26
 - 里程碑：Q0 杰群 FT 原始目录快速 PAT
-- 结论：**代码与真实非数据库计算链通过；部署完成状态为 Conditional PASS**
-- 开放门：远端 SQL Server 2014 当前网络不可达，`sql2014_0012` 在线升级、SQL Queue 全链和 `test.*` 前后计数尚未复验
+- 结论：**代码、真实计算链和 `TMS_G0_DEV` SQL 全链全部通过；Q0 开发库状态为 PASS**
+- 部署边界：本报告关闭开发库验收门；生产环境发布、过期文件物理清理和容量配额仍属于后续工作
 
 ## 1. 本次完成内容
 
@@ -83,6 +83,31 @@ Manifest 只读取目录元数据，没有顺序读取或上传 2.83 GiB 文件�
 - 首次验证暴露并修复了“总解析行数”与“最大参数有效值数”的语义混淆：最终会话 `record_count=6,813,800` 来自工具运行摘要；最大参数有效值数 6,812,086 单独保留在结果摘要中。
 - 一次重跑曾由性能监控器读取正在删除的 spool 文件而中断；已修复监控脚本的临时文件竞态，随后完整重跑通过。生产 PAT Runner 不含该监控竞态。
 
+### 2.4 SQL Queue 全链验证
+
+网络恢复后在 `TMS_G0_DEV` 执行了真实520文件在线验收：
+
+| 项目 | 实测值 |
+|---|---:|
+| 数据库升级 | `sql2014_0011 -> sql2014_0012` |
+| Schema 验证 | 25 schemas、55 tables、4 views，PASS |
+| JIEQUN Quick PAT Release | `cleaner_release_id=15` |
+| Analysis Session / Job | `1 / 42` |
+| SQL 全链墙钟时间 | 125.104 秒 |
+| 在线 Manifest SHA-256 | `2fd9688b5447d5a61a8976e34156da9415c79139a778005ab907b64893ba7054` |
+| PAT Result SHA-256 | `9649e6b159d65f1c629b8d331b26d6031cac4c4d4dd7bd40781d3337de28d55b` |
+| Artifact | `pat_report`、`pat_summary`、`source_manifest` |
+
+在线 Manifest 使用受控根代码和相对目录 `520data`，因此与非数据库验收时的 Manifest 哈希不同；两次输入文件数和总字节数完全相同。API 创建、SQL Claim、30秒心跳续租、Worker、结果登记和 Excel 下载均通过。
+
+普通分析用户访问管理员创建的会话详情、结果下载和列表均得到 404，任务查询也被所有权条件拒绝。正式事实表前后计数如下：
+
+| 正式事实表 | 运行前 | 运行后 | 增量 |
+|---|---:|---:|---:|
+| `test.test_run` | 77 | 77 | 0 |
+| `test.unit_result` | 92,335 | 92,335 | 0 |
+| `test.measurement` | 1,588,741 | 1,588,741 | 0 |
+
 ## 3. 自动化验证
 
 | 验证 | 结果 |
@@ -94,6 +119,10 @@ Manifest 只读取目录元数据，没有顺序读取或上传 2.83 GiB 文件�
 | Git whitespace 检查 | PASS |
 | Alembic 单一 head | `sql2014_0012` PASS |
 | 真实 520 非数据库 Quick PAT 链 | PASS |
+| `TMS_G0_DEV` 在线 Schema 验证 | PASS |
+| 真实 520 API → SQL Queue → Worker → Download | PASS，125.104 秒 |
+| 普通用户所有权隔离 | PASS |
+| Quick PAT 前后 `test.*` 零增长 | PASS |
 
 测试期间有 4 条来自 `openpyxl` 的 `datetime.utcnow()` DeprecationWarning；不影响当前结果，依赖升级时需要复验。Vite 仍提示既有主包和 Analytics chunk 大于 500 kB；Quick Analysis 自身已懒加载，压缩前约 10.51 kB。
 
@@ -108,17 +137,11 @@ Manifest 只读取目录元数据，没有顺序读取或上传 2.83 GiB 文件�
 
 ## 5. 不确定性与薄弱点
 
-### 5.1 SQL 在线门未关闭
+### 5.1 部署边界
 
-2026-08-26 两次检查均无法连接部署配置中的远端 SQL Server 1433 端口：ODBC TCP 登录超时，端口连通性检查返回 `False`。因此以下内容仍未验证：
-
-- 开发库从 `sql2014_0011` 前向升级到 `sql2014_0012`；
-- Cleaner Bootstrap 在真实库登记 JIEQUN PAT Release；
-- API → `processing_job` → SQL Claim → Worker → Artifact → Download 全链；
-- 快速任务前后 `test.test_run`、`test.unit_result`、`test.measurement` 行数保持不变；
-- 普通用户在真实 SQL 查询中的行级所有权限制。
-
-Migration head、SQL Server 2014 禁用 JSON 函数、Schema/Check/FK 合同已做静态测试，但不能替代真实 SQL Server 执行。
+- `TMS_G0_DEV` 在线门已经关闭；生产环境尚未执行 Migration、数据源配置和 Worker 服务化部署。
+- 本次使用真实 JWT、SQL `auth_session` 和 RBAC 依赖验证接口，但没有重置或使用用户密码，因此不重复验证登录密码流程。
+- SQL E2E 保留 Session、Job 和三个临时 Artifact 作为开发库验收记录；结果按7天 TTL 过期。
 
 ### 5.2 当前 P0 限制
 
@@ -131,9 +154,7 @@ Migration head、SQL Server 2014 禁用 JSON 函数、Schema/Check/FK 合同已�
 
 ## 6. 下一步
 
-1. 网络恢复后执行 `alembic upgrade head`，确认 revision=`sql2014_0012`。
-2. 幂等运行 Cleaner Bootstrap，确认 JIEQUN PAT Release 的 Package SHA 与本报告一致。
-3. 配置真实 `TMS_SOURCE_ROOTS_JSON`，通过登录 API 创建一次 520 QUICK_PAT，并由 SQL Worker 完成。
-4. 记录运行前后 `test.*` 三张正式事实表行数，确认零增长；验证普通用户不能读取他人会话。
-5. 实现过期 Artifact 物理清理和容量配额，关闭 Q0 最后一个生命周期缺口。
-6. Q0 SQL 门关闭后再进入 Q1 Parquet/Arrow 临时交互 Workspace。
+1. 实现过期 Artifact 物理清理、容量配额和清理审计，补齐结果生命周期。
+2. 将 API 与 Worker 配置为 Windows 服务，验证重启、断网续跑和运行日志轮转。
+3. 生产发布前单独审批数据库目标、Source Catalog、服务账号权限和备份/回滚窗口。
+4. 进入 Q1 Parquet/Arrow 临时交互 Workspace，继续保持与正式 Canonical 隔离。
