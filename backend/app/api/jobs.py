@@ -5,10 +5,12 @@ from dataclasses import asdict
 from fastapi import APIRouter, Depends, Request, status
 
 from app.api.dependencies import require_permission
+from app.core.errors import DomainError
 from app.domain.auth import Principal
 from app.domain.jobs import (
     CreateJobRequest,
     JobService,
+    JobType,
     TransitionJobRequest,
 )
 
@@ -25,6 +27,12 @@ def create_job(
     request: Request,
     principal: Principal = Depends(require_permission("TASK_CREATE")),
 ) -> dict:
+    if payload.job_type == JobType.INITIAL_IMPORT:
+        raise DomainError(
+            "INITIAL_IMPORT_ENTRYPOINT_REQUIRED",
+            "INITIAL_IMPORT 只能由上传、重新处理或Lot补录恢复入口创建",
+            422,
+        )
     trusted = payload.model_copy(
         update={
             "requested_by": principal.login_name,
@@ -57,6 +65,16 @@ def transition_job(
     principal: Principal = Depends(require_permission("TASK_RETRY")),
 ) -> dict:
     instance = service(request)
+    if hasattr(instance, "get_for_principal"):
+        current = instance.get_for_principal(job_id, principal)
+    else:
+        current = instance.get(job_id)
+    if current.job_type == JobType.INITIAL_IMPORT:
+        raise DomainError(
+            "INITIAL_IMPORT_TRANSITION_RESERVED",
+            "INITIAL_IMPORT 状态只能由持有租约的 Worker 迁移",
+            422,
+        )
     if hasattr(instance, "transition_for_principal"):
         return asdict(instance.transition_for_principal(job_id, payload, principal))
     return asdict(instance.transition(job_id, payload))

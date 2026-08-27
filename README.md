@@ -10,6 +10,8 @@
 - [`docs/architecture/TMS_System_Architecture_v0.7_Route_A.md`](docs/architecture/TMS_System_Architecture_v0.7_Route_A.md)：Route A 系统架构与唯一 Canonical 决策。
 - [`docs/business/TMS_Quick_Analysis_Business_Requirements_v0.1.md`](docs/business/TMS_Quick_Analysis_Business_Requirements_v0.1.md)：一次性快速计算与正式入库的业务边界。
 - [`docs/architecture/TMS_System_Architecture_v0.8_Dual_Channel.md`](docs/architecture/TMS_System_Architecture_v0.8_Dual_Channel.md)：正式 Canonical 与临时 Workspace 双通道架构。
+- [`docs/architecture/TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md`](docs/architecture/TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md)：正式入库缺 Lot 的暂停、人工确认、子 Job 重跑与审计合同。
+- [`docs/development/TMS_Lot_Input_Recovery_Completion_Report_2026-08-27.md`](docs/development/TMS_Lot_Input_Recovery_Completion_Report_2026-08-27.md)：日月新/日月光真实浏览器与 SQL Server 闭环证据及剩余生产门禁。
 - [`docs/TMS_Development_Plan_v0.8_Dual_Channel.md`](docs/TMS_Development_Plan_v0.8_Dual_Channel.md)：Quick Analysis、临时 Workspace、Storage Adapter 与 Local Agent 的阶段计划。
 - [`docs/TMS_Development_Plan_v0.7_Route_A.md`](docs/TMS_Development_Plan_v0.7_Route_A.md)：后续开发阶段、交付物和验收门槛。
 - [`docs/TMS_Development_Baseline_v0.6_Unified_Cleaning_Analytics/`](docs/TMS_Development_Baseline_v0.6_Unified_Cleaning_Analytics/README.md)：已实现技术资产和历史基线；与 v0.2/v0.7 冲突时以后者为准。
@@ -17,19 +19,20 @@
 
 旧路线图和 v0.6 文档保留决策演进与已实现资产；如业务流程、事实源或 Cleaner 边界与 v0.2/v0.7 冲突，以 v0.2/v0.7 为准。
 
-当前目标环境确定为远端 Windows Server 2019 + SQL Server 2014。数据库按[ADR-0001](docs/adr/ADR-0001_SQLServer2014_Target.md)采用2014兼容实现；正式开发链位于 `db/alembic/`。仓库和`TMS_G0_DEV`当前均为`sql2014_0013`；其他环境的revision仍必须在线确认，不能仅根据仓库文件名推断。文档包内原`0001 → 0004` 2022+草案只作参考。
+当前目标环境确定为远端 Windows Server 2019 + SQL Server 2014。数据库按[ADR-0001](docs/adr/ADR-0001_SQLServer2014_Target.md)采用2014兼容实现；正式开发链位于 `db/alembic/`。仓库和本次验收使用的 `TMS_G0_DEV` 当前均为 `sql2014_0014`；其他环境的 revision 仍必须在线确认，不能仅根据仓库文件名推断。文档包内原 `0001 → 0004` 2022+ 草案只作参考。
 
 当前实例实测为SQL Server 2014 SP2 Enterprise（12.0.5000.0）；隔离库开发可继续，正式环境验收前需升级SP3并复验，详见[G0执行状态](docs/G0/G0_Status_2026-08-20.md)。
 
 ## 当前开发状态
 
-- SQL Server 2014兼容Migration：仓库 head 为 `sql2014_0013`，增加Quick Analysis容量预留与可审计物理清理；
+- SQL Server 2014兼容Migration：仓库 head 为 `sql2014_0014`，增加正式入库 Lot 输入请求、恢复 Job 血缘与 `NEEDS_INPUT` 状态；
 - 隔离开发数据库：`TMS_G0_DEV`，空库升级与Schema验证通过；
 - Measurement：Rowstore聚集主键 + 普通非聚集索引；
 - FastAPI后端骨架：存活检查、数据库就绪检查；
 - React前端：清洗任务、华虹样本检查、Dataset结果审核与发布；
 - 华虹CP首条能力：严格DCP/TXT Parser、10套Schema、ZIP/7z安全输入、Canonical Writer和批量DQ；
 - Route A Worker：Cleaner Release执行合同、SHA256校验、SQL队列租约/心跳/恢复、上传与重新处理异步化，华虹CP已写入Canonical并可直接进入数据分析；
+- Lot 恢复闭环：日月新/日月光 FT 已通过真实浏览器“缺 Lot → 文件级补录 → 同 Release 子 Job → Dataset Current → 图表”验收；未知格式仍失败关闭；
 - Route B空明细表已退出，`test.*`确定为唯一Canonical明细入口；
 - 快速分析P0：受控服务器目录无需上传即可调用已发布杰群低内存PAT；只保存Workspace会话、Manifest和结果Artifact，不写入`test.*`；
 - Dataset发布链：版本创建、输入血缘和身份门禁、阻断DQ检查、原子发布及Yield/Bin结果摘要；

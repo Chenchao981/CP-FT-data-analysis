@@ -54,7 +54,7 @@ class FtXlsxScatter:
     product_name: str
     parameters: tuple[str, ...]
     spec_items: tuple[FtSpecItem, ...]
-    source_specs: tuple["FtSourceSpec", ...]
+    source_specs: tuple[FtSourceSpec, ...]
     rows: tuple[FtCleanedRow, ...]
     sources: tuple[str, ...]
     lots: tuple[str, ...]
@@ -80,6 +80,17 @@ class FtCanonicalImportResult:
     spec_set_id: int | None
     unit_count: int
     measurement_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class FtArtifactIdentitySummary:
+    factory_code: str
+    product_name: str
+    parameters: tuple[str, ...]
+    sources: tuple[str, ...]
+    lots: tuple[str, ...]
+    row_count: int
+    cleaned_file: str
 
 
 def _number(raw: str, *, field: str, allow_blank: bool = False) -> float | None:
@@ -142,6 +153,18 @@ _RIYUEXIN_PRODUCT_FIRST_PATTERN = re.compile(
     r"\d{12,14}$",
     re.IGNORECASE,
 )
+_APPROVED_PRODUCT_PATTERN = r"NCE[A-Z0-9()\-]+"
+_SOURCE_FIRST_MISSING_LOT_PATTERN = re.compile(
+    rf"^(?P<source>{_SOURCE_PATTERN})_(?P<product>{_APPROVED_PRODUCT_PATTERN})_"
+    r"\d{8}_\d{6}$",
+    re.IGNORECASE,
+)
+_RIYUEXIN_PRODUCT_FIRST_MISSING_LOT_PATTERN = re.compile(
+    rf"^(?P<product>{_APPROVED_PRODUCT_PATTERN})_(?P<source>{_SOURCE_PATTERN})_DC_"
+    r"\d{12,14}$",
+    re.IGNORECASE,
+)
+_LOT_FULL_PATTERN = re.compile(rf"^{_LOT_PATTERN}$", re.IGNORECASE)
 
 
 def _legacy_product_from_source_file(source_file: str) -> str:
@@ -154,20 +177,155 @@ def _legacy_product_from_source_file(source_file: str) -> str:
 
 
 def _factory_identity_from_source_file(
-    source_file: str, factory_code: str
+    source_file: str,
+    factory_code: str,
+    *,
+    spec_lot_id: str | None = None,
 ) -> tuple[str, str, str]:
     stem = Path(source_file).stem
     match = _SOURCE_FIRST_PATTERN.fullmatch(stem)
     if match is None and factory_code == "RIYUEXIN":
         match = _RIYUEXIN_PRODUCT_FIRST_PATTERN.fullmatch(stem)
-    if match is None:
-        raise FtXlsxScatterError(
-            f"{factory_code} FT Source_File 不符合已批准身份格式: {source_file}"
+    if match is not None:
+        file_lot = match.group("lot").upper()
+        if spec_lot_id is not None and spec_lot_id.strip().upper() != file_lot:
+            raise FtXlsxScatterError(
+                f"{factory_code} FT Source_File Lot 与 spec row lot_ID 不一致: {source_file}"
+            )
+        return (
+            match.group("source").upper(),
+            match.group("product").strip(),
+            file_lot,
         )
-    return (
-        match.group("source").upper(),
-        match.group("product").strip(),
-        match.group("lot").upper(),
+
+    missing_lot_match = _SOURCE_FIRST_MISSING_LOT_PATTERN.fullmatch(stem)
+    if missing_lot_match is None and factory_code == "RIYUEXIN":
+        missing_lot_match = _RIYUEXIN_PRODUCT_FIRST_MISSING_LOT_PATTERN.fullmatch(stem)
+    if missing_lot_match is not None:
+        manual_lot = (spec_lot_id or "").strip().upper()
+        if not _LOT_FULL_PATTERN.fullmatch(manual_lot):
+            raise FtXlsxScatterError(
+                f"{factory_code} FT 缺 Lot Source_File 必须由 spec row lot_ID 提供已批准批次号: {source_file}"
+            )
+        return (
+            missing_lot_match.group("source").upper(),
+            missing_lot_match.group("product").strip(),
+            manual_lot,
+        )
+
+    raise FtXlsxScatterError(
+        f"{factory_code} FT Source_File 不符合已批准身份格式: {source_file}"
+    )
+
+
+def summarize_ft_xlsx_scatter_identity(
+    artifacts: tuple[CleanerArtifact, ...],
+) -> FtArtifactIdentitySummary:
+    """Read summary identity only from the approved manifest/spec contract."""
+    cleaned_path = _artifact_path(artifacts, "cleaned")
+    data_path = _artifact_path(artifacts, "scatter_data")
+    spec_path = _artifact_path(artifacts, "scatter_spec")
+    manifest_path = _artifact_path(artifacts, "scatter_manifest")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise FtXlsxScatterError("FT scatter manifest is invalid") from exc
+    if manifest.get("schema_version") != 1 or manifest.get("data_type") != "DC":
+        raise FtXlsxScatterError("FT scatter manifest contract is unsupported")
+    factory_code = str(manifest.get("factory_code") or "").strip().upper()
+    if factory_code not in FT_FACTORY_CONFIGS:
+        raise FtXlsxScatterError(
+            "FT scatter summary requires an approved manifest factory_code"
+        )
+    if manifest.get("cleaned_file") != cleaned_path.name:
+        raise FtXlsxScatterError("FT manifest cleaned_file does not match artifact")
+    if manifest.get("data_file") != data_path.name:
+        raise FtXlsxScatterError("FT manifest data_file does not match artifact")
+    if manifest.get("spec_file") != spec_path.name:
+        raise FtXlsxScatterError("FT manifest spec_file does not match artifact")
+
+    parameters = tuple(str(value).strip() for value in manifest.get("parameters") or ())
+    sources = tuple(str(value).strip() for value in manifest.get("sources") or ())
+    lots = tuple(str(value).strip() for value in manifest.get("lots") or ())
+    if (
+        not parameters
+        or any(not value for value in parameters)
+        or len(set(parameters)) != len(parameters)
+    ):
+        raise FtXlsxScatterError("FT manifest parameters are empty or duplicated")
+    if not sources or any(not value for value in sources) or len(set(sources)) != len(sources):
+        raise FtXlsxScatterError("FT manifest sources are empty or duplicated")
+    if not lots or any(not value for value in lots) or len(set(lots)) != len(lots):
+        raise FtXlsxScatterError("FT manifest lots are empty or duplicated")
+    try:
+        row_count = int(manifest.get("row_count"))
+    except (TypeError, ValueError) as exc:
+        raise FtXlsxScatterError("FT manifest row_count is invalid") from exc
+    if row_count < 0:
+        raise FtXlsxScatterError("FT manifest row_count is invalid")
+
+    required_spec = {"Source_ID", "lot_ID", "Parameter", "Source_File"}
+    spec_keys: set[tuple[str, str, str]] = set()
+    identity_by_group: dict[tuple[str, str], tuple[str, str, str]] = {}
+    products: set[str] = set()
+    with spec_path.open("r", encoding="utf-8-sig", newline="") as stream:
+        reader = csv.DictReader(stream)
+        if not required_spec.issubset(set(reader.fieldnames or ())):
+            raise FtXlsxScatterError("FT scatter spec identity columns are incomplete")
+        for source_row_no, row in enumerate(reader, start=2):
+            source_id = (row.get("Source_ID") or "").strip()
+            lot_id = (row.get("lot_ID") or "").strip()
+            parameter = (row.get("Parameter") or "").strip()
+            source_file = Path(row.get("Source_File") or "").name
+            if (
+                not source_id
+                or not lot_id
+                or parameter not in parameters
+                or not source_file
+            ):
+                raise FtXlsxScatterError(
+                    f"FT scatter spec row {source_row_no} has invalid summary identity"
+                )
+            file_source, product, file_lot = _factory_identity_from_source_file(
+                source_file, factory_code, spec_lot_id=lot_id
+            )
+            if Path(source_file).stem != source_id or file_lot != lot_id.upper():
+                raise FtXlsxScatterError(
+                    f"FT Source_File identity differs from spec row {source_row_no}"
+                )
+            group = (source_id, lot_id)
+            identity = (file_source, product, source_file)
+            previous = identity_by_group.get(group)
+            if previous is not None and previous != identity:
+                raise FtXlsxScatterError(
+                    f"FT Source/Lot maps to multiple source identities: {group}"
+                )
+            identity_by_group[group] = identity
+            products.add(product)
+            spec_keys.add((source_id, lot_id, parameter))
+
+    spec_groups = set(identity_by_group)
+    if {source_id for source_id, _ in spec_groups} != set(sources) or {
+        lot_id for _, lot_id in spec_groups
+    } != set(lots):
+        raise FtXlsxScatterError("FT scatter spec Source/Lot differs from manifest")
+    expected_spec_keys = {
+        (source_id, lot_id, parameter)
+        for source_id, lot_id in spec_groups
+        for parameter in parameters
+    }
+    if spec_keys != expected_spec_keys:
+        raise FtXlsxScatterError("FT scatter spec does not cover Source/Lot/Parameter")
+    if len(products) != 1:
+        raise FtXlsxScatterError("FT upload must resolve exactly one Product")
+    return FtArtifactIdentitySummary(
+        factory_code=factory_code,
+        product_name=next(iter(products)),
+        parameters=parameters,
+        sources=sources,
+        lots=lots,
+        row_count=row_count,
+        cleaned_file=cleaned_path.name,
     )
 
 
@@ -204,7 +362,11 @@ def parse_ft_xlsx_scatter(
         or len(set(parameters)) != len(parameters)
     ):
         raise FtXlsxScatterError("FT manifest parameters are empty or duplicated")
-    if not sources or any(not value for value in sources) or len(set(sources)) != len(sources):
+    if (
+        not sources
+        or any(not value for value in sources)
+        or len(set(sources)) != len(sources)
+    ):
         raise FtXlsxScatterError("FT manifest sources are empty or duplicated")
     if not lots or any(not value for value in lots) or len(set(lots)) != len(lots):
         raise FtXlsxScatterError("FT manifest lots are empty or duplicated")
@@ -273,7 +435,7 @@ def parse_ft_xlsx_scatter(
                 )
             if explicit_factory_code:
                 file_source, product, file_lot = _factory_identity_from_source_file(
-                    source_file, factory_code
+                    source_file, factory_code, spec_lot_id=lot_id
                 )
                 if (
                     Path(source_file).stem != source_id

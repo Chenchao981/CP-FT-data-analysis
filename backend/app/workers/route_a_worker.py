@@ -14,7 +14,10 @@ from app.infrastructure.cp_csv_triplet_writer import CpCsvTripletWriter
 from app.infrastructure.existing_cleaner_results import (
     summarize_existing_cleaner_result,
 )
-from app.infrastructure.existing_cleaner_runner import ExistingCleanerRunner
+from app.infrastructure.existing_cleaner_runner import (
+    CleanerInputRequired,
+    ExistingCleanerRunner,
+)
 from app.infrastructure.ft_xlsx_scatter_writer import FtXlsxScatterWriter
 from app.infrastructure.quick_pat_runner import QuickPatRunner
 from app.infrastructure.source_catalog import SourceCatalog
@@ -143,47 +146,57 @@ class RouteAInitialImportHandler:
         )
 
     def __call__(self, job: Job) -> None:
-        if job.import_batch_id is None or job.cleaner_release_id is None:
-            raise RuntimeError(
-                "INITIAL_IMPORT requires import_batch_id and cleaner_release_id"
-            )
-        batch = self._stage_data.worker_batch_info(job.import_batch_id)
-        if not batch.files:
-            raise RuntimeError(f"upload task {job.import_batch_id} has no input files")
-        release = self._registry.get_released(job.cleaner_release_id)
-        expected_factory = batch.factory_code.strip().upper()
-        aliases = {
-            "HH": "HUAHONG",
-            "华虹": "HUAHONG",
-            "JT": "JETECH",
-            "捷特": "JETECH",
-            "立昂微": "LION",
-            "国宇": "GUOYU",
-            "国宇FRD": "GUOYU",
-            "日月新": "RIYUEXIN",
-            "ASE": "RIYUEGUANG",
-            "日月光": "RIYUEGUANG",
-        }
-        expected_factory = aliases.get(expected_factory, expected_factory)
-        if (
-            release.test_stage != batch.test_stage
-            or release.factory_code != expected_factory
-        ):
-            raise RuntimeError(
-                "Cleaner Release does not match upload task: "
-                f"{release.test_stage}/{release.factory_code} != "
-                f"{batch.test_stage}/{expected_factory}"
-            )
-        inputs = [Path(item.storage_uri) for item in batch.files]
-        if batch.test_stage == "FT":
-            inputs = [inputs[0].parent]
-        output_root = self._work_root / str(job.job_id) / f"attempt-{job.attempt_count}"
-        self._stage_data.worker_mark_processing(job.import_batch_id)
+        if job.import_batch_id is None:
+            raise RuntimeError("INITIAL_IMPORT requires import_batch_id")
         try:
+            if job.cleaner_release_id is None:
+                raise RuntimeError("INITIAL_IMPORT requires cleaner_release_id")
+            batch = self._stage_data.worker_batch_info(job.import_batch_id)
+            if not batch.files:
+                raise RuntimeError(
+                    f"upload task {job.import_batch_id} has no input files"
+                )
+            release = self._registry.get_released(job.cleaner_release_id)
+            expected_factory = batch.factory_code.strip().upper()
+            aliases = {
+                "HH": "HUAHONG",
+                "华虹": "HUAHONG",
+                "JT": "JETECH",
+                "捷特": "JETECH",
+                "立昂微": "LION",
+                "国宇": "GUOYU",
+                "国宇FRD": "GUOYU",
+                "日月新": "RIYUEXIN",
+                "ASE": "RIYUEGUANG",
+                "日月光": "RIYUEGUANG",
+            }
+            expected_factory = aliases.get(expected_factory, expected_factory)
+            if (
+                release.test_stage != batch.test_stage
+                or release.factory_code != expected_factory
+            ):
+                raise RuntimeError(
+                    "Cleaner Release does not match upload task: "
+                    f"{release.test_stage}/{release.factory_code} != "
+                    f"{batch.test_stage}/{expected_factory}"
+                )
+            inputs = [Path(item.storage_uri) for item in batch.files]
+            lot_overrides = {
+                Path(item.original_file_name).name: item.lot_id_override
+                for item in batch.files
+                if item.lot_id_override
+            }
+            expected_sha256 = tuple(item.expected_sha256 for item in batch.files)
+            output_root = (
+                self._work_root / str(job.job_id) / f"attempt-{job.attempt_count}"
+            )
+            self._stage_data.worker_mark_processing(job.import_batch_id)
             result = self._runner.run_release(
                 release=release,
                 inputs=inputs,
                 output_root=output_root,
+                lot_overrides=lot_overrides if batch.test_stage == "FT" else None,
+                expected_sha256=expected_sha256,
             )
             summary = summarize_existing_cleaner_result(result)
             expires = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=24)
@@ -221,6 +234,8 @@ class RouteAInitialImportHandler:
                 summary,
                 finish_job=False,
             )
+        except CleanerInputRequired:
+            raise
         except Exception as exc:
             self._stage_data.mark_failed(
                 job.import_batch_id,
@@ -294,6 +309,18 @@ class DatabaseJobWorker:
                 job.job_id,
                 job.lease_token,
                 JobStatus.SUCCESS,
+            )
+        except CleanerInputRequired as exc:
+            logger.info(
+                "Route A job needs user input",
+                extra={"job_id": job.job_id, "field_code": exc.field_code},
+            )
+            return self._queue.pause_leased_for_input(
+                job.job_id,
+                job.lease_token,
+                field_code=exc.field_code,
+                files=exc.files,
+                message=exc.message,
             )
         except Exception as exc:
             logger.exception("Route A job failed", extra={"job_id": job.job_id})

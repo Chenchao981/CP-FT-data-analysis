@@ -1,3 +1,5 @@
+import { apiRequest } from "./auth";
+
 export type EnrichmentStage = "CP" | "FT";
 export type EnrichmentAction = "FILL" | "IGNORE";
 
@@ -5,6 +7,7 @@ export interface EnrichmentFieldDefinition {
   field_code: string;
   label: string;
   required_for_analysis: boolean;
+  can_ignore: boolean;
   description: string;
 }
 
@@ -30,28 +33,14 @@ export interface CreateEnrichmentPayload {
   reason: string;
 }
 
-interface ErrorEnvelope { error?: { message?: string } }
-
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
-  });
-  if (!response.ok) {
-    const payload = (await response.json().catch(() => ({}))) as ErrorEnvelope;
-    throw new Error(payload.error?.message ?? `请求失败（${response.status}）`);
-  }
-  return response.json() as Promise<T>;
-}
-
 export function getEnrichmentFields(stage: EnrichmentStage): Promise<EnrichmentFieldDefinition[]> {
-  return request(`/api/v1/enrichments/fields/${stage}`);
+  return apiRequest(`/api/v1/enrichments/fields/${stage}`);
 }
 
 export function getBatchEnrichments(importBatchId: number): Promise<FieldEnrichmentRecord[]> {
-  return request(`/api/v1/enrichments/batches/${importBatchId}`);
+  return apiRequest(`/api/v1/enrichments/batches/${importBatchId}`);
 }
 
 export function createFieldEnrichment(payload: CreateEnrichmentPayload): Promise<FieldEnrichmentRecord> {
-  return request("/api/v1/enrichments", { method: "POST", body: JSON.stringify(payload) });
+  return apiRequest("/api/v1/enrichments", { method: "POST", body: JSON.stringify(payload) });
 }

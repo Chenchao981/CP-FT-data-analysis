@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -11,6 +13,18 @@ from pathlib import Path
 from app.domain.cleaner_registry import CleanerRelease
 
 ProcessRunner = Callable[..., subprocess.CompletedProcess[str]]
+INPUT_REQUIRED_PREFIX = "TMS_INPUT_REQUIRED_JSON="
+INPUT_REQUIRED_EXIT_CODE = 42
+
+
+class CleanerInputRequired(RuntimeError):
+    """A released Cleaner proved that user input is the only missing identity."""
+
+    def __init__(self, *, field_code: str, files: tuple[str, ...], message: str) -> None:
+        super().__init__(message)
+        self.field_code = field_code
+        self.files = files
+        self.message = message
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,21 +116,17 @@ class ExistingCleanerRunner:
             package = release_dir / "app.pyz"
             script = cp_scripts[factory_code]
         elif stage == "FT" and factory_code in {"riyuexin", "日月新"}:
-            if len(normalized_inputs) != 1 or not normalized_inputs[0].is_dir():
-                raise ValueError("日月新 FT DC adapter requires one input directory")
             release_dir = self.ft_release_dir
             package = release_dir / "ft_data_cleaner.pyz"
             script = _FT_RIYUEXIN_DC_SCRIPT
         elif stage == "FT" and factory_code in {"riyueguang", "ase", "日月光"}:
-            if len(normalized_inputs) != 1 or not normalized_inputs[0].is_dir():
-                raise ValueError("日月光 FT DC adapter requires one input directory")
             release_dir = self.ft_release_dir
             package = release_dir / "ft_data_cleaner.pyz"
             script = _FT_RIYUEGUANG_DC_SCRIPT
         else:
             raise ValueError(f"unsupported existing cleaner adapter: {stage}/{factory}")
 
-        return self._execute(
+        return self._execute_registered_inputs(
             stage=stage,
             factory_code=factory_code,
             normalized_inputs=normalized_inputs,
@@ -130,6 +140,7 @@ class ExistingCleanerRunner:
             execution_config_json=json.dumps(
                 {"outlier_method": "iqr", "convert_units": True}
             ),
+            lot_overrides=None,
         )
 
     def run_release(
@@ -138,6 +149,8 @@ class ExistingCleanerRunner:
         release: CleanerRelease,
         inputs: Sequence[str | Path],
         output_root: str | Path,
+        lot_overrides: dict[str, str] | None = None,
+        expected_sha256: Sequence[str | None] | None = None,
     ) -> ExistingCleanerRunResult:
         normalized_inputs = tuple(Path(item).resolve() for item in inputs)
         if not normalized_inputs:
@@ -163,15 +176,11 @@ class ExistingCleanerRunner:
             raise ValueError(
                 f"unsupported released Cleaner adapter: {release.adapter_code}"
             ) from exc
-        if release.adapter_code in {"RIYUEXIN_FT_PYZ", "RIYUEGUANG_FT_PYZ"} and (
-            len(normalized_inputs) != 1 or not normalized_inputs[0].is_dir()
-        ):
-            raise ValueError("FT DC adapter requires one input directory")
         if package.is_file() and _file_sha256(package) != release.code_checksum.lower():
             raise RuntimeError(
                 f"Cleaner package checksum differs from released contract: {package}"
             )
-        return self._execute(
+        return self._execute_registered_inputs(
             stage=release.test_stage,
             factory_code=release.factory_code.lower(),
             normalized_inputs=normalized_inputs,
@@ -183,7 +192,85 @@ class ExistingCleanerRunner:
             timeout_seconds=release.timeout_seconds,
             max_output_bytes=release.max_output_bytes,
             execution_config_json=release.execution_config_json,
+            lot_overrides=lot_overrides,
+            expected_sha256=expected_sha256,
+            require_registered_hash=release.test_stage == "FT",
         )
+
+    def _execute_registered_inputs(
+        self,
+        *,
+        stage: str,
+        factory_code: str,
+        normalized_inputs: tuple[Path, ...],
+        target: Path,
+        runtime: Path,
+        package: Path,
+        release_dir: Path,
+        script: str,
+        timeout_seconds: int,
+        max_output_bytes: int,
+        execution_config_json: str | None,
+        lot_overrides: dict[str, str] | None,
+        expected_sha256: Sequence[str | None] | None = None,
+        require_registered_hash: bool = False,
+    ) -> ExistingCleanerRunResult:
+        validated_hashes = _verify_expected_sha256(
+            normalized_inputs,
+            expected_sha256,
+            required=require_registered_hash,
+        )
+        if stage != "FT":
+            return self._execute(
+                stage=stage,
+                factory_code=factory_code,
+                normalized_inputs=normalized_inputs,
+                target=target,
+                runtime=runtime,
+                package=package,
+                release_dir=release_dir,
+                script=script,
+                timeout_seconds=timeout_seconds,
+                max_output_bytes=max_output_bytes,
+                execution_config_json=execution_config_json,
+                lot_overrides=lot_overrides,
+            )
+
+        registered_files = _registered_ft_files(normalized_inputs)
+        with tempfile.TemporaryDirectory(prefix="tms_ft_registered_") as temporary:
+            isolated = Path(temporary)
+            seen_names: set[str] = set()
+            for source in registered_files:
+                key = source.name.casefold()
+                if key in seen_names:
+                    raise ValueError(
+                        f"registered FT files have a duplicate filename: {source.name}"
+                    )
+                seen_names.add(key)
+                copied = isolated / source.name
+                shutil.copy2(source, copied)
+                expected = validated_hashes[source]
+                if expected is not None and _file_sha256(copied) != expected:
+                    raise RuntimeError(
+                        f"isolated FT input checksum differs from registration: {source}"
+                    )
+            normalized_overrides = _normalize_lot_overrides(
+                lot_overrides or {}, seen_names
+            )
+            return self._execute(
+                stage=stage,
+                factory_code=factory_code,
+                normalized_inputs=(isolated,),
+                target=target,
+                runtime=runtime,
+                package=package,
+                release_dir=release_dir,
+                script=script,
+                timeout_seconds=timeout_seconds,
+                max_output_bytes=max_output_bytes,
+                execution_config_json=execution_config_json,
+                lot_overrides=normalized_overrides,
+            )
 
     def _execute(
         self,
@@ -199,6 +286,7 @@ class ExistingCleanerRunner:
         timeout_seconds: int,
         max_output_bytes: int,
         execution_config_json: str | None,
+        lot_overrides: dict[str, str] | None,
     ) -> ExistingCleanerRunResult:
         for required in (runtime, package):
             if not required.is_file():
@@ -213,6 +301,11 @@ class ExistingCleanerRunner:
                 ),
                 "TMS_EXISTING_CLEANER_OUTPUT": str(target),
                 "TMS_CLEANER_EXECUTION_CONFIG": execution_config_json or "{}",
+                "TMS_LOT_OVERRIDES_JSON": json.dumps(
+                    lot_overrides or {}, ensure_ascii=False, sort_keys=True
+                ),
+                "PYTHONIOENCODING": "utf-8",
+                "PYTHONUTF8": "1",
             }
         )
         try:
@@ -231,6 +324,14 @@ class ExistingCleanerRunner:
             raise RuntimeError(
                 f"Cleaner timed out after {timeout_seconds}s ({stage}/{factory_code})"
             ) from exc
+        input_required = _input_required_from_process(completed)
+        if input_required is not None:
+            if completed.returncode != INPUT_REQUIRED_EXIT_CODE:
+                raise RuntimeError(
+                    "Cleaner emitted an input-required marker with invalid exit code "
+                    f"{completed.returncode}; expected {INPUT_REQUIRED_EXIT_CODE}"
+                )
+            raise input_required
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or "unknown cleaner error")[
                 -4000:
@@ -259,6 +360,114 @@ class ExistingCleanerRunner:
             artifacts=artifacts,
             stdout_tail=(completed.stdout or "")[-4000:],
         )
+
+
+def _registered_ft_files(inputs: tuple[Path, ...]) -> tuple[Path, ...]:
+    if not all(
+        path.is_file()
+        and path.suffix.lower() == ".xlsx"
+        and not path.name.startswith("~$")
+        for path in inputs
+    ):
+        raise ValueError("FT DC adapter requires exact registered XLSX files")
+    files = inputs
+    if not files:
+        raise ValueError("FT DC adapter received no registered XLSX files")
+    return files
+
+
+def _verify_expected_sha256(
+    inputs: tuple[Path, ...],
+    expected_sha256: Sequence[str | None] | None,
+    *,
+    required: bool,
+) -> dict[Path, str | None]:
+    if expected_sha256 is None:
+        if required:
+            raise RuntimeError("registered FT input SHA256 values are required")
+        return {path: None for path in inputs}
+    expected_values = tuple(expected_sha256)
+    if len(expected_values) != len(inputs):
+        raise ValueError("registered input SHA256 count does not match input files")
+    validated: dict[Path, str | None] = {}
+    for path, raw_expected in zip(inputs, expected_values, strict=True):
+        expected = str(raw_expected or "").strip().lower()
+        if len(expected) != 64 or any(
+            character not in "0123456789abcdef" for character in expected
+        ):
+            raise RuntimeError(f"registered input SHA256 is unavailable or invalid: {path}")
+        if not path.is_file():
+            raise RuntimeError(f"registered input is not a file: {path}")
+        if _file_sha256(path) != expected:
+            raise RuntimeError(
+                f"registered input checksum differs from current bytes: {path}"
+            )
+        validated[path] = expected
+    return validated
+
+
+def _normalize_lot_overrides(
+    overrides: dict[str, str], registered_names: set[str]
+) -> dict[str, str]:
+    normalized: dict[str, str] = {}
+    normalized_by_name: dict[str, str] = {}
+    for raw_name, raw_lot in overrides.items():
+        name = Path(str(raw_name)).name
+        name_key = name.casefold()
+        lot = str(raw_lot).strip()
+        if not name or name_key not in registered_names:
+            raise ValueError(f"Lot override does not match a registered FT file: {raw_name}")
+        if not lot or len(lot) > 128:
+            raise ValueError(f"Lot override is invalid for registered FT file: {name}")
+        previous = normalized_by_name.get(name_key)
+        if previous is not None and previous != lot:
+            raise ValueError(f"conflicting Lot overrides for registered FT file: {name}")
+        normalized_by_name[name_key] = lot
+        normalized[name] = lot
+    return normalized
+
+
+def _input_required_from_process(
+    completed: subprocess.CompletedProcess[str],
+) -> CleanerInputRequired | None:
+    marked_lines = [
+        line[len(INPUT_REQUIRED_PREFIX) :]
+        for output in (completed.stderr or "", completed.stdout or "")
+        for line in output.splitlines()
+        if line.startswith(INPUT_REQUIRED_PREFIX)
+    ]
+    if not marked_lines:
+        return None
+    if len(marked_lines) != 1:
+        raise RuntimeError("Cleaner emitted multiple input-required markers")
+    try:
+        payload = json.loads(marked_lines[0])
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("Cleaner input-required marker is invalid JSON") from exc
+    if not isinstance(payload, dict) or set(payload) != {
+        "field_code",
+        "files",
+        "message",
+    }:
+        raise RuntimeError("Cleaner input-required marker has an invalid schema")
+    field_code = str(payload["field_code"] or "").strip().upper()
+    message = str(payload["message"] or "").strip()
+    raw_files = payload["files"]
+    if (
+        field_code != "LOT_ID"
+        or not message
+        or not isinstance(raw_files, list)
+        or not raw_files
+    ):
+        raise RuntimeError("Cleaner input-required marker has invalid values")
+    if any(not isinstance(item, dict) or set(item) != {"original_file_name"} for item in raw_files):
+        raise RuntimeError("Cleaner input-required files have an invalid schema")
+    files = tuple(str(item["original_file_name"]).strip() for item in raw_files)
+    if any(not item or Path(item).name != item for item in files):
+        raise RuntimeError("Cleaner input-required files must be plain original filenames")
+    if len({item.casefold() for item in files}) != len(files):
+        raise RuntimeError("Cleaner input-required files are duplicated")
+    return CleanerInputRequired(field_code=field_code, files=files, message=message)
 
 
 def _discover_artifacts(stage: str, output_root: Path) -> tuple[CleanerArtifact, ...]:
@@ -444,10 +653,27 @@ _FT_RIYUEXIN_DC_SCRIPT = """
 import json, os, sys
 sys.path.insert(0, os.environ['TMS_EXISTING_CLEANER_PACKAGE'])
 from factories.tms_adapters.riyuexin_dc import RiyuexinTmsDCCleaner
+from factories.tms_adapters.identity import LotOverrideRequired
 inputs = json.loads(os.environ['TMS_EXISTING_CLEANER_INPUTS'])
-cleaner = RiyuexinTmsDCCleaner(input_dir=inputs[0], output_dir=os.environ['TMS_EXISTING_CLEANER_OUTPUT'])
-if not cleaner.process_all_dc_files():
-    raise SystemExit('日月新 FT DC cleaner returned false')
+lot_overrides = json.loads(os.environ.get('TMS_LOT_OVERRIDES_JSON', '{}'))
+try:
+    cleaner = RiyuexinTmsDCCleaner(
+        input_dir=inputs[0],
+        output_dir=os.environ['TMS_EXISTING_CLEANER_OUTPUT'],
+        lot_overrides=lot_overrides,
+    )
+    if not cleaner.process_all_dc_files():
+        raise SystemExit('日月新 FT DC cleaner returned false')
+except LotOverrideRequired as exc:
+    payload = {
+        'field_code': 'LOT_ID',
+        'files': [{'original_file_name': name} for name in exc.file_names],
+        'message': str(exc),
+    }
+    sys.stderr.write('TMS_INPUT_REQUIRED_JSON=' + json.dumps(
+        payload, ensure_ascii=False, separators=(',', ':')
+    ) + '\\n')
+    raise SystemExit(42)
 """
 
 
@@ -455,8 +681,25 @@ _FT_RIYUEGUANG_DC_SCRIPT = """
 import json, os, sys
 sys.path.insert(0, os.environ['TMS_EXISTING_CLEANER_PACKAGE'])
 from factories.tms_adapters.riyueguang_dc import RiyueguangTmsDCCleaner
+from factories.tms_adapters.identity import LotOverrideRequired
 inputs = json.loads(os.environ['TMS_EXISTING_CLEANER_INPUTS'])
-cleaner = RiyueguangTmsDCCleaner(input_dir=inputs[0], output_dir=os.environ['TMS_EXISTING_CLEANER_OUTPUT'])
-if not cleaner.process_all_dc_files():
-    raise SystemExit('日月光 FT DC cleaner returned false')
+lot_overrides = json.loads(os.environ.get('TMS_LOT_OVERRIDES_JSON', '{}'))
+try:
+    cleaner = RiyueguangTmsDCCleaner(
+        input_dir=inputs[0],
+        output_dir=os.environ['TMS_EXISTING_CLEANER_OUTPUT'],
+        lot_overrides=lot_overrides,
+    )
+    if not cleaner.process_all_dc_files():
+        raise SystemExit('日月光 FT DC cleaner returned false')
+except LotOverrideRequired as exc:
+    payload = {
+        'field_code': 'LOT_ID',
+        'files': [{'original_file_name': name} for name in exc.file_names],
+        'message': str(exc),
+    }
+    sys.stderr.write('TMS_INPUT_REQUIRED_JSON=' + json.dumps(
+        payload, ensure_ascii=False, separators=(',', ':')
+    ) + '\\n')
+    raise SystemExit(42)
 """

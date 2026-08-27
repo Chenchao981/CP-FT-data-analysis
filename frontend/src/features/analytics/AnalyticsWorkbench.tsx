@@ -176,12 +176,27 @@ export function AnalyticsWorkbench({ initialSelection }: AnalyticsWorkbenchProps
               placeholder="全部 Lot"
               value={lotId}
               options={data.lot_options.map((value) => ({ label: value, value }))}
-              onChange={(value) => { setLotId(value); setWaferId(undefined); }}
+              onChange={(value) => {
+                setLotId(value);
+                setWaferId(undefined);
+                setSourceId(undefined);
+                setParameter(undefined);
+              }}
               className="chart-select"
             />
             {data.test_stage === "FT" ? (
               <>
-                <Select allowClear placeholder="全部源文件" value={sourceId} options={data.source_options.map((value) => ({ label: value, value }))} onChange={setSourceId} className="chart-select" />
+                <Select
+                  allowClear
+                  placeholder="全部源文件"
+                  value={sourceId}
+                  options={data.source_options.map((value) => ({ label: value, value }))}
+                  onChange={(value) => {
+                    setSourceId(value);
+                    setParameter(undefined);
+                  }}
+                  className="chart-select"
+                />
                 <Select showSearch placeholder="选择参数" value={parameter} options={data.parameter_options.map((item) => ({ label: item.unit ? `${item.name} (${item.unit})` : item.name, value: item.name }))} onChange={setParameter} className="chart-select" />
               </>
             ) : (
@@ -205,7 +220,15 @@ export function AnalyticsWorkbench({ initialSelection }: AnalyticsWorkbenchProps
         <>
           <Alert type="info" showIcon message="当前 FT 源数据未提供可发布的 PASS/FAIL 或 Bin，系统不计算良率" description={data.ft_sampled ? `图中显示确定性抽样数据并保留超规格点；当前参数共 ${data.ft_total_point_count.toLocaleString()} 个测量点。` : "图中显示当前参数的全部测量点。"} className="review-alert" />
           <Row gutter={[16, 16]} className="analytics-stats">
-            <Col xs={12} md={6}><Card><Statistic title="产品" value={data.product_name ?? "-"} /></Card></Col>
+            <Col xs={12} md={6}>
+              <Card>
+                <Statistic
+                  title="产品"
+                  value={data.product_name ?? "-"}
+                  valueStyle={{ fontSize: 20, lineHeight: 1.25, overflowWrap: "anywhere", whiteSpace: "normal" }}
+                />
+              </Card>
+            </Col>
             <Col xs={12} md={6}><Card><Statistic title="源文件 Run" value={data.source_options.length} /></Card></Col>
             <Col xs={12} md={6}><Card><Statistic title="参数" value={data.parameter_options.length} /></Card></Col>
             <Col xs={12} md={6}><Card><Statistic title="当前参数测量点" value={data.ft_total_point_count} /></Card></Col>

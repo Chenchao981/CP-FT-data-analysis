@@ -282,7 +282,7 @@ class SqlDatasetService:
         parameters: dict[str, Any],
         version_join: str,
     ) -> DatasetChartData:
-        option_rows = (
+        all_option_rows = (
             connection.execute(
                 text(
                     "SELECT DISTINCT tr.run_id,tr.lot_id,tr.tester_id,tr.program_version_id,tr.metadata_json"
@@ -294,6 +294,15 @@ class SqlDatasetService:
             )
             .mappings()
             .all()
+        )
+        lot_options = tuple(
+            dict.fromkeys(str(row["lot_id"]) for row in all_option_rows)
+        )
+        option_rows = tuple(
+            row
+            for row in all_option_rows
+            if parameters["lot_id"] is None
+            or str(row["lot_id"]) == parameters["lot_id"]
         )
         source_records = []
         for row in option_rows:
@@ -342,6 +351,7 @@ class SqlDatasetService:
             + version_join
             + "JOIN mdm.test_item_definition tid ON tid.program_version_id=tr.program_version_id "
             "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
+            "AND (:lot_id IS NULL OR tr.lot_id=:lot_id) "
             + source_filter
             + "AND tid.is_analysis_parameter=1 ORDER BY tid.sequence_no"
         )
@@ -477,9 +487,7 @@ class SqlDatasetService:
             selected_wafer_id=None,
             selected_source_id=parameters["source_id"],
             selected_parameter=selected_parameter,
-            lot_options=tuple(
-                dict.fromkeys(str(row["lot_id"]) for row in source_records)
-            ),
+            lot_options=lot_options,
             wafer_options=(),
             source_options=source_options,
             parameter_options=tuple(parameter_options),

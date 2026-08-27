@@ -1,5 +1,7 @@
 # CP/FT分析业务事实与开发约束 v0.1
 
+> **状态说明（2026-08-27）**：本文是早期事实梳理。其中“FT Lot 不是正式发布必填身份”“缺 Lot 不阻断正式分析”等结论已被后续业务决定取代。当前正式 CP/FT Route A 的 Lot 必须来自 Cleaner 或受审计的文件级人工确认；缺失时暂停为 `NEEDS_INPUT`，不得以空值、默认值或任务级猜测发布。现行合同见 [`TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md`](../architecture/TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md)。
+
 状态：历史业务事实；与 `TMS_Business_Requirements_v0.2.md` 冲突时以 v0.2 为准
 
 确认日期：2026-08-21  

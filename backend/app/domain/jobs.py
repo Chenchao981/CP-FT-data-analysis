@@ -35,6 +35,7 @@ class TriggerType(StrEnum):
 class JobStatus(StrEnum):
     QUEUED = "QUEUED"
     RUNNING = "RUNNING"
+    NEEDS_INPUT = "NEEDS_INPUT"
     SUCCESS = "SUCCESS"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
@@ -92,6 +93,8 @@ class TransitionJobRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_failure(self) -> TransitionJobRequest:
+        if self.target_status == JobStatus.NEEDS_INPUT:
+            raise ValueError("NEEDS_INPUT is reserved for a leased Worker")
         if self.target_status == JobStatus.FAILED and not self.error_code:
             raise ValueError("error_code is required when target_status is FAILED")
         if self.target_status != JobStatus.FAILED and (
@@ -127,11 +130,18 @@ class Job:
     heartbeat_at_utc: datetime | None = None
     attempt_count: int = 0
     max_attempts: int = 3
+    parent_job_id: int | None = None
 
 
 ALLOWED_JOB_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {
     JobStatus.QUEUED: {JobStatus.RUNNING, JobStatus.CANCELLED},
-    JobStatus.RUNNING: {JobStatus.SUCCESS, JobStatus.FAILED, JobStatus.CANCELLED},
+    JobStatus.RUNNING: {
+        JobStatus.NEEDS_INPUT,
+        JobStatus.SUCCESS,
+        JobStatus.FAILED,
+        JobStatus.CANCELLED,
+    },
+    JobStatus.NEEDS_INPUT: set(),
     JobStatus.SUCCESS: set(),
     JobStatus.FAILED: set(),
     JobStatus.CANCELLED: set(),
@@ -237,4 +247,14 @@ class WorkerJobQueue(Protocol):
         *,
         error_code: str | None = None,
         error_message: str | None = None,
+    ) -> Job: ...
+
+    def pause_leased_for_input(
+        self,
+        job_id: int,
+        lease_token: str,
+        *,
+        field_code: str,
+        files: tuple[str, ...],
+        message: str,
     ) -> Job: ...

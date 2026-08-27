@@ -5,8 +5,11 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from uuid import uuid4
 
 from sqlalchemy import create_engine, text
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +31,43 @@ def _sha256(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _snapshot_package(package: Path, checksum: str, snapshot_root: Path) -> Path:
+    """Copy a Cleaner package once into a content-addressed immutable location."""
+    if _sha256(package) != checksum:
+        raise RuntimeError(f"Cleaner package changed before snapshot: {package}")
+
+    target_directory = snapshot_root.resolve() / checksum
+    target_directory.mkdir(parents=True, exist_ok=True)
+    target = target_directory / package.name
+    if target.exists():
+        if not target.is_file() or _sha256(target) != checksum:
+            raise RuntimeError(f"Cleaner release snapshot checksum mismatch: {target}")
+        return target.resolve()
+
+    temporary = target_directory / f".{package.name}.{uuid4().hex}.tmp"
+    try:
+        with package.open("rb") as source, temporary.open("xb") as output:
+            while chunk := source.read(1024 * 1024):
+                output.write(chunk)
+            output.flush()
+            os.fsync(output.fileno())
+        if _sha256(temporary) != checksum:
+            raise RuntimeError(f"Cleaner package changed while snapshotting: {package}")
+        try:
+            os.link(temporary, target)
+        except FileExistsError:
+            if not target.is_file() or _sha256(target) != checksum:
+                raise RuntimeError(
+                    f"Cleaner release snapshot checksum mismatch: {target}"
+                )
+    finally:
+        temporary.unlink(missing_ok=True)
+
+    if _sha256(target) != checksum:
+        raise RuntimeError(f"Cleaner release snapshot checksum mismatch: {target}")
+    return target.resolve()
 
 
 def _definitions() -> tuple[ExistingRelease, ...]:
@@ -131,6 +171,12 @@ def main() -> None:
     runtime = Path(
         os.getenv("TMS_CLEANER_PYTHON", r"D:\ProgramData\anaconda3\python.exe")
     ).resolve()
+    snapshot_root = Path(
+        os.getenv(
+            "TMS_CLEANER_RELEASE_SNAPSHOT_ROOT",
+            str(ROOT / "artifacts" / "cleaner_releases"),
+        )
+    ).resolve()
     if not runtime.is_file():
         raise FileNotFoundError(f"Cleaner Python runtime is unavailable: {runtime}")
 
@@ -147,8 +193,8 @@ def main() -> None:
         revision = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-        if revision != "sql2014_0013":
-            raise RuntimeError(f"sql2014_0013 is required, database is {revision}")
+        if revision != "sql2014_0014":
+            raise RuntimeError(f"sql2014_0014 is required, database is {revision}")
         approved_by = connection.execute(
             text(
                 "SELECT TOP (1) u.user_id FROM iam.app_user u "
@@ -161,6 +207,11 @@ def main() -> None:
 
         for definition in releases:
             checksum = _sha256(definition.package)
+            artifact = _snapshot_package(
+                definition.package,
+                checksum,
+                snapshot_root,
+            )
             version = f"sha256-{checksum[:12]}"
             profile_id = connection.execute(
                 text(
@@ -210,24 +261,40 @@ def main() -> None:
                     },
                 )
 
-            release_id = connection.execute(
-                text(
-                    "SELECT cleaner_release_id FROM ingestion.cleaner_release "
-                    "WHERE cleaner_code=:cleaner_code AND cleaner_version=:version "
-                    "AND format_profile_id=:profile_id"
-                ),
-                {
-                    "cleaner_code": definition.cleaner_code,
-                    "version": version,
-                    "profile_id": profile_id,
-                },
-            ).scalar_one_or_none()
+            release_row = (
+                connection.execute(
+                    text(
+                        "SELECT cleaner_release_id,code_checksum FROM ingestion.cleaner_release "
+                        "WHERE cleaner_code=:cleaner_code AND cleaner_version=:version "
+                        "AND format_profile_id=:profile_id"
+                    ),
+                    {
+                        "cleaner_code": definition.cleaner_code,
+                        "version": version,
+                        "profile_id": profile_id,
+                    },
+                )
+                .mappings()
+                .one_or_none()
+            )
+            release_id = (
+                int(release_row["cleaner_release_id"])
+                if release_row is not None
+                else None
+            )
+            if (
+                release_row is not None
+                and str(release_row["code_checksum"] or "").lower() != checksum
+            ):
+                raise RuntimeError(
+                    f"Cleaner version checksum collision: {definition.cleaner_code}/{version}"
+                )
             values = {
                 "profile_id": profile_id,
                 "cleaner_code": definition.cleaner_code,
                 "version": version,
                 "checksum": checksum,
-                "artifact_uri": str(definition.package),
+                "artifact_uri": str(artifact),
                 "runtime_uri": str(runtime),
                 "entrypoint": definition.entrypoint,
                 "adapter_code": definition.adapter_code,
@@ -260,12 +327,26 @@ def main() -> None:
                     ),
                     values,
                 ).scalar_one()
+            else:
+                updated = connection.execute(
+                    text(
+                        "UPDATE ingestion.cleaner_release SET "
+                        "artifact_uri=:artifact_uri "
+                        "WHERE cleaner_release_id=:release_id AND code_checksum=:checksum"
+                    ),
+                    {**values, "release_id": release_id},
+                )
+                if updated.rowcount != 1:
+                    raise RuntimeError(
+                        f"Cleaner release changed during snapshot repair: {release_id}"
+                    )
             registered.append(
                 {
                     "cleaner_release_id": int(release_id),
                     "stage": definition.stage,
                     "factory": definition.factory,
                     "version": version,
+                    "artifact_uri": str(artifact),
                     "output_contract": definition.output_contract,
                 }
             )

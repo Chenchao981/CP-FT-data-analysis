@@ -5,7 +5,6 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field, field_validator
 
-
 ALL_PERMISSIONS = frozenset(
     {
         "TASK_CREATE",
@@ -91,6 +90,8 @@ class AuthService(Protocol):
     def record_login(self, login_name: str, user_id: int | None, outcome: str, **metadata) -> None: ...
 
     def principal_for_user(self, user_id: int) -> Principal: ...
+
+    def principal_for_development(self) -> Principal: ...
 
     def create_session(self, user_id: int, token_jti: str, expires_at_utc, **metadata) -> None: ...
 

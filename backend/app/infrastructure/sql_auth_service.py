@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
-from typing import Any, Mapping
+from typing import Any
 
 from sqlalchemy import Engine, text
 from sqlalchemy.exc import IntegrityError
@@ -141,6 +142,60 @@ class SqlAuthService:
             roles=roles,
             permissions=permissions,
         )
+
+    def principal_for_development(self) -> Principal:
+        """Resolve a real database principal while authentication is disabled.
+
+        Database-backed writes still carry foreign keys to ``iam.app_user``.
+        A hard-coded development user therefore becomes invalid as soon as a
+        test or an administrator removes that row.  An explicit override is
+        supported for local acceptance work; otherwise the first active system
+        administrator is selected deterministically.
+        """
+        configured_user_id = os.getenv("TMS_DEVELOPMENT_USER_ID", "").strip()
+        if configured_user_id:
+            try:
+                user_id = int(configured_user_id)
+            except ValueError as exc:
+                raise DomainError(
+                    "DEVELOPMENT_PRINCIPAL_INVALID",
+                    "TMS_DEVELOPMENT_USER_ID 必须是有效的正整数",
+                    503,
+                ) from exc
+            if user_id <= 0:
+                raise DomainError(
+                    "DEVELOPMENT_PRINCIPAL_INVALID",
+                    "TMS_DEVELOPMENT_USER_ID 必须是有效的正整数",
+                    503,
+                )
+            try:
+                return self.principal_for_user(user_id)
+            except DomainError as exc:
+                if exc.code != "USER_NOT_ACTIVE":
+                    raise
+                raise DomainError(
+                    "DEVELOPMENT_PRINCIPAL_INVALID",
+                    "TMS_DEVELOPMENT_USER_ID 必须对应已启用的数据库用户",
+                    503,
+                ) from exc
+
+        with self._engine.connect() as connection:
+            user_id = connection.execute(
+                text(
+                    "SELECT TOP (1) u.user_id FROM iam.app_user u "
+                    "JOIN iam.user_role ur ON ur.user_id=u.user_id "
+                    "JOIN iam.role r ON r.role_id=ur.role_id "
+                    "WHERE u.status='ACTIVE' AND r.active=1 "
+                    "AND r.role_code='SYSTEM_ADMIN' ORDER BY u.user_id"
+                )
+            ).scalar_one_or_none()
+        if user_id is None:
+            raise DomainError(
+                "DEVELOPMENT_PRINCIPAL_NOT_CONFIGURED",
+                "开发模式需要一个已启用的系统管理员账户，或设置 TMS_DEVELOPMENT_USER_ID",
+                503,
+            )
+        return self.principal_for_user(int(user_id))
 
     def create_session(
         self,

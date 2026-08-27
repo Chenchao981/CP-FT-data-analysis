@@ -7,6 +7,7 @@ export interface StageUploadRow {
   import_batch_id: number;
   sequence_no: number;
   receipt_id: number;
+  source_file_id: number;
   original_file_name: string;
   extension: string;
   size_bytes: number;
@@ -16,6 +17,37 @@ export interface StageUploadRow {
   uploader_login: string;
   uploader_name: string;
   status: string;
+  latest_job_id: number | null;
+  error_code: string | null;
+  error_message: string | null;
+  action_required: "LOT_ID" | null;
+}
+
+export interface StageInputRequest {
+  input_request_id: number;
+  source_file_id: number;
+  original_file_name: string;
+  current_value: null;
+}
+
+export interface StageInputRequests {
+  import_batch_id: number;
+  status: string;
+  field_code: "LOT_ID";
+  prompt: string;
+  latest_job_id: number | null;
+  requests: StageInputRequest[];
+}
+
+export interface ResolveStageInputRequestsPayload {
+  resolutions: Array<{ input_request_id: number; lot_id: string }>;
+  reason: string;
+}
+
+export interface ResolveStageInputRequestsResult {
+  import_batch_id: number;
+  job_id: number;
+  status: "QUEUED";
 }
 
 export interface StageResultRow {
@@ -68,6 +100,19 @@ export function uploadStageData(businessDomain: BusinessDomain, testStage: TestS
 
 export const reprocessStageBatch = (businessDomain: BusinessDomain, testStage: TestStage, importBatchId: number) =>
   apiRequest<{ import_batch_id: number; status: string }>(`${stageBase(businessDomain, testStage)}/uploads/${importBatchId}/reprocess`, { method: "POST" });
+
+export const getStageInputRequests = (businessDomain: BusinessDomain, testStage: TestStage, importBatchId: number) =>
+  apiRequest<StageInputRequests>(`${stageBase(businessDomain, testStage)}/uploads/${importBatchId}/input-requests`);
+
+export const resolveStageInputRequests = (
+  businessDomain: BusinessDomain,
+  testStage: TestStage,
+  importBatchId: number,
+  payload: ResolveStageInputRequestsPayload,
+) => apiRequest<ResolveStageInputRequestsResult>(
+  `${stageBase(businessDomain, testStage)}/uploads/${importBatchId}/input-requests/resolve`,
+  { method: "POST", body: JSON.stringify(payload) },
+);
 
 export async function downloadStageUploadFile(businessDomain: BusinessDomain, testStage: TestStage, importBatchId: number, receiptId: number, fileName: string) {
   const headers = new Headers();

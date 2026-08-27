@@ -1,5 +1,7 @@
 # CP/FT独立接入与人工补录架构 v0.1
 
+> **状态说明（2026-08-27）**：本文保留 CP/FT 独立入口和字段来源分离原则；“FT Lot 可选”及通用任务级补录流程不再作为正式 Route A 的现行实现。Lot 缺失现由专用 `NEEDS_INPUT`、文件级输入请求和同 Release 子 Job 恢复闭环处理，详见 [`TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md`](TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md)。
+
 ## 1. 架构决定
 
 CP与FT从任务入口、格式识别、Cleaner调用、结果合同到人工补录表单均保持独立。公共数据库不反向要求两类源文件提供相同字段。

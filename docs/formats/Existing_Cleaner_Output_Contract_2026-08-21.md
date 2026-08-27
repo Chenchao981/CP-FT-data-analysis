@@ -2,6 +2,8 @@
 
 > **2026-08-24 Route A 实测补充**：当前发布包仍分别输出 CP 的 `cleaned/yield/spec CSV`，以及 FT 的 `cleaned XLSX + scatter data/spec/manifest`，并不是业务目标描述中的统一三个 XLSX。`sql2014_0010` 因此按实际包登记 `CP_CSV_TRIPLET_V1` 和 `FT_XLSX_SCATTER_V1` 两个版本化输出合同。TMS Worker 按 Cleaner Release 合同读取；后续原 Cleaner 改为 RawData/Spec/Statistics 三个 XLSX 时，必须发布新的 Output Contract Version，不得静默改变旧版本语义。
 
+> **2026-08-27 Lot 恢复合同更新（取代旧“后续建设”表述）**：FT Cleaner 无法从已批准格式取得 Lot 时，必须输出结构化输入请求并以失败码结束；TMS 将 Job/Batch 置为 `NEEDS_INPUT`。用户按原始文件名补录后，平台保存 `FILL` enrichment、创建父子关联的恢复 Job，并把人工值作为显式 override 交回同一 Cleaner Release。Cleaner 仍负责格式、产品、Lot 冲突和 Spec 对账；平台不得直接把人工值写入 Canonical 来绕过 Cleaner。
+
 ## 验证结论
 
 TMS 不重写 CP/FT 清洗逻辑。FastAPI Worker 通过独立进程调用两个既有发布包，再把其输出映射到平台数据模型。
@@ -39,7 +41,7 @@ TMS 不重写 CP/FT 清洗逻辑。FastAPI Worker 通过独立进程调用两个
 2. 每个源文件必须独立生成 `test.test_run`；相同规格指纹可复用 Program Version/Spec Set，不同规格指纹必须隔离。
 3. `mdm.spec_binding` 以 `PRODUCT_PROGRAM` 绑定 Product、FT、Supplier、Program Version 与 Spec Set。Dataset 同时存在多套规格时，Dataset Version 不伪造单一 `spec_set_id`，而在元数据中保留逐 Run 绑定。
 4. 分析页按源文件 Run 筛选并显示该 Run 的规格线；全范围内存在不同限值时不展示虚假的统一限值。
-5. 已批准格式应自动取得 Lot。Lot 缺失或文件名与清洗结果不一致时停止正式入库；人工补录将作为平台侧显式门禁建设，不能以目录名或 `unknown` 代替。
+5. 已批准格式应自动取得 Lot。Lot 缺失时停止当次正式发布并进入平台 `NEEDS_INPUT` 补录门禁；文件名、人工 override 与清洗结果不一致时仍失败关闭。不能以目录名、完整文件名或 `unknown` 代替业务 Lot。详细状态机见 `docs/architecture/TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md`。
 
 ## Adapter 边界
 

@@ -3,6 +3,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 from typing import Any
 
+import pytest
+from app.core.errors import DomainError
 from app.infrastructure.sql_dataset_service import SqlDatasetService
 
 
@@ -149,6 +151,60 @@ class FtChartConnection:
         raise AssertionError(sql)
 
 
+class FtMultiLotSpecConnection:
+    def execute(self, statement, parameters=None):
+        sql = str(statement)
+        parameters = parameters or {}
+        if "SELECT DISTINCT tr.run_id" in sql:
+            rows = [
+                {
+                    "run_id": 101,
+                    "lot_id": "LOT-1",
+                    "tester_id": "NCT-1",
+                    "program_version_id": 201,
+                    "metadata_json": '{"source_id":"SOURCE-RUN-A"}',
+                },
+                {
+                    "run_id": 102,
+                    "lot_id": "LOT-2",
+                    "tester_id": "NCT-2",
+                    "program_version_id": 202,
+                    "metadata_json": '{"source_id":"SOURCE-RUN-B"}',
+                },
+            ]
+            if (
+                "(:lot_id IS NULL OR tr.lot_id=:lot_id)" in sql
+                and parameters.get("lot_id")
+            ):
+                rows = [row for row in rows if row["lot_id"] == parameters["lot_id"]]
+            return Result(rows=rows)
+        if "SELECT DISTINCT tid.sequence_no" in sql:
+            rows = [
+                {
+                    "sequence_no": 1,
+                    "raw_item_name": "HVBCES",
+                    "unit_code": "kV",
+                    "lsl": 1.29,
+                    "usl": None,
+                    "condition_json": '{"text":"LOT-1 condition"}',
+                    "lot_id": "LOT-1",
+                },
+                {
+                    "sequence_no": 1,
+                    "raw_item_name": "HVBCES",
+                    "unit_code": "kV",
+                    "lsl": 1.17,
+                    "usl": None,
+                    "condition_json": '{"text":"LOT-2 condition"}',
+                    "lot_id": "LOT-2",
+                },
+            ]
+            if "(:lot_id IS NULL OR tr.lot_id=:lot_id)" in sql:
+                rows = [row for row in rows if row["lot_id"] == parameters["lot_id"]]
+            return Result(rows=rows)
+        raise AssertionError(sql)
+
+
 def test_sql_dq_gate_passes_only_ready_attributable_clean_data() -> None:
     result = SqlDatasetService(Engine(GateConnection())).evaluate_gate(1, 1)  # type: ignore[arg-type]
     assert result.status == "PASS"
@@ -225,3 +281,64 @@ def test_ft_charts_resolve_the_selected_source_run_spec_and_points() -> None:
     assert result.parameter_options[0].lsl == 1.29
     assert result.ft_total_point_count == 3
     assert result.ft_parameter_points[0].source_id == "SOURCE-RUN-A"
+
+
+def test_ft_charts_resolve_spec_for_selected_lot_only() -> None:
+    connection = FtMultiLotSpecConnection()
+    service = SqlDatasetService(Engine(connection))  # type: ignore[arg-type]
+    result = service._get_ft_chart_data(
+        connection,  # type: ignore[arg-type]
+        {
+            "dataset_id": 1,
+            "version_no": 1,
+            "test_stage": "FT",
+            "product_name": "PRODUCT-1",
+            "spec_set_id": None,
+        },
+        {
+            "dataset_id": 1,
+            "version_no": 1,
+            "lot_id": "LOT-2",
+            "wafer_id": None,
+            "source_id": None,
+            "parameter": None,
+        },
+        " FROM dataset.dataset_version dv JOIN dataset.dataset_version_run dvr "
+        "ON dvr.dataset_version_id=dv.dataset_version_id JOIN test.test_run tr "
+        "ON tr.processing_run_id=dvr.processing_run_id ",
+    )
+
+    assert result.parameter_options[0].lsl == 1.17
+    assert result.parameter_options[0].test_condition == "LOT-2 condition"
+    assert result.lot_options == ("LOT-1", "LOT-2")
+    assert result.source_options == ("SOURCE-RUN-B",)
+
+
+def test_ft_charts_reject_source_from_another_selected_lot() -> None:
+    connection = FtMultiLotSpecConnection()
+    service = SqlDatasetService(Engine(connection))  # type: ignore[arg-type]
+
+    with pytest.raises(DomainError) as exc_info:
+        service._get_ft_chart_data(
+            connection,  # type: ignore[arg-type]
+            {
+                "dataset_id": 1,
+                "version_no": 1,
+                "test_stage": "FT",
+                "product_name": "PRODUCT-1",
+                "spec_set_id": None,
+            },
+            {
+                "dataset_id": 1,
+                "version_no": 1,
+                "lot_id": "LOT-2",
+                "wafer_id": None,
+                "source_id": "SOURCE-RUN-A",
+                "parameter": "HVBCES",
+            },
+            " FROM dataset.dataset_version dv JOIN dataset.dataset_version_run dvr "
+            "ON dvr.dataset_version_id=dv.dataset_version_id JOIN test.test_run tr "
+            "ON tr.processing_run_id=dvr.processing_run_id ",
+        )
+
+    assert exc_info.value.code == "FT_SOURCE_NOT_FOUND"

@@ -62,6 +62,26 @@ def job_service(request: Request):
     return request.app.state.job_service
 
 
+def _queue_initial_import(
+    request: Request,
+    principal: Principal,
+    payload: CreateJobRequest,
+    *,
+    allowed_batch_statuses: tuple[str, ...],
+):
+    queue = job_service(request)
+    atomic_create = getattr(queue, "create_initial_import_for_batch", None)
+    if callable(atomic_create):
+        return atomic_create(
+            payload,
+            principal,
+            allowed_batch_statuses=allowed_batch_statuses,
+        )
+    job = queue.create(payload)
+    service(request).mark_queued(payload.import_batch_id)
+    return job
+
+
 def _normalize_business_domain(value: str) -> str:
     domain = BUSINESS_DOMAINS.get(value.strip().lower())
     if domain is None:
@@ -86,14 +106,8 @@ def _save_uploads(
 ) -> tuple[StoredUpload, ...]:
     if not files:
         raise DomainError("STAGE_UPLOAD_EMPTY", "请选择需要上传的源文件", 422)
-    target = (
-        Path(os.getenv("TMS_UPLOAD_ROOT", r"F:\CP-FT数据分析\data\raw"))
-        / business_domain.lower()
-        / test_stage.lower()
-        / uuid4().hex
-    )
-    target.mkdir(parents=True, exist_ok=False)
-    stored: list[StoredUpload] = []
+    validated: list[tuple[UploadFile, str]] = []
+    seen_names: set[str] = set()
     for uploaded in files:
         original = Path(uploaded.filename or "").name
         suffix = Path(original).suffix.lower()
@@ -103,10 +117,29 @@ def _save_uploads(
                 f"不支持的{test_stage}源文件：{original or '未命名文件'}",
                 422,
             )
+        normalized_name = original.casefold()
+        if normalized_name in seen_names:
+            raise DomainError(
+                "DUPLICATE_UPLOAD_FILE_NAME",
+                f"同一批次不允许重复文件名（不区分大小写）：{original}",
+                422,
+            )
+        seen_names.add(normalized_name)
+        validated.append((uploaded, original))
+
+    target = (
+        Path(os.getenv("TMS_UPLOAD_ROOT", r"F:\CP-FT数据分析\data\raw"))
+        / business_domain.lower()
+        / test_stage.lower()
+        / uuid4().hex
+    )
+    target.mkdir(parents=True, exist_ok=False)
+    stored: list[StoredUpload] = []
+    for uploaded, original in validated:
         destination = target / original
         digest = hashlib.sha256()
         size = 0
-        with destination.open("wb") as output:
+        with destination.open("xb") as output:
             while chunk := uploaded.file.read(1024 * 1024):
                 size += len(chunk)
                 digest.update(chunk)
@@ -217,7 +250,9 @@ def upload_stage_data(
         "riyueguang": "RIYUEGUANG",
     }[factory]
     release = cleaner_registry(request).latest_released(stage, registry_factory)
-    job = job_service(request).create(
+    job = _queue_initial_import(
+        request,
+        principal,
         CreateJobRequest(
             import_batch_id=batch_id,
             cleaner_release_id=release.cleaner_release_id,
@@ -227,9 +262,9 @@ def upload_stage_data(
             requested_by_user_id=principal.user_id,
             reason="上传后由 Route A Worker 调用已发布 Cleaner",
             idempotency_key=f"initial-import:{batch_id}",
-        )
+        ),
+        allowed_batch_statuses=("RECEIVED",),
     )
-    service(request).mark_queued(batch_id)
     return {
         "import_batch_id": batch_id,
         "job_id": job.job_id,
@@ -321,6 +356,25 @@ def reprocess_batch(
     info = service(request).get_batch_info(principal, domain, stage, batch_id)
     if info is None or not info.files:
         raise DomainError("BATCH_NOT_FOUND", "批次不存在或无权访问", 404)
+    batch_status = info.status.strip().upper()
+    if batch_status == "NEEDS_INPUT":
+        raise DomainError(
+            "LOT_INPUT_RESOLUTION_REQUIRED",
+            "该批次正在等待Lot补录，请使用专用补录入口保存并恢复任务",
+            409,
+        )
+    if batch_status in {"QUEUED", "PROCESSING"}:
+        raise DomainError(
+            "BATCH_ALREADY_ACTIVE",
+            "该批次已有排队中或处理中的任务，不能重复提交",
+            409,
+        )
+    if batch_status not in {"PROCESSED", "FAILED"}:
+        raise DomainError(
+            "BATCH_REPROCESS_NOT_ALLOWED",
+            f"当前批次状态不能重新处理：{batch_status}",
+            409,
+        )
     factory_aliases = {
         "华虹": "HUAHONG",
         "hh": "HUAHONG",
@@ -341,7 +395,9 @@ def reprocess_batch(
             422,
         )
     release = cleaner_registry(request).latest_released(stage, factory)
-    job = job_service(request).create(
+    job = _queue_initial_import(
+        request,
+        principal,
         CreateJobRequest(
             import_batch_id=batch_id,
             cleaner_release_id=release.cleaner_release_id,
@@ -351,9 +407,9 @@ def reprocess_batch(
             requested_by_user_id=principal.user_id,
             reason="用户重新处理：由 Route A Worker 重跑并发布新数据版本",
             idempotency_key=f"reprocess:{batch_id}:{uuid4().hex}",
-        )
+        ),
+        allowed_batch_statuses=("PROCESSED", "FAILED"),
     )
-    service(request).mark_queued(batch_id)
     return {
         "import_batch_id": batch_id,
         "job_id": job.job_id,

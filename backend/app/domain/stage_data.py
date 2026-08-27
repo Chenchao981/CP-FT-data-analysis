@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 from app.domain.auth import Principal
 
@@ -30,6 +30,11 @@ class StageUploadRow:
     uploader_login: str
     uploader_name: str
     status: str
+    source_file_id: int
+    latest_job_id: int | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    action_required: Literal["LOT_ID"] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +42,9 @@ class BatchFileInfo:
     receipt_id: int
     original_file_name: str
     storage_uri: str
+    source_file_id: int
+    expected_sha256: str | None
+    lot_id_override: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

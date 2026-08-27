@@ -1,5 +1,7 @@
 # TMS 系统架构 v0.7（Route A：调用既有 Python Cleaner）
 
+> **增量覆盖说明（2026-08-27）**：本文主体仍是 Route A 架构基线，但其中允许正式数据缺 Lot、任务级 Lot 统一覆盖以及首版不做逐来源 Spec 绑定的相关段落已被 [`TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md`](TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md) 覆盖。当前缺 Lot 必须暂停并按文件补录后重跑；多来源 FT 的 Source、Lot 与 Spec 必须对账，未知语义继续失败关闭。
+
 状态：**开发架构候选，供评审后执行**
 
 形成日期：2026-08-24

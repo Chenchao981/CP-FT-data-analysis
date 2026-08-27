@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import csv
-import json
 from dataclasses import asdict
 from pathlib import Path
+
+from app.infrastructure.ft_xlsx_scatter_writer import (
+    summarize_ft_xlsx_scatter_identity,
+)
 
 
 def summarize_existing_cleaner_result(run_result) -> dict[str, object]:
@@ -69,48 +72,25 @@ def _read_cp_summary(run_result) -> dict[str, object]:
 
 
 def _read_ft_summary(run_result) -> dict[str, object]:
-    manifest_files = [
-        Path(item.path)
-        for item in run_result.artifacts
-        if item.role == "scatter_manifest"
-    ]
-    spec_files = [
-        Path(item.path) for item in run_result.artifacts if item.role == "scatter_spec"
-    ]
-    cleaned_files = [
-        Path(item.path) for item in run_result.artifacts if item.role == "cleaned"
-    ]
-    if not manifest_files or not cleaned_files:
-        raise RuntimeError("现有 FT Cleaner 没有生成 cleaned/scatter 标准文件")
-    lots: list[str] = []
-    products: list[str] = []
-    parameters: list[str] = []
-    unit_count = 0
-    for path in manifest_files:
-        manifest = json.loads(path.read_text(encoding="utf-8"))
-        for lot in manifest.get("lots") or []:
-            if lot and lot not in lots:
-                lots.append(lot)
-        for parameter in manifest.get("parameters") or []:
-            if parameter and parameter not in parameters:
-                parameters.append(parameter)
-        unit_count += int(manifest.get("row_count") or 0)
-    for path in spec_files:
-        with path.open("r", encoding="utf-8-sig", newline="") as stream:
-            for row in csv.DictReader(stream):
-                source_file = (row.get("Source_File") or "").strip()
-                product = source_file.split("_")[1] if "_" in source_file else ""
-                if product and product not in products:
-                    products.append(product)
+    identity = summarize_ft_xlsx_scatter_identity(run_result.artifacts)
+    expected_factory = {
+        "riyuexin": "RIYUEXIN",
+        "日月新": "RIYUEXIN",
+        "riyueguang": "RIYUEGUANG",
+        "日月光": "RIYUEGUANG",
+        "ase": "RIYUEGUANG",
+    }.get(str(run_result.factory).strip().casefold())
+    if expected_factory is None or identity.factory_code != expected_factory:
+        raise RuntimeError("FT Cleaner 运行厂家与 manifest factory_code 不一致")
     return {
-        "data_name": "、".join(lots) or cleaned_files[0].stem,
-        "product_name": "、".join(products) or None,
-        "lot_id": "、".join(lots) or None,
+        "data_name": "、".join(identity.lots) or Path(identity.cleaned_file).stem,
+        "product_name": identity.product_name,
+        "lot_id": "、".join(identity.lots) or None,
         "wafer_count": None,
-        "factory_code": run_result.factory,
+        "factory_code": identity.factory_code,
         "output_uri": run_result.output_root,
-        "test_item_count": len(parameters),
-        "unit_count": unit_count,
+        "test_item_count": len(identity.parameters),
+        "unit_count": identity.row_count,
         "pass_count": None,
         "yield_rate": None,
         "data_type": "FT",

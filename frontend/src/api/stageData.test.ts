@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { downloadStageUploadFile, listStageResults, listStageUploads, reprocessStageBatch, uploadStageData } from "./stageData";
+import { downloadStageUploadFile, getStageInputRequests, listStageResults, listStageUploads, reprocessStageBatch, resolveStageInputRequests, uploadStageData } from "./stageData";
 
 beforeAll(() => {
   vi.stubGlobal("localStorage", { getItem: vi.fn((key: string) => key === "tms_access_token" ? "mock-token" : null), setItem: vi.fn(), removeItem: vi.fn() });
@@ -40,6 +40,39 @@ describe("stage data api", () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("/api/v1/engineering/cp/uploads/10/reprocess");
     expect(init?.method).toBe("POST");
+  });
+
+  it("loads the structured Lot input requests for one batch", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ import_batch_id: 10, status: "NEEDS_INPUT", field_code: "LOT_ID", prompt: "请补录", latest_job_id: 21, requests: [] }), { status: 200 }),
+    );
+    await getStageInputRequests("PRODUCTION", "FT", 10);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/v1/production/ft/uploads/10/input-requests");
+    expect((init?.headers as Headers).get("Authorization")).toBe("Bearer mock-token");
+  });
+
+  it("resolves Lot input requests and queues reprocessing", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ import_batch_id: 10, job_id: 22, status: "QUEUED" }), { status: 200 }),
+    );
+    await resolveStageInputRequests("PRODUCTION", "FT", 10, {
+      resolutions: [
+        { input_request_id: 81, lot_id: "FA59-3997" },
+        { input_request_id: 82, lot_id: "FA59-3998" },
+      ],
+      reason: "根据生产记录人工确认 Lot",
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/v1/production/ft/uploads/10/input-requests/resolve");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      resolutions: [
+        { input_request_id: 81, lot_id: "FA59-3997" },
+        { input_request_id: 82, lot_id: "FA59-3998" },
+      ],
+      reason: "根据生产记录人工确认 Lot",
+    });
   });
 
   it("downloads source files with bearer authorization", async () => {

@@ -11,6 +11,7 @@ from app.api.contracts import router as contracts_router
 from app.api.datasets import router as datasets_router
 from app.api.enrichments import router as enrichments_router
 from app.api.health import router as health_router
+from app.api.input_requests import router as input_requests_router
 from app.api.jobs import router as jobs_router
 from app.api.quick_analysis import router as quick_analysis_router
 from app.api.stage_data import router as stage_data_router
@@ -28,6 +29,9 @@ from app.infrastructure.sql_auth_service import SqlAuthService
 from app.infrastructure.sql_cleaner_registry import SqlCleanerRegistry
 from app.infrastructure.sql_dataset_service import SqlDatasetService
 from app.infrastructure.sql_enrichment_service import SqlFieldEnrichmentService
+from app.infrastructure.sql_input_request_service import (
+    SqlProcessingInputRequestService,
+)
 from app.infrastructure.sql_job_service import SqlJobService
 from app.infrastructure.sql_quick_analysis_service import SqlQuickAnalysisService
 from app.infrastructure.sql_stage_data_service import SqlStageDataService
@@ -57,6 +61,11 @@ def create_app() -> FastAPI:
     )
     application.state.field_enrichment_service = (
         SqlFieldEnrichmentService(get_engine())
+        if os.getenv("TMS_DATABASE_URL")
+        else None
+    )
+    application.state.processing_input_request_service = (
+        SqlProcessingInputRequestService(get_engine())
         if os.getenv("TMS_DATABASE_URL")
         else None
     )
@@ -92,6 +101,9 @@ def create_app() -> FastAPI:
         enrichments_router, prefix="/api/v1/enrichments", tags=["enrichments"]
     )
     application.include_router(stage_data_router, prefix="/api/v1", tags=["stage-data"])
+    application.include_router(
+        input_requests_router, prefix="/api/v1", tags=["input-requests"]
+    )
     application.include_router(
         quick_analysis_router, prefix="/api/v1", tags=["quick-analysis"]
     )

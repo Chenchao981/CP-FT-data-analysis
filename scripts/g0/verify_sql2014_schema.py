@@ -27,6 +27,7 @@ EXPECTED_VIEWS = {
 }
 EXPECTED_TABLES = {
     "ingestion.processing_job",
+    "ingestion.processing_input_request",
     "ingestion.processing_run",
     "ingestion.format_profile",
     "ingestion.cleaner_release",
@@ -66,7 +67,7 @@ def main() -> None:
         cursor = connection.cursor()
         cursor.execute("SELECT version_num FROM alembic_version")
         revision = cursor.fetchone()[0]
-        assert revision == "sql2014_0013", revision
+        assert revision == "sql2014_0014", revision
 
         cursor.execute("SELECT name FROM sys.schemas")
         schemas = {row[0] for row in cursor.fetchall()}
@@ -129,10 +130,39 @@ def main() -> None:
             "attempt_count",
             "max_attempts",
             "analysis_session_id",
+            "parent_job_id",
         }
         assert not (required_job_columns - job_columns), (
             required_job_columns - job_columns
         )
+
+        cursor.execute(
+            "SELECT name FROM sys.columns "
+            "WHERE object_id=OBJECT_ID('ingestion.processing_input_request')"
+        )
+        input_request_columns = {row[0] for row in cursor.fetchall()}
+        required_input_request_columns = {
+            "job_id",
+            "import_batch_id",
+            "receipt_id",
+            "field_code",
+            "status",
+            "prompt",
+            "evidence_json",
+            "resolved_enrichment_id",
+            "resolved_by",
+            "requested_at_utc",
+            "resolved_at_utc",
+        }
+        assert not (required_input_request_columns - input_request_columns), (
+            required_input_request_columns - input_request_columns
+        )
+        cursor.execute(
+            "SELECT COUNT(*) FROM sys.indexes "
+            "WHERE object_id=OBJECT_ID('ingestion.processing_input_request') "
+            "AND name='UX_processing_input_request_open' AND has_filter=1"
+        )
+        assert cursor.fetchone()[0] == 1
 
         cursor.execute(
             "SELECT name FROM sys.columns "

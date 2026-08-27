@@ -2,7 +2,7 @@ import { CheckCircleOutlined, FormOutlined, InfoCircleOutlined } from "@ant-desi
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, Card, Col, Form, Input, InputNumber, Radio, Row, Select, Space, Table, Tag, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   createFieldEnrichment,
@@ -69,6 +69,10 @@ export function StageIntakeWorkbench({ stage }: Props) {
     [fields],
   );
   const selectedDefinition = fields.find((item) => item.field_code === selectedField);
+  const canIgnore = selectedField !== "LOT_ID" && selectedDefinition?.can_ignore === true;
+  useEffect(() => {
+    if (!canIgnore && action === "IGNORE") form.setFieldValue("action", "FILL");
+  }, [action, canIgnore, form]);
   const columns: ColumnsType<FieldEnrichmentRecord> = [
     { title: "范围", key: "scope", render: (_, row) => row.source_file_id ? `源文件 ${row.source_file_id}` : "整个导入批次" },
     { title: "字段", dataIndex: "field_code", render: (value: string) => fieldLabels[value] ?? value },
@@ -89,7 +93,7 @@ export function StageIntakeWorkbench({ stage }: Props) {
         <Tag color={stage === "CP" ? "cyan" : "purple"}>{stage}独立流程</Tag>
       </div>
 
-      <Alert showIcon icon={<InfoCircleOutlined />} type="info" message="源字段与人工字段分开" description={`${STAGE_COPY[stage].sourceFacts} 源文件没有但分析需要的业务字段在这里补录；不需要的字段可以明确忽略。`} />
+      <Alert showIcon icon={<InfoCircleOutlined />} type="info" message="源字段与人工字段分开" description={`${STAGE_COPY[stage].sourceFacts} 源文件没有但分析需要的业务字段在这里补录；只有字段合同允许的非关键字段才可以明确忽略。`} />
 
       <Row gutter={[20, 20]} className="intake-grid">
         <Col xs={24} xl={8}>
@@ -139,7 +143,10 @@ export function StageIntakeWorkbench({ stage }: Props) {
                 </Row>
                 {selectedDefinition && <Alert className="field-description" type={selectedDefinition.required_for_analysis ? "warning" : "info"} showIcon message={selectedDefinition.description} />}
                 <Form.Item label="处理决定" name="action" rules={[{ required: true }]}>
-                  <Radio.Group optionType="button" buttonStyle="solid" options={[{ label: "人工填写", value: "FILL" }, { label: "明确忽略", value: "IGNORE" }]} />
+                  <Radio.Group optionType="button" buttonStyle="solid" options={[
+                    { label: "人工填写", value: "FILL" },
+                    ...(canIgnore ? [{ label: "明确忽略", value: "IGNORE" as const }] : []),
+                  ]} />
                 </Form.Item>
                 {action === "FILL" && (
                   <Form.Item label="补录值" name="value_text" rules={[{ required: true, message: "请输入补录值" }]}>

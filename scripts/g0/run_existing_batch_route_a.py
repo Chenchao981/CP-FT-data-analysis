@@ -14,6 +14,7 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+from app.domain.auth import Principal
 from app.domain.jobs import CreateJobRequest, JobStatus, JobType
 from app.infrastructure.cp_csv_triplet_writer import CpCsvTripletWriter
 from app.infrastructure.database import get_engine
@@ -45,16 +46,26 @@ def main() -> None:
             .one()
         )
     release = registry.latest_released(str(batch["test_stage"]), str(batch["factory_code"]))
-    job = queue.create(
+    requested_by = str(batch["uploaded_by"] or "route-a-backfill")
+    owner_user_id = int(batch["owner_user_id"])
+    job = queue.create_initial_import_for_batch(
         CreateJobRequest(
             import_batch_id=args.batch_id,
             cleaner_release_id=release.cleaner_release_id,
             job_type=JobType.INITIAL_IMPORT,
             trigger_type="SYSTEM",
-            requested_by=str(batch["uploaded_by"] or "route-a-backfill"),
-            requested_by_user_id=int(batch["owner_user_id"]),
+            requested_by=requested_by,
+            requested_by_user_id=owner_user_id,
             idempotency_key=f"route-a-backfill:{args.batch_id}:{release.cleaner_release_id}",
-        )
+        ),
+        Principal(
+            user_id=owner_user_id,
+            login_name=requested_by,
+            display_name=requested_by,
+            roles=(),
+            permissions=frozenset(),
+        ),
+        allowed_batch_statuses=("RECEIVED", "PROCESSED", "FAILED"),
     )
     worker = DatabaseJobWorker(
         queue,

@@ -15,6 +15,7 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+from app.domain.auth import Principal
 from app.domain.jobs import CreateJobRequest, JobStatus, JobType
 from app.infrastructure.cp_csv_triplet_writer import CpCsvTripletWriter
 from app.infrastructure.ft_xlsx_scatter_writer import FtXlsxScatterWriter
@@ -49,7 +50,7 @@ def main() -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert revision == "sql2014_0013", revision
+            assert revision == "sql2014_0014", revision
             route_b_count = connection.execute(
                 text(
                     "SELECT COUNT(*) FROM sys.tables t JOIN sys.schemas s "
@@ -120,7 +121,7 @@ def main() -> None:
             )
 
         cp_release = registry.latest_released("CP", "HUAHONG")
-        import_job = queue.create(
+        import_job = queue.create_initial_import_for_batch(
             CreateJobRequest(
                 import_batch_id=batch_id,
                 cleaner_release_id=cp_release.cleaner_release_id,
@@ -129,10 +130,17 @@ def main() -> None:
                 requested_by="route-a-verification",
                 requested_by_user_id=owner_id,
                 idempotency_key=f"route-a-import:{token}",
-            )
+            ),
+            Principal(
+                user_id=int(owner_id),
+                login_name="route-a-verification",
+                display_name="Route A Verification",
+                roles=(),
+                permissions=frozenset(),
+            ),
+            allowed_batch_statuses=("RECEIVED",),
         )
         import_job_id = import_job.job_id
-        stage_data.mark_queued(batch_id)
         worker = DatabaseJobWorker(
             queue,
             {

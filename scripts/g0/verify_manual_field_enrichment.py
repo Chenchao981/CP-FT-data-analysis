@@ -110,10 +110,10 @@ def main() -> None:
             CreateFieldEnrichmentRequest(
                 import_batch_id=ids["batch"],
                 test_stage="CP",
-                field_code="LOT_ID",
+                field_code="PROJECT_CODE",
                 action="IGNORE",
                 entered_by=ids["user"],
-                reason="G0 CP file has no Lot and analysis does not require it",
+                reason="G0 optional project code intentionally omitted",
             ),
             principal,
         )

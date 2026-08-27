@@ -1,5 +1,7 @@
 # TMS 能力分类与日月光 FT 正式入库完成报告（2026-08-27）
 
+> **重要更新 / 部分内容已被取代（2026-08-27）**：本报告仍是“能力分类与日月光 FT 正式入库”阶段的历史验收记录，但其中“Lot 人工补录尚未实现、缺失即失败”的表述已经失效。Lot 缺失现在会进入 `NEEDS_INPUT`，用户补录后由子 Job 恢复原 Cleaner Release，并在成功后发布 Dataset Current。当前合同见 `docs/architecture/TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md`，真实完成证据见 `docs/development/TMS_Lot_Input_Recovery_Completion_Report_2026-08-27.md`。
+
 ## 1. 完成结论
 
 本阶段已把“通用正式入库、定制工具、快速分析”拆成三类能力，并完成日月新/日月光两个独立 FT DC 正式入库链路。后端、SQL Server、前端和真实样本均已联调；日月光同测试机号下的两次测试 Run 和两套规格能够独立保存、筛选和显示。
@@ -11,7 +13,7 @@
 3. 通用 FT 正式入口本阶段开放日月新、日月光；电基、集佳、杰群在能力页显示状态，但未完成独立 Route A 验收前不能提交正式入库。
 4. 杰群 Quick PAT 保持快速分析通道，不强制形成全量 Measurement。
 5. `ASE`/`日月光` 只映射 `RIYUEGUANG`；`日月新` 只映射 `RIYUEXIN`。
-6. 已批准格式应自动取得 Lot。缺失 Lot 或身份对账失败时停止发布；平台人工补录闭环列为后续独立功能。
+6. 已批准格式应自动取得 Lot。缺失 Lot 时停止当次发布并进入 `NEEDS_INPUT`；平台人工补录闭环已在同日后续增量完成。身份对账失败仍必须失败关闭，不能通过 Lot 补录绕过格式或厂家不匹配。
 
 详细业务基线见 `docs/business/TMS_Capability_Classification_v1.0_2026-08-27.md`。
 
@@ -86,7 +88,7 @@ warnings 主要来自 openpyxl 的 `datetime.utcnow()` 弃用提示；前端构�
 
 ## 8. 不确定性与未完成项
 
-- Lot 人工补录的页面、审计记录和重跑闭环尚未实现；当前策略是缺失即失败关闭。
+- ~~Lot 人工补录的页面、审计记录和重跑闭环尚未实现；当前策略是缺失即失败关闭。~~ **已被同日后续增量取代**：页面、审计记录、父子 Job 恢复和 Dataset Current 发布闭环已实现并完成真实浏览器验收。
 - 日月光只完成 DC；DVDS、RG、HTDC、TF 未验收。
 - 电基、集佳、杰群正式 Route A 未完成，当前只展示真实状态。
 - 国宇 FRD 与立昂微-管芯数本阶段完成分类和入口隔离，尚未迁移为新的 Web 定制工具页面。
@@ -95,7 +97,7 @@ warnings 主要来自 openpyxl 的 `datetime.utcnow()` 弃用提示；前端构�
 
 ## 9. 下一阶段顺序
 
-1. 实现 Lot 缺失人工补录、审计和安全重跑闭环，并保持 Spec 随 Lot/Run 绑定。
+1. Lot 缺失人工补录、审计和安全重跑闭环已完成；后续只处理完成报告中列明的生产门禁与纠错边界。
 2. 分别接入电基、集佳、杰群正式 FT Route A，每家使用真实样本和 Golden Manifest 验收。
 3. 为国宇 FRD、立昂微-管芯数建立独立 Web 定制工具入口，输出不进入通用 CP Measurement。
 4. 按 Dataset API 逐项迁移 fjd 图表，优先复用已经正式入库的 CP/FT 数据，不复制清洗逻辑。

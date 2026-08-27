@@ -1,5 +1,7 @@
 # TMS 业务需求规格 v0.2
 
+> **Lot 规则更新（2026-08-27）**：本文保留历史决策过程，但其中“FT Lot 可为空并直接正式入库”“缺 Lot 后置补录”“任务级 Lot 覆盖全部数据”和“沿用第一批次 Spec”等内容已失效。当前正式 Route A 要求每个适用源文件都有可验证 Lot；Cleaner 无法取得 Lot 时进入 `NEEDS_INPUT`，用户按文件确认后创建同 Cleaner Release 的子 Job 重跑，只有 Lot、Source 与 Spec 再校验通过才发布。现行合同与证据见 [`TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md`](../architecture/TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md) 和 [`TMS_Lot_Input_Recovery_Completion_Report_2026-08-27.md`](../development/TMS_Lot_Input_Recovery_Completion_Report_2026-08-27.md)。其余不冲突内容继续有效。
+
 状态：**业务基线候选，待文档评审确认**
 
 形成日期：2026-08-24

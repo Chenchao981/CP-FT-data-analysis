@@ -6,6 +6,7 @@ from typing import Any
 
 from sqlalchemy import Engine, text
 
+from app.core.errors import DomainError
 from app.domain.auth import Principal
 from app.domain.stage_data import (
     BatchFileInfo,
@@ -160,7 +161,8 @@ class SqlStageDataService:
             connection.execute(
                 text(
                     "UPDATE ingestion.import_batch SET status='QUEUED' "
-                    "WHERE import_batch_id=:batch AND status='RECEIVED'"
+                    "WHERE import_batch_id=:batch "
+                    "AND status='RECEIVED'"
                 ),
                 {"batch": batch_id},
             )
@@ -183,14 +185,20 @@ class SqlStageDataService:
             rows = (
                 connection.execute(
                     text(
-                        "SELECT r.receipt_id,r.original_file_name,r.metadata_json,"
-                        "s.canonical_storage_uri AS storage_uri "
+                        "SELECT r.receipt_id,r.source_file_id,r.original_file_name,r.metadata_json,"
+                        "s.canonical_storage_uri AS storage_uri,s.sha256 AS expected_sha256,"
+                        "lot.value_text AS lot_id_override "
                         "FROM ingestion.import_batch_file ibf "
                         "JOIN ingestion.source_file_receipt r ON r.receipt_id=ibf.receipt_id "
                         "JOIN ingestion.source_file s ON s.source_file_id=r.source_file_id "
+                        "OUTER APPLY(SELECT TOP (1) e.value_text FROM ingestion.field_enrichment e "
+                        "WHERE e.import_batch_id=ibf.import_batch_id AND e.test_stage=:stage "
+                        "AND e.field_code='LOT_ID' AND e.action='FILL' AND e.is_current=1 "
+                        "AND (e.source_file_id=r.source_file_id OR e.source_file_id IS NULL) "
+                        "ORDER BY CASE WHEN e.source_file_id=r.source_file_id THEN 0 ELSE 1 END,e.enrichment_id DESC) lot "
                         "WHERE ibf.import_batch_id=:batch ORDER BY ibf.ordinal_no"
                     ),
-                    {"batch": batch_id},
+                    {"batch": batch_id, "stage": str(batch["test_stage"])},
                 )
                 .mappings()
                 .all()
@@ -204,6 +212,13 @@ class SqlStageDataService:
                     int(row["receipt_id"]),
                     str(row["original_file_name"]),
                     str(storage_uri),
+                    int(row["source_file_id"]),
+                    str(row["expected_sha256"])
+                    if row["expected_sha256"] is not None
+                    else None,
+                    str(row["lot_id_override"])
+                    if row["lot_id_override"] is not None
+                    else None,
                 )
             )
         files = tuple(files_list)
@@ -217,13 +232,19 @@ class SqlStageDataService:
 
     def worker_mark_processing(self, batch_id: int) -> None:
         with self._engine.begin() as connection:
-            connection.execute(
+            updated = connection.execute(
                 text(
                     "UPDATE ingestion.import_batch SET status='PROCESSING' "
-                    "WHERE import_batch_id=:batch"
+                    "WHERE import_batch_id=:batch AND status='QUEUED'"
                 ),
                 {"batch": batch_id},
             )
+            if updated.rowcount != 1:
+                raise DomainError(
+                    "BATCH_STATE_CONFLICT",
+                    "上传任务已不在排队状态，Worker不能开始处理",
+                    409,
+                )
 
     def mark_failed(
         self, batch_id: int, job_id: int, message: str, *, finish_job: bool = True
@@ -238,7 +259,9 @@ class SqlStageDataService:
                 )
             connection.execute(
                 text(
-                    "UPDATE ingestion.import_batch SET status='FAILED',completed_at_utc=SYSUTCDATETIME() WHERE import_batch_id=:batch"
+                    "UPDATE ingestion.import_batch SET status='FAILED',"
+                    "completed_at_utc=SYSUTCDATETIME() WHERE import_batch_id=:batch "
+                    "AND status IN('QUEUED','PROCESSING')"
                 ),
                 {"batch": batch_id},
             )
@@ -354,7 +377,8 @@ class SqlStageDataService:
             file_rows = (
                 connection.execute(
                     text(
-                        "SELECT r.receipt_id,r.original_file_name,s.canonical_storage_uri "
+                        "SELECT r.receipt_id,r.source_file_id,r.original_file_name,"
+                        "s.canonical_storage_uri,s.sha256 AS expected_sha256 "
                         "FROM ingestion.import_batch_file ibf "
                         "JOIN ingestion.source_file_receipt r ON r.receipt_id=ibf.receipt_id "
                         "JOIN ingestion.source_file s ON s.source_file_id=r.source_file_id "
@@ -370,6 +394,10 @@ class SqlStageDataService:
                 int(r["receipt_id"]),
                 str(r["original_file_name"]),
                 str(r["canonical_storage_uri"]),
+                int(r["source_file_id"]),
+                str(r["expected_sha256"])
+                if r["expected_sha256"] is not None
+                else None,
             )
             for r in file_rows
         )
@@ -396,9 +424,12 @@ class SqlStageDataService:
             rows = (
                 connection.execute(
                     text(
-                        "SELECT b.import_batch_id,ibf.ordinal_no,r.receipt_id,r.original_file_name,s.file_size,b.factory_code,b.started_at_utc,b.completed_at_utc,u.login_name,u.display_name,b.status "
+                        "SELECT b.import_batch_id,ibf.ordinal_no,r.receipt_id,r.source_file_id,r.original_file_name,s.file_size,b.factory_code,b.started_at_utc,b.completed_at_utc,u.login_name,u.display_name,b.status,"
+                        "latest.job_id AS latest_job_id,latest.error_code,latest.error_message "
                         "FROM ingestion.import_batch b JOIN iam.app_user u ON u.user_id=b.owner_user_id JOIN ingestion.import_batch_file ibf ON ibf.import_batch_id=b.import_batch_id "
                         "JOIN ingestion.source_file_receipt r ON r.receipt_id=ibf.receipt_id JOIN ingestion.source_file s ON s.source_file_id=r.source_file_id "
+                        "OUTER APPLY(SELECT TOP (1) j.job_id,j.error_code,j.error_message FROM ingestion.processing_job j "
+                        "WHERE j.import_batch_id=b.import_batch_id ORDER BY j.job_id DESC) latest "
                         "WHERE b.business_domain=:domain AND b.test_stage=:stage AND "
                         + self._scope()
                         + " ORDER BY b.import_batch_id DESC,ibf.ordinal_no"
@@ -429,6 +460,13 @@ class SqlStageDataService:
                 str(r["login_name"]),
                 str(r["display_name"]),
                 str(r["status"]),
+                int(r["source_file_id"]),
+                int(r["latest_job_id"]) if r["latest_job_id"] is not None else None,
+                str(r["error_code"]) if r["error_code"] is not None else None,
+                str(r["error_message"])
+                if r["error_message"] is not None
+                else None,
+                "LOT_ID" if str(r["status"]) == "NEEDS_INPUT" else None,
             )
             for r in rows
         )

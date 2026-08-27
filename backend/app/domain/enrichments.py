@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.domain.input_requests import normalize_lot_id
 
 
 class EnrichmentStage(StrEnum):
@@ -32,24 +34,29 @@ STAGE_FIELD_CATALOG: dict[EnrichmentStage, tuple[dict[str, object], ...]] = {
             "field_code": "SUPPLIER_CODE",
             "label": "晶圆厂/测试来源",
             "required_for_analysis": True,
+            "can_ignore": False,
             "description": "源文件未提供时由用户选择或填写晶圆厂代码",
         },
         {
             "field_code": "PRODUCT_CODE",
             "label": "产品型号",
             "required_for_analysis": False,
+            "can_ignore": True,
             "description": "CP可选业务信息，不影响Lot/Wafer分析",
         },
         {
             "field_code": "LOT_ID",
             "label": "批次号",
-            "required_for_analysis": False,
-            "description": "CP源数据缺少Lot_ID时可任务级补录；不补录仍允许入库",
+            "required_for_analysis": True,
+            "required_for_formal_import": True,
+            "can_ignore": False,
+            "description": "通用正式入库必须确认Lot_ID；缺失时暂停并人工补录",
         },
         {
             "field_code": "PROJECT_CODE",
             "label": "项目代码",
             "required_for_analysis": False,
+            "can_ignore": True,
             "description": "可选项目或分析主题",
         },
     ),
@@ -58,24 +65,29 @@ STAGE_FIELD_CATALOG: dict[EnrichmentStage, tuple[dict[str, object], ...]] = {
             "field_code": "PRODUCT_CODE",
             "label": "产品型号",
             "required_for_analysis": True,
+            "can_ignore": False,
             "description": "源文件未提供时必须人工确认产品型号",
         },
         {
             "field_code": "SUPPLIER_CODE",
             "label": "封测厂/测试来源",
             "required_for_analysis": False,
+            "can_ignore": True,
             "description": "源文件存在或分析需要时补充",
         },
         {
             "field_code": "LOT_ID",
             "label": "批次号",
-            "required_for_analysis": False,
-            "description": "FT可选信息；源文件没有时可以明确忽略",
+            "required_for_analysis": True,
+            "required_for_formal_import": True,
+            "can_ignore": False,
+            "description": "通用正式入库必须确认Lot_ID；缺失时暂停并人工补录",
         },
         {
             "field_code": "PROJECT_CODE",
             "label": "项目代码",
             "required_for_analysis": False,
+            "can_ignore": True,
             "description": "可选项目或分析主题",
         },
     ),
@@ -94,6 +106,13 @@ class CreateFieldEnrichmentRequest(BaseModel):
     entered_by: int | None = Field(default=None, gt=0)
     reason: str = Field(min_length=1, max_length=500)
 
+    @field_validator("value_text")
+    @classmethod
+    def normalize_lot_value(cls, value: str | None, info) -> str | None:
+        if value is not None and info.data.get("field_code") == "LOT_ID":
+            return normalize_lot_id(value)
+        return value
+
     @model_validator(mode="after")
     def validate_stage_field_and_value(self) -> CreateFieldEnrichmentRequest:
         if self.field_code not in STAGE_FIELD_CODES[self.test_stage]:
@@ -104,6 +123,15 @@ class CreateFieldEnrichmentRequest(BaseModel):
             raise ValueError("FILL requires a non-empty value_text")
         if self.action == EnrichmentAction.IGNORE and self.value_text is not None:
             raise ValueError("IGNORE must not carry value_text")
+        field_contract = next(
+            item
+            for item in STAGE_FIELD_CATALOG[self.test_stage]
+            if item["field_code"] == self.field_code
+        )
+        if self.action == EnrichmentAction.IGNORE and not field_contract["can_ignore"]:
+            raise ValueError(f"{self.field_code} cannot be ignored")
+        if self.field_code == "LOT_ID" and len(self.value_text or "") > 128:
+            raise ValueError("LOT_ID cannot exceed 128 characters")
         return self
 
 

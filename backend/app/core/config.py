@@ -5,6 +5,20 @@ from dataclasses import dataclass
 from functools import lru_cache
 
 
+def _boolean_environment(name: str, *, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    normalized = raw_value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(
+        f"{name} must be one of true/false, 1/0, yes/no, or on/off"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class Settings:
     environment: str
@@ -40,8 +54,7 @@ def get_settings() -> Settings:
         log_backup_count=log_backup_count,
         process_name=process_name,
         job_repository=job_repository,
-        auth_required=os.getenv("TMS_AUTH_REQUIRED", "false").lower()
-        in {"1", "true", "yes", "on"},
+        auth_required=_boolean_environment("TMS_AUTH_REQUIRED", default=True),
         jwt_secret=os.getenv("TMS_JWT_SECRET", "tms-local-development-only"),
         access_token_minutes=int(os.getenv("TMS_ACCESS_TOKEN_MINUTES", "480")),
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from typing import Any
 
@@ -27,6 +28,24 @@ def _record(row: Mapping[str, Any]) -> FieldEnrichmentRecord:
     )
 
 
+def _assert_direct_lot_enrichment_allowed(
+    batch_status: str, *, has_open_lot_request: bool
+) -> None:
+    normalized_status = batch_status.strip().upper()
+    if normalized_status == "NEEDS_INPUT" or has_open_lot_request:
+        raise DomainError(
+            "LOT_INPUT_RESOLUTION_REQUIRED",
+            "该批次存在待处理的Lot请求，请使用专用 input-requests/resolve 补录入口",
+            409,
+        )
+    if normalized_status in {"QUEUED", "PROCESSING"}:
+        raise DomainError(
+            "LOT_ENRICHMENT_BATCH_ACTIVE",
+            "批次正在排队或处理中，不能从通用补录入口修改Lot",
+            409,
+        )
+
+
 class SqlFieldEnrichmentService:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
@@ -39,20 +58,53 @@ class SqlFieldEnrichmentService:
         self, request: CreateFieldEnrichmentRequest, principal: Principal
     ) -> FieldEnrichmentRecord:
         with self._engine.begin() as connection:
-            batch_stage = connection.execute(
-                text(
-                    "SELECT test_stage FROM ingestion.import_batch "
+            batch = (
+                connection.execute(
+                    text(
+                    "SELECT test_stage,factory_code,status FROM ingestion.import_batch "
+                    "WITH (UPDLOCK,HOLDLOCK) "
                     "WHERE import_batch_id=:batch_id AND " + self._access_scope()
-                ),
-                {"batch_id": request.import_batch_id, "user_id": principal.user_id},
-            ).scalar_one_or_none()
-            if batch_stage is None:
+                    ),
+                    {"batch_id": request.import_batch_id, "user_id": principal.user_id},
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if batch is None:
                 raise DomainError(
                     "IMPORT_BATCH_NOT_FOUND", "上传任务不存在或无权访问", 404
                 )
-            if str(batch_stage) != request.test_stage.value:
+            if str(batch["test_stage"]) != request.test_stage.value:
                 raise DomainError(
                     "ENRICHMENT_STAGE_MISMATCH", "补录Stage与上传任务不一致", 409
+                )
+            if request.field_code == "LOT_ID":
+                has_open_lot_request = (
+                    connection.execute(
+                        text(
+                            "SELECT TOP (1) 1 FROM ingestion.processing_input_request "
+                            "WITH (UPDLOCK,HOLDLOCK) WHERE import_batch_id=:batch_id "
+                            "AND field_code='LOT_ID' AND status='OPEN'"
+                        ),
+                        {"batch_id": request.import_batch_id},
+                    ).scalar_one_or_none()
+                    is not None
+                )
+                _assert_direct_lot_enrichment_allowed(
+                    str(batch["status"]),
+                    has_open_lot_request=has_open_lot_request,
+                )
+            if (
+                request.field_code == "LOT_ID"
+                and str(batch["factory_code"] or "").strip().casefold()
+                in {"riyuexin", "riyueguang"}
+                and re.fullmatch(r"[A-Z0-9]{4}-\d{4}", request.value_text or "")
+                is None
+            ):
+                raise DomainError(
+                    "LOT_ID_FORMAT_INVALID",
+                    "当前FT厂家Lot格式应为4位字母或数字、连字符和4位数字，例如FA54-9744",
+                    422,
                 )
             if request.source_file_id is not None:
                 linked = connection.execute(
@@ -88,6 +140,12 @@ class SqlFieldEnrichmentService:
                 },
             ).scalar_one_or_none()
             if previous is not None:
+                if request.field_code == "LOT_ID":
+                    raise DomainError(
+                        "LOT_ID_ALREADY_SUPPLIED",
+                        "该范围已有生效Lot，补录不得覆盖",
+                        409,
+                    )
                 connection.execute(
                     text(
                         "UPDATE ingestion.field_enrichment SET is_current=0 "
@@ -95,6 +153,27 @@ class SqlFieldEnrichmentService:
                     ),
                     {"enrichment_id": previous},
                 )
+            if request.field_code == "LOT_ID":
+                parsed_lot = connection.execute(
+                    text(
+                        "SELECT TOP (1) tr.lot_id FROM ingestion.processing_run pr "
+                        "JOIN ingestion.processing_job j ON j.job_id=pr.job_id "
+                        "JOIN test.test_run tr ON tr.processing_run_id=pr.processing_run_id "
+                        "WHERE j.import_batch_id=:batch_id "
+                        "AND (:source_file_id IS NULL OR pr.source_file_id=:source_file_id) "
+                        "AND NULLIF(LTRIM(RTRIM(tr.lot_id)),'') IS NOT NULL"
+                    ),
+                    {
+                        "batch_id": request.import_batch_id,
+                        "source_file_id": request.source_file_id,
+                    },
+                ).scalar_one_or_none()
+                if parsed_lot is not None:
+                    raise DomainError(
+                        "LOT_ID_ALREADY_PARSED",
+                        "该范围已解析出Lot，补录不得覆盖",
+                        409,
+                    )
             row = (
                 connection.execute(
                     text(

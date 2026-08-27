@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from app.domain.cleaner_registry import CleanerRelease
+from app.domain.jobs import InMemoryJobService
 from app.domain.stage_data import (
     BatchFileInfo,
     BatchInfo,
@@ -79,7 +80,12 @@ class StubStageService:
                 None,
                 principal.login_name,
                 principal.display_name,
-                "RECEIVED",
+                "NEEDS_INPUT",
+                7001,
+                73,
+                "LOT_ID_REQUIRED",
+                "请确认批次号",
+                "LOT_ID",
             ),
         )
 
@@ -112,7 +118,15 @@ class StubStageService:
             41,
             "huahong",
             "PROCESSED",
-            (BatchFileInfo(9001, "sample.zip", str(self.stored_path)),),
+            (
+                BatchFileInfo(
+                    9001,
+                    "sample.zip",
+                    str(self.stored_path),
+                    7001,
+                    "0" * 64,
+                ),
+            ),
         )
 
     def archive_previous_results(self, batch_id):
@@ -234,6 +248,19 @@ class StubCleanerRegistry:
         )
 
 
+class AtomicInitialImportQueue:
+    def __init__(self) -> None:
+        self._jobs = InMemoryJobService()
+        self.allowed_statuses: list[tuple[str, ...]] = []
+
+    def create_initial_import_for_batch(
+        self, payload, principal, *, allowed_batch_statuses
+    ):
+        assert payload.requested_by_user_id == principal.user_id
+        self.allowed_statuses.append(allowed_batch_statuses)
+        return self._jobs.create(payload)
+
+
 def test_engineering_cp_upload_queues_authenticated_route_a_job(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -253,6 +280,26 @@ def test_engineering_cp_upload_queues_authenticated_route_a_job(
     assert body["uploader"]["user_id"] == 1
     assert service.principal.login_name == "development-admin"
     assert service.queued == [41]
+
+
+def test_sql_upload_uses_atomic_batch_queue_and_job_creation(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+    service = StubStageService()
+    client = _client(service)
+    queue = AtomicInitialImportQueue()
+    client.app.state.job_service = queue
+
+    response = client.post(
+        "/api/v1/engineering/cp/uploads",
+        files={"files": ("sample.zip", b"sample", "application/zip")},
+        data={"factory_code": "huahong"},
+    )
+
+    assert response.status_code == 201
+    assert queue.allowed_statuses == [("RECEIVED",)]
+    assert service.queued == []
 
 
 def test_production_ft_upload_queues_ft_release(monkeypatch, tmp_path: Path) -> None:
@@ -295,6 +342,32 @@ def test_upload_rejects_factory_stage_mismatch(monkeypatch, tmp_path: Path) -> N
     )
     assert wrong_cp.status_code == 422
     assert wrong_cp.json()["error"]["code"] == "FACTORY_UNSUPPORTED"
+
+
+def test_upload_rejects_duplicate_basename_before_writing(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _stub_ft_cleaner(monkeypatch, tmp_path)
+    service = StubStageService()
+    response = _client(service).post(
+        "/api/v1/production/ft/uploads",
+        files=[
+            (
+                "files",
+                ("Sample.xlsx", b"first", "application/octet-stream"),
+            ),
+            (
+                "files",
+                ("sample.XLSX", b"second", "application/octet-stream"),
+            ),
+        ],
+        data={"factory_code": "riyuexin"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "DUPLICATE_UPLOAD_FILE_NAME"
+    assert service.registered_files == ()
+    assert not (tmp_path / "raw").exists()
 
 
 def test_production_cp_upload_returns_queue_identity(
@@ -436,10 +509,12 @@ def test_upload_rejects_unknown_business_domain(monkeypatch, tmp_path: Path) -> 
 def test_lists_are_scoped_by_business_domain_and_stage() -> None:
     service = StubStageService()
     client = _client(service)
-    assert (
-        client.get("/api/v1/engineering/cp/uploads").json()[0]["uploader_login"]
-        == "development-admin"
-    )
+    upload = client.get("/api/v1/engineering/cp/uploads").json()[0]
+    assert upload["uploader_login"] == "development-admin"
+    assert upload["source_file_id"] == 7001
+    assert upload["latest_job_id"] == 73
+    assert upload["error_code"] == "LOT_ID_REQUIRED"
+    assert upload["action_required"] == "LOT_ID"
     assert client.get("/api/v1/production/cp/results").json()[0]["data_type"] == "CP"
     assert ("ENGINEERING", "CP") in service.calls
     assert ("PRODUCTION", "CP") in service.calls
@@ -489,6 +564,22 @@ def test_reprocess_queues_same_route_a_pipeline(
     assert service.archived == []
 
 
+def test_sql_reprocess_uses_atomic_terminal_state_compare_and_set(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+    service = StubStageService()
+    client = _client(service)
+    queue = AtomicInitialImportQueue()
+    client.app.state.job_service = queue
+
+    response = client.post("/api/v1/production/cp/uploads/41/reprocess")
+
+    assert response.status_code == 200
+    assert queue.allowed_statuses == [("PROCESSED", "FAILED")]
+    assert service.queued == []
+
+
 def test_reprocess_rejects_unknown_batch(monkeypatch, tmp_path: Path) -> None:
     _stub_cp_cleaner(monkeypatch, tmp_path)
 
@@ -501,3 +592,81 @@ def test_reprocess_rejects_unknown_batch(monkeypatch, tmp_path: Path) -> None:
     )
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "BATCH_NOT_FOUND"
+
+
+@pytest.mark.parametrize("batch_status", ("QUEUED", "PROCESSING"))
+def test_reprocess_rejects_active_batch(
+    monkeypatch, tmp_path: Path, batch_status: str
+) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+
+    class ActiveService(StubStageService):
+        def get_batch_info(self, principal, business_domain, test_stage, batch_id):
+            info = super().get_batch_info(
+                principal, business_domain, test_stage, batch_id
+            )
+            return BatchInfo(
+                info.import_batch_id,
+                info.factory_code,
+                batch_status,
+                info.files,
+            )
+
+    service = ActiveService()
+    response = _client(service).post(
+        "/api/v1/production/cp/uploads/41/reprocess"
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "BATCH_ALREADY_ACTIVE"
+    assert service.queued == []
+
+
+def test_reprocess_needs_input_must_use_dedicated_resolution(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+
+    class NeedsInputService(StubStageService):
+        def get_batch_info(self, principal, business_domain, test_stage, batch_id):
+            info = super().get_batch_info(
+                principal, business_domain, test_stage, batch_id
+            )
+            return BatchInfo(
+                info.import_batch_id,
+                info.factory_code,
+                "NEEDS_INPUT",
+                info.files,
+            )
+
+    service = NeedsInputService()
+    response = _client(service).post(
+        "/api/v1/production/cp/uploads/41/reprocess"
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "LOT_INPUT_RESOLUTION_REQUIRED"
+    assert service.queued == []
+
+
+@pytest.mark.parametrize("batch_status", ("RECEIVED", "CANCELLED"))
+def test_reprocess_only_accepts_processed_or_failed_batches(
+    monkeypatch, tmp_path: Path, batch_status: str
+) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+
+    class IneligibleService(StubStageService):
+        def get_batch_info(self, principal, business_domain, test_stage, batch_id):
+            info = super().get_batch_info(
+                principal, business_domain, test_stage, batch_id
+            )
+            return BatchInfo(
+                info.import_batch_id,
+                info.factory_code,
+                batch_status,
+                info.files,
+            )
+
+    response = _client(IneligibleService()).post(
+        "/api/v1/production/cp/uploads/41/reprocess"
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "BATCH_REPROCESS_NOT_ALLOWED"

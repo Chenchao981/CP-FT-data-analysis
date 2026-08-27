@@ -8,8 +8,7 @@ from fastapi.security import OAuth2PasswordBearer
 from app.core.config import get_settings
 from app.core.errors import DomainError
 from app.core.security import decode_access_token
-from app.domain.auth import AuthService, DEVELOPMENT_PRINCIPAL, Principal
-
+from app.domain.auth import DEVELOPMENT_PRINCIPAL, AuthService, Principal
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)
 
@@ -24,7 +23,17 @@ def auth_service(request: Request) -> AuthService:
 def current_principal(
     request: Request, token: str | None = Depends(oauth2_scheme)
 ) -> Principal:
-    if not get_settings().auth_required:
+    settings = get_settings()
+    if not settings.auth_required:
+        if settings.environment.strip().lower() not in {"development", "test"}:
+            raise DomainError(
+                "AUTH_CONFIGURATION_INVALID",
+                "仅开发或测试环境允许关闭身份认证",
+                503,
+            )
+        service = getattr(request.app.state, "auth_service", None)
+        if service is not None:
+            return service.principal_for_development()
         return DEVELOPMENT_PRINCIPAL
     if not token:
         raise DomainError("AUTH_REQUIRED", "请先登录", 401)
