@@ -21,6 +21,7 @@ from app.core.logging import configure_logging
 from app.core.middleware import RequestContextMiddleware
 from app.domain.jobs import InMemoryJobService
 from app.domain.quick_analysis import InMemoryQuickAnalysisService
+from app.domain.quick_capacity import QuickCapacityPolicy
 from app.infrastructure.database import get_engine
 from app.infrastructure.source_catalog import SourceCatalog
 from app.infrastructure.sql_auth_service import SqlAuthService
@@ -35,10 +36,11 @@ from app.infrastructure.sql_stage_data_service import SqlStageDataService
 def create_app() -> FastAPI:
     configure_logging()
     settings = get_settings()
+    quick_capacity = QuickCapacityPolicy.from_environment()
     database_configured = bool(os.getenv("TMS_DATABASE_URL"))
     application = FastAPI(
         title="TMS CP/FT Data Platform",
-        version="0.4.0",
+        version="0.4.1",
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
     )
@@ -68,10 +70,11 @@ def create_app() -> FastAPI:
         SqlCleanerRegistry(get_engine()) if os.getenv("TMS_DATABASE_URL") else None
     )
     application.state.quick_analysis_service = (
-        SqlQuickAnalysisService(get_engine())
+        SqlQuickAnalysisService(get_engine(), capacity=quick_capacity)
         if database_configured and settings.job_repository == "sql"
-        else InMemoryQuickAnalysisService()
+        else InMemoryQuickAnalysisService(capacity=quick_capacity)
     )
+    application.state.quick_capacity_policy = quick_capacity
     application.state.source_catalog = SourceCatalog.from_environment()
     application.include_router(health_router, prefix="/api/v1/health", tags=["health"])
     application.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])

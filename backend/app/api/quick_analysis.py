@@ -38,6 +38,10 @@ def job_service(request: Request):
     return request.app.state.job_service
 
 
+def capacity_policy(request: Request):
+    return request.app.state.quick_capacity_policy
+
+
 @router.get("/source-roots")
 def list_source_roots(
     request: Request,
@@ -77,6 +81,9 @@ def create_quick_pat(
             "QUICK_PAT_SOURCE_UNSUPPORTED", "当前快速 PAT 仅支持杰群 FT 数据源", 422
         )
     manifest = catalog.build_manifest(root.code, payload.source_relative_path)
+    capacity = capacity_policy(request)
+    reserved_bytes = capacity.reservation_for(manifest.total_bytes)
+    capacity.ensure_filesystem_capacity(reserved_bytes)
     release = cleaner_registry(request).latest_released("FT", "JIEQUN")
     ttl_hours = int(os.getenv("TMS_QUICK_RESULT_TTL_HOURS", "168"))
     if ttl_hours < 1 or ttl_hours > 8760:
@@ -97,6 +104,7 @@ def create_quick_pat(
             retention_mode="RESULT_ONLY",
             cleaner_release_id=release.cleaner_release_id,
             expires_at_utc=datetime.now(UTC) + timedelta(hours=ttl_hours),
+            reserved_bytes=reserved_bytes,
         ),
     )
     try:

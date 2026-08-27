@@ -66,7 +66,7 @@ def main() -> None:
         cursor = connection.cursor()
         cursor.execute("SELECT version_num FROM alembic_version")
         revision = cursor.fetchone()[0]
-        assert revision == "sql2014_0012", revision
+        assert revision == "sql2014_0013", revision
 
         cursor.execute("SELECT name FROM sys.schemas")
         schemas = {row[0] for row in cursor.fetchall()}
@@ -132,6 +132,38 @@ def main() -> None:
         }
         assert not (required_job_columns - job_columns), (
             required_job_columns - job_columns
+        )
+
+        cursor.execute(
+            "SELECT name FROM sys.columns "
+            "WHERE object_id=OBJECT_ID('workspace.analysis_session')"
+        )
+        quick_columns = {row[0] for row in cursor.fetchall()}
+        required_quick_columns = {
+            "reserved_bytes",
+            "cleanup_status",
+            "cleanup_attempt_count",
+            "cleanup_attempted_at_utc",
+            "cleaned_at_utc",
+            "cleanup_error",
+        }
+        assert not (required_quick_columns - quick_columns), (
+            required_quick_columns - quick_columns
+        )
+        cursor.execute(
+            "SELECT name FROM sys.columns "
+            "WHERE object_id=OBJECT_ID('ingestion.processing_artifact')"
+        )
+        artifact_columns = {row[0] for row in cursor.fetchall()}
+        required_artifact_columns = {
+            "physical_status",
+            "deletion_attempt_count",
+            "deletion_attempted_at_utc",
+            "deleted_at_utc",
+            "deletion_error",
+        }
+        assert not (required_artifact_columns - artifact_columns), (
+            required_artifact_columns - artifact_columns
         )
 
         cursor.execute(

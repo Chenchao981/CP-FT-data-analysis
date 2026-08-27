@@ -16,6 +16,7 @@ from app.domain.quick_analysis import (
     QuickAnalysisStatus,
     QuickAnalysisWorkItem,
 )
+from app.domain.quick_capacity import QuickCapacityPolicy
 
 SESSION_SELECT = """
 SELECT
@@ -23,7 +24,7 @@ SELECT
     u.display_name AS owner_name,s.analysis_type,s.test_stage,s.factory_code,
     s.source_root_code,s.source_relative_path,s.source_manifest_mode,
     s.source_manifest_sha256,s.source_file_count,s.source_total_bytes,
-    s.retention_mode,s.cleaner_release_id,
+    s.retention_mode,s.cleaner_release_id,s.reserved_bytes,s.cleanup_status,
     CASE WHEN s.status='SUCCESS' AND s.expires_at_utc<=SYSUTCDATETIME()
          THEN 'EXPIRED'
          WHEN s.status IN('QUEUED','RUNNING') AND j.status IN('FAILED','CANCELLED')
@@ -40,6 +41,7 @@ OUTER APPLY (
     SELECT TOP (1) pa.file_name,pa.file_size
     FROM ingestion.processing_artifact pa
     WHERE pa.job_id=j.job_id AND pa.artifact_role='pat_report'
+      AND pa.physical_status='PRESENT'
     ORDER BY pa.processing_artifact_id DESC
 ) a
 """
@@ -101,17 +103,76 @@ def _to_session(row: Mapping[str, Any]) -> QuickAnalysisSession:
         created_at_utc=_utc(row["created_at_utc"]),
         started_at_utc=_utc(row["started_at_utc"]),
         finished_at_utc=_utc(row["finished_at_utc"]),
+        reserved_bytes=int(row["reserved_bytes"]),
+        cleanup_status=str(row["cleanup_status"]),
     )
 
 
 class SqlQuickAnalysisService:
-    def __init__(self, engine: Engine) -> None:
+    def __init__(
+        self, engine: Engine, *, capacity: QuickCapacityPolicy | None = None
+    ) -> None:
         self._engine = engine
+        self._capacity = capacity
 
     def create(
         self, principal: Principal, request: NewQuickAnalysisSession
     ) -> QuickAnalysisSession:
         with self._engine.begin() as connection:
+            if self._capacity is not None:
+                lock_result = connection.execute(
+                    text(
+                        "DECLARE @result int; "
+                        "EXEC @result=sys.sp_getapplock "
+                        "@Resource='workspace.quick_capacity',@LockMode='Exclusive',"
+                        "@LockOwner='Transaction',@LockTimeout=5000; SELECT @result"
+                    )
+                ).scalar_one()
+                if int(lock_result) < 0:
+                    raise DomainError(
+                        "QUICK_CAPACITY_LOCK_TIMEOUT",
+                        "快速分析容量检查繁忙，请稍后重试",
+                        409,
+                    )
+                usage = (
+                    connection.execute(
+                        text(
+                            "SELECT "
+                            "(SELECT COALESCE(SUM(s.reserved_bytes),0) "
+                            "FROM workspace.analysis_session s WHERE "
+                            "s.status IN('QUEUED','RUNNING') OR ("
+                            "s.status IN('FAILED','CANCELLED') AND "
+                            "s.cleanup_status<>'CLEANED'))+"
+                            "(SELECT COALESCE(SUM(pa.file_size),0) FROM "
+                            "ingestion.processing_artifact pa JOIN "
+                            "ingestion.processing_job j ON j.job_id=pa.job_id "
+                            "WHERE j.analysis_session_id IS NOT NULL AND "
+                            "pa.physical_status IN('PRESENT','BLOCKED','ERROR')) "
+                            "AS global_used_bytes,"
+                            "(SELECT COALESCE(SUM(s.reserved_bytes),0) FROM "
+                            "workspace.analysis_session s WHERE s.owner_user_id=:owner "
+                            "AND (s.status IN('QUEUED','RUNNING') OR ("
+                            "s.status IN('FAILED','CANCELLED') AND "
+                            "s.cleanup_status<>'CLEANED')))+"
+                            "(SELECT COALESCE(SUM(pa.file_size),0) FROM "
+                            "ingestion.processing_artifact pa JOIN "
+                            "ingestion.processing_job j ON j.job_id=pa.job_id JOIN "
+                            "workspace.analysis_session s ON "
+                            "s.analysis_session_id=j.analysis_session_id WHERE "
+                            "s.owner_user_id=:owner AND "
+                            "pa.physical_status IN('PRESENT','BLOCKED','ERROR')) "
+                            "AS user_used_bytes"
+                        ),
+                        {"owner": principal.user_id},
+                    )
+                    .mappings()
+                    .one()
+                )
+                self._capacity.ensure_quota(
+                    global_used_bytes=int(usage["global_used_bytes"]),
+                    user_used_bytes=int(usage["user_used_bytes"]),
+                    reservation_bytes=request.reserved_bytes,
+                )
             session_id = int(
                 connection.execute(
                     text(
@@ -120,10 +181,12 @@ class SqlQuickAnalysisService:
                         "source_root_code,source_relative_path,source_manifest_mode,"
                         "source_manifest_json,source_manifest_sha256,source_file_count,"
                         "source_total_bytes,retention_mode,cleaner_release_id,status,"
-                        "expires_at_utc) OUTPUT INSERTED.analysis_session_id VALUES("
+                        "expires_at_utc,reserved_bytes) "
+                        "OUTPUT INSERTED.analysis_session_id VALUES("
                         ":owner,:analysis_type,:stage,:factory,:root_code,:relative_path,"
                         ":manifest_mode,:manifest_json,:manifest_sha,:file_count,"
-                        ":total_bytes,:retention_mode,:release_id,'QUEUED',:expires)"
+                        ":total_bytes,:retention_mode,:release_id,'QUEUED',:expires,"
+                        ":reserved_bytes)"
                     ),
                     {
                         "owner": principal.user_id,
@@ -140,6 +203,7 @@ class SqlQuickAnalysisService:
                         "retention_mode": request.retention_mode,
                         "release_id": request.cleaner_release_id,
                         "expires": request.expires_at_utc.replace(tzinfo=None),
+                        "reserved_bytes": request.reserved_bytes,
                     },
                 ).scalar_one()
             )
@@ -334,7 +398,10 @@ class SqlQuickAnalysisService:
             connection.execute(
                 text(
                     "UPDATE workspace.analysis_session SET status='FAILED',"
-                    "finished_at_utc=SYSUTCDATETIME(),error_code=:code,error_message=:message "
+                    "finished_at_utc=SYSUTCDATETIME(),error_code=:code,error_message=:message,"
+                    "reserved_bytes=CASE WHEN EXISTS(SELECT 1 FROM "
+                    "ingestion.processing_job j WHERE j.analysis_session_id=:session) "
+                    "THEN reserved_bytes ELSE 0 END "
                     "WHERE analysis_session_id=:session AND status IN('QUEUED','RUNNING')"
                 ),
                 {
@@ -361,7 +428,8 @@ class SqlQuickAnalysisService:
                         "JOIN ingestion.processing_job j ON j.analysis_session_id=s.analysis_session_id "
                         "JOIN ingestion.processing_artifact pa ON pa.job_id=j.job_id "
                         "WHERE s.analysis_session_id=:session AND s.status='SUCCESS' "
-                        "AND pa.artifact_role='pat_report'"
+                        "AND pa.artifact_role='pat_report' "
+                        "AND pa.physical_status='PRESENT'"
                         + scope
                         + " ORDER BY pa.processing_artifact_id DESC"
                     ),

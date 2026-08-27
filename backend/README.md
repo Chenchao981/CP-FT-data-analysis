@@ -67,6 +67,25 @@ Job Service默认使用进程内实现；Route A 联调和部署必须设置 `TM
 
 Quick Analysis通过`TMS_SOURCE_ROOTS_JSON`配置管理员受控根目录。浏览器和API只使用`source_root_code + relative_path`，不接受任意绝对路径。P0仅支持杰群统一CSV目录PAT；结果写入`TMS_QUICK_WORK_ROOT`并按`TMS_QUICK_RESULT_TTL_HOURS`登记过期时间。
 
+Quick Analysis容量按“活跃任务预留 + 失败任务未清理预留 + 尚未清理Artifact”计算。默认按源文件总字节数的50%加64 MiB预留临时空间，并同时检查全局容量、单用户容量和工作盘最小剩余空间。部署时可通过`TMS_QUICK_GLOBAL_CAPACITY_BYTES`、`TMS_QUICK_USER_CAPACITY_BYTES`、`TMS_QUICK_MIN_FREE_BYTES`、`TMS_QUICK_RESERVE_RATIO`和`TMS_QUICK_RESERVE_OVERHEAD_BYTES`调整。
+
+过期结果清理先用只读模式确认范围，再执行物理删除：
+
+```powershell
+. .\.env.runtime.ps1
+& .\.conda-env\python.exe scripts\run_quick_artifact_cleanup.py --dry-run
+& .\.conda-env\python.exe scripts\run_quick_artifact_cleanup.py
+```
+
+清理器只允许删除`TMS_QUICK_WORK_ROOT/<job_id>`这个精确子目录，遇到目录逃逸或符号链接会标记`BLOCKED`。Session、Job、Manifest、SHA和`governance.audit_log`记录不会删除。进程中断后停留在`CLEANING`的任务默认30分钟后允许恢复，可用`TMS_QUICK_CLEANUP_STALE_MINUTES`调整。
+
+开发库可用小型合成过期文件复验完整清理链；脚本完成后会移除全部合成记录：
+
+```powershell
+. .\.env.runtime.ps1
+& .\.conda-env\python.exe scripts\g0\verify_quick_cleanup_sql_e2e.py
+```
+
 真实520文件的非数据库计算链验证：
 
 ```powershell

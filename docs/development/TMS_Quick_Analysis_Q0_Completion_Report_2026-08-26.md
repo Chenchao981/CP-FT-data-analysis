@@ -154,7 +154,7 @@ Manifest 只读取目录元数据，没有顺序读取或上传 2.83 GiB 文件�
 
 ## 6. 下一步
 
-1. 实现过期 Artifact 物理清理、容量配额和清理审计，补齐结果生命周期。
+1. ~~实现过期 Artifact 物理清理、容量配额和清理审计，补齐结果生命周期。~~ 已于2026-08-27完成，见 `TMS_Quick_Workspace_Lifecycle_Q0_1_Completion_Report_2026-08-27.md`。
 2. 将 API 与 Worker 配置为 Windows 服务，验证重启、断网续跑和运行日志轮转。
 3. 生产发布前单独审批数据库目标、Source Catalog、服务账号权限和备份/回滚窗口。
 4. 进入 Q1 Parquet/Arrow 临时交互 Workspace，继续保持与正式 Canonical 隔离。

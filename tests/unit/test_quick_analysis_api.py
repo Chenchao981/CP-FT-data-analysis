@@ -74,6 +74,7 @@ def test_quick_pat_api_queues_server_directory_without_uploading_files(
     assert body["source_relative_path"] == "product-a"
     assert body["job_id"] == 1
     assert body["status"] == "QUEUED"
+    assert body["reserved_bytes"] >= 64 * 1024**2
     assert str(tmp_path) not in created.text
 
     listed = client.get("/api/v1/quick-analysis/sessions")

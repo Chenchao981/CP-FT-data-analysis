@@ -17,13 +17,13 @@
 
 旧路线图和 v0.6 文档保留决策演进与已实现资产；如业务流程、事实源或 Cleaner 边界与 v0.2/v0.7 冲突，以 v0.2/v0.7 为准。
 
-当前目标环境确定为远端 Windows Server 2019 + SQL Server 2014。数据库按[ADR-0001](docs/adr/ADR-0001_SQLServer2014_Target.md)采用2014兼容实现；正式开发链位于 `db/alembic/`。当前代码已包含 `sql2014_0009`；实际数据库 revision 必须在 A0 只读盘点中确认，不能仅根据仓库文件名推断。文档包内原 `0001 → 0004` 2022+草案只作参考。
+当前目标环境确定为远端 Windows Server 2019 + SQL Server 2014。数据库按[ADR-0001](docs/adr/ADR-0001_SQLServer2014_Target.md)采用2014兼容实现；正式开发链位于 `db/alembic/`。仓库和`TMS_G0_DEV`当前均为`sql2014_0013`；其他环境的revision仍必须在线确认，不能仅根据仓库文件名推断。文档包内原`0001 → 0004` 2022+草案只作参考。
 
 当前实例实测为SQL Server 2014 SP2 Enterprise（12.0.5000.0）；隔离库开发可继续，正式环境验收前需升级SP3并复验，详见[G0执行状态](docs/G0/G0_Status_2026-08-20.md)。
 
 ## 当前开发状态
 
-- SQL Server 2014兼容Migration：仓库和 `TMS_G0_DEV` 开发库均为 `sql2014_0012`；真实520文件SQL队列全链已通过；
+- SQL Server 2014兼容Migration：仓库 head 为 `sql2014_0013`，增加Quick Analysis容量预留与可审计物理清理；
 - 隔离开发数据库：`TMS_G0_DEV`，空库升级与Schema验证通过；
 - Measurement：Rowstore聚集主键 + 普通非聚集索引；
 - FastAPI后端骨架：存活检查、数据库就绪检查；
@@ -38,6 +38,7 @@
 - 前端运行说明：[frontend/README.md](frontend/README.md)。
 - 华虹格式证据：[docs/formats/huahong/README.md](docs/formats/huahong/README.md)。
 - Route A开发状态：[docs/development/TMS_Route_A_Development_Status_2026-08-24.md](docs/development/TMS_Route_A_Development_Status_2026-08-24.md)。
+- Quick Workspace生命周期验收：[docs/development/TMS_Quick_Workspace_Lifecycle_Q0_1_Completion_Report_2026-08-27.md](docs/development/TMS_Quick_Workspace_Lifecycle_Q0_1_Completion_Report_2026-08-27.md)。
 
 ## Route A 产品主线
 

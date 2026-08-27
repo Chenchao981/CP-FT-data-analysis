@@ -23,6 +23,8 @@ def test_database_quick_session_row_maps_summary_and_effective_status() -> None:
         "source_total_bytes": 3_041_085_645,
         "retention_mode": "RESULT_ONLY",
         "cleaner_release_id": 21,
+        "reserved_bytes": 1_600_000_000,
+        "cleanup_status": "RETAINED",
         "effective_status": "SUCCESS",
         "job_id": 40,
         "job_status": "SUCCESS",
@@ -42,4 +44,6 @@ def test_database_quick_session_row_maps_summary_and_effective_status() -> None:
     assert session.status == QuickAnalysisStatus.SUCCESS
     assert session.summary == {"elapsed_seconds": 153.906}
     assert session.record_count == 6_813_800
+    assert session.reserved_bytes == 1_600_000_000
+    assert session.cleanup_status == "RETAINED"
     assert session.created_at_utc.tzinfo == UTC

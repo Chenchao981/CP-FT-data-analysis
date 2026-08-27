@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.core.errors import DomainError
 from app.domain.auth import Principal
+from app.domain.quick_capacity import QuickCapacityPolicy
 
 
 class QuickAnalysisStatus(StrEnum):
@@ -44,6 +45,7 @@ class NewQuickAnalysisSession:
     retention_mode: str
     cleaner_release_id: int
     expires_at_utc: datetime
+    reserved_bytes: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,6 +79,8 @@ class QuickAnalysisSession:
     created_at_utc: datetime
     started_at_utc: datetime | None = None
     finished_at_utc: datetime | None = None
+    reserved_bytes: int = 0
+    cleanup_status: str = "RETAINED"
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,17 +108,36 @@ class QuickAnalysisArtifact:
 
 
 class InMemoryQuickAnalysisService:
-    def __init__(self) -> None:
+    def __init__(self, capacity: QuickCapacityPolicy | None = None) -> None:
         self._items: dict[int, QuickAnalysisSession] = {}
         self._work: dict[int, QuickAnalysisWorkItem] = {}
         self._artifacts: dict[int, tuple[QuickAnalysisArtifact, ...]] = {}
         self._next_id = 1
         self._lock = Lock()
+        self._capacity = capacity
 
     def create(
         self, principal: Principal, request: NewQuickAnalysisSession
     ) -> QuickAnalysisSession:
         with self._lock:
+            if self._capacity is not None:
+                active = tuple(
+                    item
+                    for item in self._items.values()
+                    if item.status in {
+                        QuickAnalysisStatus.QUEUED,
+                        QuickAnalysisStatus.RUNNING,
+                    }
+                )
+                self._capacity.ensure_quota(
+                    global_used_bytes=sum(item.reserved_bytes for item in active),
+                    user_used_bytes=sum(
+                        item.reserved_bytes
+                        for item in active
+                        if item.owner_user_id == principal.user_id
+                    ),
+                    reservation_bytes=request.reserved_bytes,
+                )
             now = datetime.now(UTC)
             item = QuickAnalysisSession(
                 analysis_session_id=self._next_id,
@@ -144,6 +167,7 @@ class InMemoryQuickAnalysisService:
                 error_message=None,
                 expires_at_utc=request.expires_at_utc,
                 created_at_utc=now,
+                reserved_bytes=request.reserved_bytes,
             )
             self._items[item.analysis_session_id] = item
             self._work[item.analysis_session_id] = QuickAnalysisWorkItem(

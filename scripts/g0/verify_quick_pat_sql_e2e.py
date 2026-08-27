@@ -131,8 +131,8 @@ def main() -> None:
             f"refusing E2E against unexpected database {database!r}; "
             f"expected {args.expected_database!r}"
         )
-    if revision != "sql2014_0012":
-        raise RuntimeError(f"sql2014_0012 is required, database is {revision}")
+    if revision != "sql2014_0013":
+        raise RuntimeError(f"sql2014_0013 is required, database is {revision}")
 
     auth = SqlAuthService(engine)
     admin = auth.principal_for_user(admin_id)
