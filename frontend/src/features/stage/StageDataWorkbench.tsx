@@ -3,33 +3,17 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, Card, Col, Form, Input, Modal, Popconfirm, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography, Upload, message } from "antd";
 import type { UploadFile } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BusinessDomain, TestStage, downloadStageUploadFile, listStageResults, listStageUploads, reprocessStageBatch, StageResultRow, StageUploadRow, uploadStageData } from "../../api/stageData";
 import { useAuth } from "../auth/AuthContext";
+import { factoryInputs, factoryNames, formalFactoryOptions, isFormalFactory } from "../capabilities/capabilityCatalog";
 
 const statusColor: Record<string, string> = { RECEIVED: "blue", QUEUED: "gold", PROCESSING: "processing", PROCESSED: "success", FAILED: "error" };
 const statusName: Record<string, string> = { RECEIVED: "已接收", QUEUED: "排队中", PROCESSING: "处理中", PROCESSED: "已处理", FAILED: "失败" };
 const domainName: Record<BusinessDomain, string> = { ENGINEERING: "工程", PRODUCTION: "量产" };
-const factoryName: Record<string, string> = { huahong: "华虹", jetech: "Jetech", lion: "立昂微", guoyu: "国宇FRD", riyuexin: "日月新" };
 const stageDescription: Record<TestStage, string> = {
   CP: "选择晶圆厂并上传对应CP源文件后，系统自动调用该厂现有清洗程序并形成Wafer分析数据。",
-  FT: "上传日月新FT源文件后，系统自动调用现有FT清洗程序并形成以产品型号为主线的分析数据。",
-};
-const stageFactories: Record<TestStage, { value: string; label: string }[]> = {
-  CP: [
-    { value: "huahong", label: "华虹" },
-    { value: "jetech", label: "Jetech" },
-    { value: "lion", label: "立昂微" },
-    { value: "guoyu", label: "国宇FRD" },
-  ],
-  FT: [{ value: "riyuexin", label: "日月新" }],
-};
-const factoryInput: Record<string, { accept: string; hint: string }> = {
-  huahong: { accept: ".zip,.7z,.txt", hint: "华虹支持 ZIP、7Z 或保留目录身份的TXT数据。" },
-  jetech: { accept: ".zip,.xls,.xlsx", hint: "Jetech支持 ZIP、XLS、XLSX。" },
-  lion: { accept: ".zip,.xls,.xlsx", hint: "立昂微支持 ZIP、XLS、XLSX；系统严格区分已验收格式。" },
-  guoyu: { accept: ".zip,.xls,.xlsx", hint: "国宇FRD支持 ZIP、XLS、XLSX；没有业务批次号时仍按片号清洗。" },
-  riyuexin: { accept: ".xlsx", hint: "日月新支持 DC XLSX源文件。" },
+  FT: "选择日月新或日月光并提交已验收的FT DC XLSX，系统按各自格式严格校验后形成产品/Lot分析数据。",
 };
 const dt = (value?: string | null) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
 const size = (value: number) => value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(2)} MB`;
@@ -45,11 +29,19 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
   const [open, setOpen] = useState(false);
   const [files, setFiles] = useState<UploadFile[]>([]);
   const [form] = Form.useForm<{ factory_code: string; remark?: string; source_path?: string }>();
-  const selectedFactory = Form.useWatch("factory_code", form) ?? stageFactories[testStage][0].value;
-  const selectedInput = factoryInput[selectedFactory];
+  const defaultFactory = formalFactoryOptions[testStage][0].value;
+  const watchedFactory = Form.useWatch("factory_code", form);
+  const selectedFactory = watchedFactory && isFormalFactory(testStage, watchedFactory) ? watchedFactory : defaultFactory;
+  const selectedInput = factoryInputs[selectedFactory];
   const [messageApi, contextHolder] = message.useMessage();
   const queryClient = useQueryClient();
   const scopeKey = ["stage", businessDomain, testStage];
+  useEffect(() => {
+    setOpen(false);
+    setFiles([]);
+    form.resetFields();
+    form.setFieldsValue({ factory_code: defaultFactory, remark: undefined, source_path: undefined });
+  }, [businessDomain, defaultFactory, form, testStage]);
   const uploads = useQuery({ queryKey: [...scopeKey, "uploads"], queryFn: () => listStageUploads(businessDomain, testStage), refetchInterval: (query) => (query.state.data ?? []).some((row) => ["RECEIVED", "QUEUED", "PROCESSING"].includes(row.status)) ? 3000 : false });
   const results = useQuery({ queryKey: [...scopeKey, "results"], queryFn: () => listStageResults(businessDomain, testStage), refetchInterval: (query) => (uploads.data ?? []).some((row) => ["QUEUED", "PROCESSING"].includes(row.status)) ? 3000 : false });
   const refresh = async () => Promise.all([uploads.refetch(), results.refetch()]);
@@ -74,7 +66,7 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
     { title: "源文件名称", dataIndex: "original_file_name", width: 300, ellipsis: true },
     { title: "扩展名", dataIndex: "extension", width: 80, render: (v) => v.toUpperCase() },
     { title: "大小", dataIndex: "size_bytes", width: 100, render: size },
-    { title: testStage === "CP" ? "晶圆厂" : "封测厂", dataIndex: "factory_code", width: 100, render: (v) => factoryName[v] ?? v },
+    { title: testStage === "CP" ? "晶圆厂" : "封测厂", dataIndex: "factory_code", width: 100, render: (v) => factoryNames[String(v).toLowerCase()] ?? v },
     { title: "上传时间", dataIndex: "upload_time_utc", width: 175, render: dt },
     { title: "完成时间", dataIndex: "completion_time_utc", width: 175, render: dt },
     { title: "上传账号", dataIndex: "uploader_login", width: 120 },
@@ -87,7 +79,7 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
     { title: "产品名称", dataIndex: "product_name", width: 180, render: (v) => v || "—" },
     { title: "批号", dataIndex: "lot_id", width: 160, render: (v) => v || "—" },
     ...(testStage === "CP" ? [{ title: "晶圆数", dataIndex: "wafer_count", width: 90 }] : []),
-    { title: testStage === "CP" ? "晶圆厂" : "封测厂", dataIndex: "factory_code", width: 100, render: (v) => factoryName[v] ?? v },
+    { title: testStage === "CP" ? "晶圆厂" : "封测厂", dataIndex: "factory_code", width: 100, render: (v) => factoryNames[String(v).toLowerCase()] ?? v },
     { title: "测试项", dataIndex: "test_item_count", width: 90 },
     { title: "总数", dataIndex: "unit_count", width: 105 },
     { title: "良品数", dataIndex: "pass_count", width: 105 },
@@ -97,7 +89,7 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
     { title: "处理时间", dataIndex: "created_at_utc", width: 175, render: dt },
     { title: "操作", key: "actions", width: 210, fixed: "right", render: (_, row) => <Space size={0}>
       {row.dataset_id && row.dataset_version_no && can("ANALYSIS_RUN") && <Button type="link" size="small" icon={<BarChartOutlined />} onClick={() => onOpenAnalytics?.(row.dataset_id!, row.dataset_version_no!)}>数据分析</Button>}
-      {can("TASK_CREATE") && <Popconfirm title="重新处理该批次？" description="将重跑现有清洗程序并归档旧结果。" onConfirm={() => reprocessMutation.mutate(row.import_batch_id)}><Button type="link" size="small" icon={<RedoOutlined />} loading={reprocessMutation.isPending && reprocessMutation.variables === row.import_batch_id}>重新处理</Button></Popconfirm>}
+      {can("TASK_CREATE") && isFormalFactory(testStage, row.factory_code) && <Popconfirm title="重新处理该批次？" description="将重跑现有清洗程序并归档旧结果。" onConfirm={() => reprocessMutation.mutate(row.import_batch_id)}><Button type="link" size="small" icon={<RedoOutlined />} loading={reprocessMutation.isPending && reprocessMutation.variables === row.import_batch_id}>重新处理</Button></Popconfirm>}
     </Space> },
   ];
   const metrics = useMemo(() => ({ total: new Set((uploads.data ?? []).map((r) => r.import_batch_id)).size, processing: (uploads.data ?? []).filter((r) => ["QUEUED", "PROCESSING"].includes(r.status)).length, processed: results.data?.length ?? 0, failed: (uploads.data ?? []).filter((r) => r.status === "FAILED").length }), [uploads.data, results.data]);
@@ -113,11 +105,11 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
     ]} /></Card>
     <Modal title={`上传${domainName[businessDomain]}${testStage}数据`} open={open} width={700} onCancel={() => !mutation.isPending && setOpen(false)} onOk={() => form.submit()} okText="上传并提交后台清洗" confirmLoading={mutation.isPending} destroyOnHidden>
       <Alert showIcon type="info" message={`上传身份：${user?.display_name}（${user?.login_name}）`} description="系统从当前登录账号自动记录上传人，无需填写。" />
-      <Form form={form} layout="vertical" initialValues={{ factory_code: stageFactories[testStage][0].value }} onFinish={(values) => mutation.mutate(values)} className="cp-upload-form">
+      <Form form={form} layout="vertical" initialValues={{ factory_code: defaultFactory }} onFinish={(values) => mutation.mutate(values)} className="cp-upload-form">
         <Form.Item label="业务分类"><Space><Tag color="blue">{domainName[businessDomain]}</Tag><Tag color="cyan">{testStage}数据</Tag></Space></Form.Item>
-        <Form.Item label={testStage === "CP" ? "晶圆厂" : "封测厂"} name="factory_code" rules={[{ required: true }]}><Select options={stageFactories[testStage]} /></Form.Item>
-        {testStage === "CP" && <Form.Item label="服务器数据路径（与文件上传二选一）" name="source_path"><Input placeholder="例如 F:\\data\\CP源数据\\厂家\\批次目录" /></Form.Item>}
-        <Form.Item label={`${testStage}源文件`} required><Upload.Dragger multiple accept={selectedInput.accept} fileList={files} beforeUpload={() => false} onChange={({ fileList }) => setFiles(fileList)}><p className="ant-upload-drag-icon"><FileSearchOutlined /></p><p className="ant-upload-text">点击或拖入{factoryName[selectedFactory]}{testStage}源文件</p><p className="ant-upload-hint">{selectedInput.hint} 上传后自动复用现有清洗逻辑。</p></Upload.Dragger></Form.Item>
+        <Form.Item label={testStage === "CP" ? "晶圆厂" : "封测厂"} name="factory_code" rules={[{ required: true }]}><Select options={formalFactoryOptions[testStage]} /></Form.Item>
+        <Form.Item label="服务器数据路径（与文件上传二选一）" name="source_path"><Input placeholder={testStage === "CP" ? "例如 F:\\data\\CP源数据\\厂家\\批次目录" : "请选择只包含本次 DC XLSX 的目录"} /></Form.Item>
+        <Form.Item label={`${testStage}源文件`} required><Upload.Dragger multiple accept={selectedInput.accept} fileList={files} beforeUpload={() => false} onChange={({ fileList }) => setFiles(fileList)}><p className="ant-upload-drag-icon"><FileSearchOutlined /></p><p className="ant-upload-text">点击或拖入{factoryNames[selectedFactory]}{testStage}源文件</p><p className="ant-upload-hint">{selectedInput.hint} 上传后自动复用现有清洗逻辑。</p></Upload.Dragger></Form.Item>
         <Form.Item label="备注（可选）" name="remark"><Input.TextArea maxLength={500} rows={3} placeholder="可填写本次上传说明" /></Form.Item>
       </Form>
     </Modal>

@@ -79,9 +79,11 @@ def test_parse_ft_scatter_reconciles_manifest_specs_and_rows(tmp_path: Path) -> 
     assert parsed.spec_items[0].test_condition == "ID=1mA"
 
 
-def test_parse_ft_scatter_rejects_different_source_specs(tmp_path: Path) -> None:
-    with pytest.raises(FtXlsxScatterError, match="Source specs differ"):
-        parse_ft_xlsx_scatter(_output(tmp_path, differing_spec=True))
+def test_parse_ft_scatter_isolates_different_source_specs(tmp_path: Path) -> None:
+    parsed = parse_ft_xlsx_scatter(_output(tmp_path, differing_spec=True))
+
+    assert len(parsed.source_specs) == 2
+    assert parsed.source_specs[0].sha256 != parsed.source_specs[1].sha256
 
 
 def test_parse_ft_scatter_rejects_manifest_row_mismatch(tmp_path: Path) -> None:
@@ -94,3 +96,66 @@ def test_parse_ft_scatter_rejects_manifest_row_mismatch(tmp_path: Path) -> None:
 
     with pytest.raises(FtXlsxScatterError, match="row_count reconciliation"):
         parse_ft_xlsx_scatter(tuple(artifacts))
+
+
+def test_parse_ft_scatter_accepts_repeated_identical_source_spec(tmp_path: Path) -> None:
+    artifacts = list(_output(tmp_path))
+    spec = Path(artifacts[2].path)
+    lines = spec.read_text(encoding="utf-8").splitlines()
+    spec.write_text("\n".join([*lines, lines[1], ""]), encoding="utf-8")
+    artifacts[2] = _artifact("scatter_spec", spec)
+
+    parsed = parse_ft_xlsx_scatter(tuple(artifacts))
+
+    assert parsed.parameters == ("P1(V)", "P2(nA)")
+
+
+def test_parse_ft_scatter_validates_explicit_riyueguang_identity(
+    tmp_path: Path,
+) -> None:
+    artifacts = list(_output(tmp_path))
+    first_source = "NCT6528068_PRODUCT_FA54-9744_20250722_070217"
+    second_source = "NCT6528069_PRODUCT_FA54-9744_20250722_113523"
+    data = Path(artifacts[1].path)
+    with gzip.open(data, "rt", encoding="utf-8") as stream:
+        body = stream.read()
+    body = body.replace("S1", first_source).replace("S2", second_source)
+    body = body.replace("L1", "FA54-9744")
+    with gzip.open(data, "wt", encoding="utf-8", newline="") as stream:
+        stream.write(body)
+
+    spec = Path(artifacts[2].path)
+    body = spec.read_text(encoding="utf-8")
+    body = body.replace(
+        "S1_PRODUCT_L1.xlsx",
+        "NCT6528068_PRODUCT_FA54-9744_20250722_070217.xlsx",
+    ).replace(
+        "S2_PRODUCT_L1.xlsx",
+        "NCT6528069_PRODUCT_FA54-9744_20250722_113523.xlsx",
+    )
+    body = body.replace("S1", first_source).replace("S2", second_source)
+    body = body.replace("L1", "FA54-9744")
+    spec.write_text(body, encoding="utf-8")
+
+    manifest = Path(artifacts[3].path)
+    manifest_body = json.loads(manifest.read_text(encoding="utf-8"))
+    manifest_body.update(
+        {
+            "factory_code": "RIYUEGUANG",
+            "sources": [first_source, second_source],
+            "lots": ["FA54-9744"],
+        }
+    )
+    manifest.write_text(json.dumps(manifest_body), encoding="utf-8")
+    artifacts[1] = _artifact("scatter_data", data)
+    artifacts[2] = _artifact("scatter_spec", spec)
+    artifacts[3] = _artifact("scatter_manifest", manifest)
+
+    parsed = parse_ft_xlsx_scatter(tuple(artifacts))
+
+    assert parsed.factory_code == "RIYUEGUANG"
+    assert parsed.product_name == "PRODUCT"
+    assert [item.tester_id for item in parsed.source_specs] == [
+        "NCT6528068",
+        "NCT6528069",
+    ]

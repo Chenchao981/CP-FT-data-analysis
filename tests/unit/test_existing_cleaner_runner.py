@@ -150,3 +150,63 @@ def test_released_contract_rejects_changed_package(tmp_path: Path) -> None:
             inputs=[source],
             output_root=tmp_path / "output",
         )
+
+
+@pytest.mark.parametrize(
+    ("factory", "adapter_code", "module_name"),
+    [
+        ("RIYUEXIN", "RIYUEXIN_FT_PYZ", "tms_adapters.riyuexin_dc"),
+        ("RIYUEGUANG", "RIYUEGUANG_FT_PYZ", "tms_adapters.riyueguang_dc"),
+    ],
+)
+def test_released_ft_contract_uses_independent_factory_adapter(
+    tmp_path: Path, factory: str, adapter_code: str, module_name: str
+) -> None:
+    python, _cp_release, ft_release = _runtime(tmp_path)
+    package = ft_release / "ft_data_cleaner.pyz"
+    package.write_bytes(b"released-ft-cleaner")
+    source = tmp_path / "input"
+    source.mkdir()
+    output = tmp_path / "output"
+    release = CleanerRelease(
+        19,
+        8,
+        "FT",
+        factory,
+        f"{factory}_DC_EXISTING",
+        "route-a-v1",
+        f"{factory}_FT_EXISTING",
+        "sha256-test",
+        hashlib.sha256(package.read_bytes()).hexdigest(),
+        str(package),
+        str(python),
+        "entry",
+        adapter_code,
+        "FT_DIRECTORY_XLSX_V1",
+        "FT_XLSX_SCATTER_V1",
+        None,
+        30,
+        10000,
+    )
+
+    def fake_run(command, **kwargs):
+        assert module_name in command[2]
+        output.mkdir(exist_ok=True)
+        (output / "result.xlsx").write_bytes(b"xlsx")
+        (output / "ft_scatter_data.csv.gz").write_bytes(b"data")
+        (output / "ft_scatter_spec.csv").write_bytes(b"spec")
+        (output / "ft_scatter_manifest.json").write_bytes(b"manifest")
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    result = ExistingCleanerRunner(process_runner=fake_run).run_release(
+        release=release,
+        inputs=[source],
+        output_root=output,
+    )
+
+    assert {artifact.role for artifact in result.artifacts} == {
+        "cleaned",
+        "scatter_data",
+        "scatter_spec",
+        "scatter_manifest",
+    }

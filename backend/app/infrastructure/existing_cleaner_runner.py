@@ -101,12 +101,18 @@ class ExistingCleanerRunner:
             release_dir = self.cp_release_dir
             package = release_dir / "app.pyz"
             script = cp_scripts[factory_code]
-        elif stage == "FT" and factory_code in {"riyuexin", "ase", "日月新"}:
+        elif stage == "FT" and factory_code in {"riyuexin", "日月新"}:
             if len(normalized_inputs) != 1 or not normalized_inputs[0].is_dir():
                 raise ValueError("日月新 FT DC adapter requires one input directory")
             release_dir = self.ft_release_dir
             package = release_dir / "ft_data_cleaner.pyz"
             script = _FT_RIYUEXIN_DC_SCRIPT
+        elif stage == "FT" and factory_code in {"riyueguang", "ase", "日月光"}:
+            if len(normalized_inputs) != 1 or not normalized_inputs[0].is_dir():
+                raise ValueError("日月光 FT DC adapter requires one input directory")
+            release_dir = self.ft_release_dir
+            package = release_dir / "ft_data_cleaner.pyz"
+            script = _FT_RIYUEGUANG_DC_SCRIPT
         else:
             raise ValueError(f"unsupported existing cleaner adapter: {stage}/{factory}")
 
@@ -149,6 +155,7 @@ class ExistingCleanerRunner:
             "LION_CP_PYZ": _CP_LION_SCRIPT,
             "GUOYU_CP_PYZ": _CP_GUOYU_SCRIPT,
             "RIYUEXIN_FT_PYZ": _FT_RIYUEXIN_DC_SCRIPT,
+            "RIYUEGUANG_FT_PYZ": _FT_RIYUEGUANG_DC_SCRIPT,
         }
         try:
             script = scripts[release.adapter_code]
@@ -156,10 +163,10 @@ class ExistingCleanerRunner:
             raise ValueError(
                 f"unsupported released Cleaner adapter: {release.adapter_code}"
             ) from exc
-        if release.adapter_code == "RIYUEXIN_FT_PYZ" and (
+        if release.adapter_code in {"RIYUEXIN_FT_PYZ", "RIYUEGUANG_FT_PYZ"} and (
             len(normalized_inputs) != 1 or not normalized_inputs[0].is_dir()
         ):
-            raise ValueError("日月新 FT DC adapter requires one input directory")
+            raise ValueError("FT DC adapter requires one input directory")
         if package.is_file() and _file_sha256(package) != release.code_checksum.lower():
             raise RuntimeError(
                 f"Cleaner package checksum differs from released contract: {package}"
@@ -436,9 +443,20 @@ if not result:
 _FT_RIYUEXIN_DC_SCRIPT = """
 import json, os, sys
 sys.path.insert(0, os.environ['TMS_EXISTING_CLEANER_PACKAGE'])
-from factories.riyuexin.dc_cleaner import DCDataCleaner
+from factories.tms_adapters.riyuexin_dc import RiyuexinTmsDCCleaner
 inputs = json.loads(os.environ['TMS_EXISTING_CLEANER_INPUTS'])
-cleaner = DCDataCleaner(input_dir=inputs[0], output_dir=os.environ['TMS_EXISTING_CLEANER_OUTPUT'])
+cleaner = RiyuexinTmsDCCleaner(input_dir=inputs[0], output_dir=os.environ['TMS_EXISTING_CLEANER_OUTPUT'])
 if not cleaner.process_all_dc_files():
     raise SystemExit('日月新 FT DC cleaner returned false')
+"""
+
+
+_FT_RIYUEGUANG_DC_SCRIPT = """
+import json, os, sys
+sys.path.insert(0, os.environ['TMS_EXISTING_CLEANER_PACKAGE'])
+from factories.tms_adapters.riyueguang_dc import RiyueguangTmsDCCleaner
+inputs = json.loads(os.environ['TMS_EXISTING_CLEANER_INPUTS'])
+cleaner = RiyueguangTmsDCCleaner(input_dir=inputs[0], output_dir=os.environ['TMS_EXISTING_CLEANER_OUTPUT'])
+if not cleaner.process_all_dc_files():
+    raise SystemExit('日月光 FT DC cleaner returned false')
 """

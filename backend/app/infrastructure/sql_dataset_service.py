@@ -4,7 +4,7 @@ import json
 from collections.abc import Mapping
 from typing import Any
 
-from sqlalchemy import Engine, text
+from sqlalchemy import Engine, bindparam, text
 from sqlalchemy.engine import Connection
 from sqlalchemy.exc import IntegrityError
 
@@ -285,29 +285,77 @@ class SqlDatasetService:
         option_rows = (
             connection.execute(
                 text(
-                    "SELECT DISTINCT tr.lot_id,tr.tester_id"
+                    "SELECT DISTINCT tr.run_id,tr.lot_id,tr.tester_id,tr.program_version_id,tr.metadata_json"
                     + version_join
                     + "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
-                    "ORDER BY tr.lot_id,tr.tester_id"
+                    "ORDER BY tr.lot_id,tr.tester_id,tr.run_id"
                 ),
                 parameters,
             )
             .mappings()
             .all()
         )
+        source_records = []
+        for row in option_rows:
+            metadata: dict[str, Any] = {}
+            try:
+                decoded = json.loads(row["metadata_json"] or "{}")
+                if isinstance(decoded, dict):
+                    metadata = decoded
+            except (TypeError, ValueError):
+                metadata = {}
+            source_identity = str(metadata.get("source_id") or "").strip()
+            if not source_identity:
+                source_identity = str(row["tester_id"] or f"RUN-{row['run_id']}")
+            source_records.append(
+                {
+                    "run_id": int(row["run_id"]),
+                    "lot_id": str(row["lot_id"]),
+                    "source_id": source_identity,
+                }
+            )
+        source_records.sort(
+            key=lambda item: (item["lot_id"], item["source_id"], item["run_id"])
+        )
+        source_options = tuple(
+            dict.fromkeys(str(row["source_id"]) for row in source_records)
+        )
+        selected_source = parameters["source_id"]
+        if selected_source and selected_source not in source_options:
+            raise DomainError(
+                "FT_SOURCE_NOT_FOUND", "selected FT source was not found", 404
+            )
+        selected_run_ids = tuple(
+            int(row["run_id"])
+            for row in source_records
+            if not selected_source or row["source_id"] == selected_source
+        )
+        source_filter = ""
+        source_parameters: dict[str, Any] = {}
+        if selected_source:
+            source_filter = "AND tr.run_id IN :source_run_ids "
+            source_parameters["source_run_ids"] = selected_run_ids
+
+        parameter_statement = text(
+            "SELECT DISTINCT tid.sequence_no,tid.raw_item_name,"
+            "tid.unit_code,tid.program_lsl AS lsl,tid.program_usl AS usl,tid.condition_json "
+            + version_join
+            + "JOIN mdm.test_item_definition tid ON tid.program_version_id=tr.program_version_id "
+            "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
+            + source_filter
+            + "AND tid.is_analysis_parameter=1 ORDER BY tid.sequence_no"
+        )
+        if selected_source:
+            parameter_statement = parameter_statement.bindparams(
+                bindparam("source_run_ids", expanding=True)
+            )
         parameter_rows = (
             connection.execute(
-                text(
-                    "SELECT DISTINCT tid.sequence_no,tid.raw_item_name,si.unit_code,si.lsl,si.usl,"
-                    "tid.condition_json "
-                    + version_join
-                    + "JOIN mdm.test_item_definition tid ON tid.program_version_id=tr.program_version_id "
-                    "LEFT JOIN mdm.spec_item si ON si.spec_set_id=:spec_set_id "
-                    "AND si.test_item_id=tid.test_item_id "
-                    "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
-                    "AND tid.is_analysis_parameter=1 ORDER BY tid.sequence_no"
-                ),
-                {**parameters, "spec_set_id": context["spec_set_id"]},
+                parameter_statement,
+                {
+                    **parameters,
+                    **source_parameters,
+                },
             )
             .mappings()
             .all()
@@ -318,76 +366,108 @@ class SqlDatasetService:
             raise DomainError(
                 "FT_PARAMETER_NOT_FOUND", "selected FT parameter was not found", 404
             )
-        source_options = tuple(
-            dict.fromkeys(str(row["tester_id"] or "UNKNOWN") for row in option_rows)
-        )
-        if parameters["source_id"] and parameters["source_id"] not in source_options:
-            raise DomainError(
-                "FT_SOURCE_NOT_FOUND", "selected FT source was not found", 404
-            )
         point_rows: list[Mapping[str, Any]] = []
         total_count = 0
         if selected_parameter:
             point_params = {
                 **parameters,
-                "spec_set_id": context["spec_set_id"],
+                **source_parameters,
             }
+            count_statement = text(
+                "SELECT COUNT_BIG(*) "
+                + version_join
+                + "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
+                "JOIN test.measurement m ON m.unit_id=ur.unit_id "
+                "JOIN mdm.test_item_definition tid ON tid.test_item_id=m.test_item_id "
+                "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
+                "AND (:lot_id IS NULL OR tr.lot_id=:lot_id) "
+                + source_filter
+                + "AND tid.raw_item_name=:parameter"
+            )
+            if selected_source:
+                count_statement = count_statement.bindparams(
+                    bindparam("source_run_ids", expanding=True)
+                )
             total_count = int(
                 connection.execute(
-                    text(
-                        "SELECT COUNT_BIG(*) "
-                        + version_join
-                        + "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
-                        "JOIN test.measurement m ON m.unit_id=ur.unit_id "
-                        "JOIN mdm.test_item_definition tid ON tid.test_item_id=m.test_item_id "
-                        "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
-                        "AND (:lot_id IS NULL OR tr.lot_id=:lot_id) "
-                        "AND (:source_id IS NULL OR tr.tester_id=:source_id) "
-                        "AND tid.raw_item_name=:parameter"
-                    ),
+                    count_statement,
                     point_params,
                 ).scalar_one()
             )
             stride = max(1, (total_count + 9_999) // 10_000)
+            points_statement = text(
+                ";WITH points AS (SELECT tr.run_id,ur.unit_sequence,tr.lot_id,"
+                "m.value_numeric,m.measurement_status,"
+                "tid.program_lsl AS lsl,tid.program_usl AS usl,"
+                "ROW_NUMBER() OVER(ORDER BY tr.run_id,ur.unit_sequence,ur.unit_id) AS rn "
+                + version_join
+                + "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
+                "JOIN test.measurement m ON m.unit_id=ur.unit_id "
+                "JOIN mdm.test_item_definition tid ON tid.test_item_id=m.test_item_id "
+                "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
+                "AND (:lot_id IS NULL OR tr.lot_id=:lot_id) "
+                + source_filter
+                + "AND tid.raw_item_name=:parameter) "
+                "SELECT run_id,unit_sequence,lot_id,value_numeric,measurement_status "
+                "FROM points WHERE (rn-1)%:stride=0 OR "
+                "(value_numeric IS NOT NULL AND ((lsl IS NOT NULL AND value_numeric<lsl) "
+                "OR (usl IS NOT NULL AND value_numeric>usl))) "
+                "ORDER BY run_id,unit_sequence"
+            )
+            if selected_source:
+                points_statement = points_statement.bindparams(
+                    bindparam("source_run_ids", expanding=True)
+                )
             point_rows = (
                 connection.execute(
-                    text(
-                        ";WITH points AS (SELECT ur.unit_sequence,tr.lot_id,tr.tester_id,"
-                        "m.value_numeric,m.measurement_status,si.lsl,si.usl,"
-                        "ROW_NUMBER() OVER(ORDER BY tr.tester_id,ur.unit_sequence,ur.unit_id) AS rn "
-                        + version_join
-                        + "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
-                        "JOIN test.measurement m ON m.unit_id=ur.unit_id "
-                        "JOIN mdm.test_item_definition tid ON tid.test_item_id=m.test_item_id "
-                        "LEFT JOIN mdm.spec_item si ON si.spec_set_id=:spec_set_id "
-                        "AND si.test_item_id=tid.test_item_id "
-                        "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
-                        "AND (:lot_id IS NULL OR tr.lot_id=:lot_id) "
-                        "AND (:source_id IS NULL OR tr.tester_id=:source_id) "
-                        "AND tid.raw_item_name=:parameter) "
-                        "SELECT unit_sequence,lot_id,tester_id,value_numeric,measurement_status "
-                        "FROM points WHERE (rn-1)%:stride=0 OR "
-                        "(value_numeric IS NOT NULL AND ((lsl IS NOT NULL AND value_numeric<lsl) "
-                        "OR (usl IS NOT NULL AND value_numeric>usl))) "
-                        "ORDER BY tester_id,unit_sequence"
-                    ),
+                    points_statement,
                     {**point_params, "stride": stride},
                 )
                 .mappings()
                 .all()
             )
-        parameter_options = []
+        parameter_groups: dict[str, list[Mapping[str, Any]]] = {}
         for row in parameter_rows:
-            condition = json.loads(row["condition_json"] or "{}")
+            parameter_groups.setdefault(str(row["raw_item_name"]), []).append(row)
+        parameter_options = []
+        for name, rows in sorted(
+            parameter_groups.items(),
+            key=lambda item: min(int(row["sequence_no"]) for row in item[1]),
+        ):
+            units = {str(row["unit_code"]) for row in rows if row["unit_code"]}
+            if len(units) > 1:
+                raise DomainError(
+                    "FT_PARAMETER_UNIT_CONFLICT",
+                    f"FT parameter {name} has conflicting units across source runs",
+                    409,
+                )
+            lsl_values = {row["lsl"] for row in rows}
+            usl_values = {row["usl"] for row in rows}
+            condition_texts = set()
+            for row in rows:
+                try:
+                    condition = json.loads(row["condition_json"] or "{}")
+                except (TypeError, ValueError):
+                    condition = {}
+                condition_texts.add(condition.get("text"))
             parameter_options.append(
                 FtParameterOption(
-                    name=str(row["raw_item_name"]),
-                    unit=str(row["unit_code"]) if row["unit_code"] else None,
-                    lsl=float(row["lsl"]) if row["lsl"] is not None else None,
-                    usl=float(row["usl"]) if row["usl"] is not None else None,
-                    test_condition=condition.get("text"),
+                    name=name,
+                    unit=next(iter(units)) if units else None,
+                    lsl=float(next(iter(lsl_values)))
+                    if len(lsl_values) == 1 and None not in lsl_values
+                    else None,
+                    usl=float(next(iter(usl_values)))
+                    if len(usl_values) == 1 and None not in usl_values
+                    else None,
+                    test_condition=next(iter(condition_texts))
+                    if len(condition_texts) == 1
+                    else "多源文件测试条件不同，请选择单一源文件",
                 )
             )
+        source_by_run = {
+            int(row["run_id"]): str(row["source_id"]) for row in source_records
+        }
         return DatasetChartData(
             dataset_id=int(context["dataset_id"]),
             version_no=int(context["version_no"]),
@@ -398,7 +478,7 @@ class SqlDatasetService:
             selected_source_id=parameters["source_id"],
             selected_parameter=selected_parameter,
             lot_options=tuple(
-                dict.fromkeys(str(row["lot_id"]) for row in option_rows)
+                dict.fromkeys(str(row["lot_id"]) for row in source_records)
             ),
             wafer_options=(),
             source_options=source_options,
@@ -410,7 +490,7 @@ class SqlDatasetService:
                 FtParameterPoint(
                     sequence=int(row["unit_sequence"]),
                     lot_id=str(row["lot_id"]),
-                    source_id=str(row["tester_id"] or "UNKNOWN"),
+                    source_id=source_by_run[int(row["run_id"])],
                     value=float(row["value_numeric"])
                     if row["value_numeric"] is not None
                     else None,

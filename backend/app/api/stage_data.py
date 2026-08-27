@@ -20,8 +20,8 @@ FACTORY_ALLOWED_SUFFIXES = {
     "huahong": {".zip", ".7z", ".txt"},
     "jetech": {".zip", ".xls", ".xlsx"},
     "lion": {".zip", ".xls", ".xlsx"},
-    "guoyu": {".zip", ".xls", ".xlsx"},
     "riyuexin": {".xlsx"},
+    "riyueguang": {".xlsx"},
 }
 BUSINESS_DOMAINS = {"engineering": "ENGINEERING", "production": "PRODUCTION"}
 LIST_TEST_STAGES = {
@@ -36,8 +36,8 @@ LIST_TEST_STAGES = {
 }
 UPLOAD_TEST_STAGES = {"cp": "CP", "ft": "FT"}
 STAGE_FACTORIES = {
-    "CP": {"huahong", "jetech", "lion", "guoyu"},
-    "FT": {"riyuexin", "ase", "日月新"},
+    "CP": {"huahong", "jetech", "lion"},
+    "FT": {"riyuexin", "riyueguang"},
 }
 CP_FACTORIES = STAGE_FACTORIES["CP"]
 
@@ -118,15 +118,16 @@ def _save_uploads(
 
 
 def _register_server_path(
-    source_path: str, allowed_suffixes: set[str]
+    source_path: str, allowed_suffixes: set[str], *, recursive: bool = True
 ) -> tuple[StoredUpload, ...]:
     source = Path(source_path.strip().strip('"')).resolve()
     if not source.exists():
         raise DomainError("SOURCE_PATH_NOT_FOUND", f"服务器数据路径不存在：{source}", 422)
+    iterator = source.rglob("*") if recursive else source.glob("*")
     candidates = [source] if source.is_file() else sorted(
         (
             path
-            for path in source.rglob("*")
+            for path in iterator
             if path.is_file() and path.suffix.lower() in allowed_suffixes
         ),
         key=lambda path: str(path).casefold(),
@@ -178,10 +179,9 @@ def upload_stage_data(
         "jt": "jetech",
         "捷特": "jetech",
         "立昂微": "lion",
-        "国宇": "guoyu",
-        "国宇frd": "guoyu",
         "日月新": "riyuexin",
-        "ase": "riyuexin",
+        "日月光": "riyueguang",
+        "ase": "riyueguang",
     }
     factory = factory_aliases.get(
         factory_code.strip().lower(), factory_code.strip().lower()
@@ -193,18 +193,14 @@ def upload_stage_data(
             422,
         )
     if source_path and source_path.strip():
-        if stage != "CP":
-            raise DomainError(
-                "SOURCE_PATH_UNSUPPORTED",
-                "当前服务器数据路径仅用于CP；FT请上传源文件",
-                422,
-            )
         if files:
             raise DomainError(
                 "SOURCE_INPUT_CONFLICT", "源文件上传和服务器数据路径只能选择一种", 422
             )
         stored = _register_server_path(
-            source_path, FACTORY_ALLOWED_SUFFIXES[factory]
+            source_path,
+            FACTORY_ALLOWED_SUFFIXES[factory],
+            recursive=stage == "CP",
         )
     else:
         stored = _save_uploads(
@@ -217,8 +213,8 @@ def upload_stage_data(
         "huahong": "HUAHONG",
         "jetech": "JETECH",
         "lion": "LION",
-        "guoyu": "GUOYU",
         "riyuexin": "RIYUEXIN",
+        "riyueguang": "RIYUEGUANG",
     }[factory]
     release = cleaner_registry(request).latest_released(stage, registry_factory)
     job = job_service(request).create(
@@ -331,14 +327,19 @@ def reprocess_batch(
         "jt": "JETECH",
         "捷特": "JETECH",
         "立昂微": "LION",
-        "国宇": "GUOYU",
-        "国宇frd": "GUOYU",
         "日月新": "RIYUEXIN",
-        "ase": "RIYUEXIN",
+        "日月光": "RIYUEGUANG",
+        "ase": "RIYUEGUANG",
     }
     factory = factory_aliases.get(
         info.factory_code.strip().lower(), info.factory_code.strip().upper()
     )
+    if factory not in {"HUAHONG", "JETECH", "LION", "RIYUEXIN", "RIYUEGUANG"}:
+        raise DomainError(
+            "CAPABILITY_NOT_FORMAL_IMPORT",
+            "该历史批次属于定制能力，不能从通用正式入库入口重新处理",
+            422,
+        )
     release = cleaner_registry(request).latest_released(stage, factory)
     job = job_service(request).create(
         CreateJobRequest(

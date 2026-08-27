@@ -85,6 +85,70 @@ class Engine:
         yield self.connection
 
 
+class FtChartConnection:
+    def execute(self, statement, parameters=None):
+        sql = str(statement)
+        parameters = parameters or {}
+        if "SELECT DISTINCT tr.run_id" in sql:
+            return Result(
+                rows=[
+                    {
+                        "run_id": 101,
+                        "lot_id": "LOT-1",
+                        "tester_id": "NCT-1",
+                        "program_version_id": 201,
+                        "metadata_json": '{"source_id":"SOURCE-RUN-A"}',
+                    },
+                    {
+                        "run_id": 102,
+                        "lot_id": "LOT-1",
+                        "tester_id": "NCT-1",
+                        "program_version_id": 202,
+                        "metadata_json": '{"source_id":"SOURCE-RUN-B"}',
+                    },
+                ]
+            )
+        if "SELECT DISTINCT tid.sequence_no" in sql:
+            rows = [
+                {
+                    "sequence_no": 1,
+                    "raw_item_name": "HVBCES",
+                    "unit_code": "kV",
+                    "lsl": 1.29,
+                    "usl": None,
+                    "condition_json": '{"text":"VGE=0V"}',
+                },
+                {
+                    "sequence_no": 1,
+                    "raw_item_name": "HVBCES",
+                    "unit_code": "kV",
+                    "lsl": 1.27,
+                    "usl": None,
+                    "condition_json": '{"text":"VGE=0V"}',
+                },
+            ]
+            if parameters.get("source_run_ids") == (101,):
+                rows = rows[:1]
+            return Result(rows=rows)
+        if "SELECT COUNT_BIG(*)" in sql:
+            assert parameters["source_run_ids"] == (101,)
+            return Result(scalar=3)
+        if ";WITH points AS" in sql:
+            assert parameters["source_run_ids"] == (101,)
+            return Result(
+                rows=[
+                    {
+                        "run_id": 101,
+                        "unit_sequence": 1,
+                        "lot_id": "LOT-1",
+                        "value_numeric": 1.31,
+                        "measurement_status": "IN_SPEC",
+                    }
+                ]
+            )
+        raise AssertionError(sql)
+
+
 def test_sql_dq_gate_passes_only_ready_attributable_clean_data() -> None:
     result = SqlDatasetService(Engine(GateConnection())).evaluate_gate(1, 1)  # type: ignore[arg-type]
     assert result.status == "PASS"
@@ -103,3 +167,61 @@ def test_sql_dq_gate_reports_each_blocking_dimension() -> None:
         "INPUT_LINEAGE_MISMATCH",
         "BLOCKING_DQ_ISSUE",
     }
+
+
+def test_ft_charts_keep_source_file_runs_distinct_from_physical_tester() -> None:
+    service = SqlDatasetService(Engine(FtChartConnection()))  # type: ignore[arg-type]
+    result = service._get_ft_chart_data(
+        FtChartConnection(),  # type: ignore[arg-type]
+        {
+            "dataset_id": 1,
+            "version_no": 1,
+            "test_stage": "FT",
+            "product_name": "PRODUCT-1",
+            "spec_set_id": None,
+        },
+        {
+            "dataset_id": 1,
+            "version_no": 1,
+            "lot_id": None,
+            "wafer_id": None,
+            "source_id": None,
+            "parameter": None,
+        },
+        " FROM dataset.dataset_version dv JOIN dataset.dataset_version_run dvr "
+        "ON dvr.dataset_version_id=dv.dataset_version_id JOIN test.test_run tr "
+        "ON tr.processing_run_id=dvr.processing_run_id ",
+    )
+
+    assert result.source_options == ("SOURCE-RUN-A", "SOURCE-RUN-B")
+    assert len(result.parameter_options) == 1
+    assert result.parameter_options[0].lsl is None
+
+
+def test_ft_charts_resolve_the_selected_source_run_spec_and_points() -> None:
+    service = SqlDatasetService(Engine(FtChartConnection()))  # type: ignore[arg-type]
+    result = service._get_ft_chart_data(
+        FtChartConnection(),  # type: ignore[arg-type]
+        {
+            "dataset_id": 1,
+            "version_no": 1,
+            "test_stage": "FT",
+            "product_name": "PRODUCT-1",
+            "spec_set_id": None,
+        },
+        {
+            "dataset_id": 1,
+            "version_no": 1,
+            "lot_id": None,
+            "wafer_id": None,
+            "source_id": "SOURCE-RUN-A",
+            "parameter": "HVBCES",
+        },
+        " FROM dataset.dataset_version dv JOIN dataset.dataset_version_run dvr "
+        "ON dvr.dataset_version_id=dv.dataset_version_id JOIN test.test_run tr "
+        "ON tr.processing_run_id=dvr.processing_run_id ",
+    )
+
+    assert result.parameter_options[0].lsl == 1.29
+    assert result.ft_total_point_count == 3
+    assert result.ft_parameter_points[0].source_id == "SOURCE-RUN-A"

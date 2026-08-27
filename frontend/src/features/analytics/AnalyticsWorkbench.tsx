@@ -146,7 +146,7 @@ export function AnalyticsWorkbench({ initialSelection }: AnalyticsWorkbenchProps
     <div className="workbench analytics-workbench">
       <div className="page-heading">
         <div>
-          <Typography.Title level={2}>{data?.test_stage === "FT" ? "FT 参数分析" : "CP 分析图表"}</Typography.Title>
+          <Typography.Title level={2}>{data?.test_stage === "FT" ? "FT 参数分析" : data ? "CP 分析图表" : "CP / FT 分析图表"}</Typography.Title>
           <Typography.Text type="secondary">CP 显示 Yield、Bin 和 Wafer Map；FT 显示器件级参数散点、测试条件和规格线。</Typography.Text>
         </div>
         <Tag color="blue">Dataset Version</Tag>
@@ -203,10 +203,10 @@ export function AnalyticsWorkbench({ initialSelection }: AnalyticsWorkbenchProps
       {!selection && <Card><Empty description="输入 Dataset 编号和版本后加载分析图表" /></Card>}
       {data?.test_stage === "FT" && (
         <>
-          <Alert type="info" showIcon message="日月新源数据不含 PASS/FAIL 或 Bin，系统不计算良率" description={data.ft_sampled ? `图中显示确定性抽样数据并保留超规格点；当前参数共 ${data.ft_total_point_count.toLocaleString()} 个测量点。` : "图中显示当前参数的全部测量点。"} className="review-alert" />
+          <Alert type="info" showIcon message="当前 FT 源数据未提供可发布的 PASS/FAIL 或 Bin，系统不计算良率" description={data.ft_sampled ? `图中显示确定性抽样数据并保留超规格点；当前参数共 ${data.ft_total_point_count.toLocaleString()} 个测量点。` : "图中显示当前参数的全部测量点。"} className="review-alert" />
           <Row gutter={[16, 16]} className="analytics-stats">
             <Col xs={12} md={6}><Card><Statistic title="产品" value={data.product_name ?? "-"} /></Card></Col>
-            <Col xs={12} md={6}><Card><Statistic title="Source_ID" value={data.source_options.length} /></Card></Col>
+            <Col xs={12} md={6}><Card><Statistic title="源文件 Run" value={data.source_options.length} /></Card></Col>
             <Col xs={12} md={6}><Card><Statistic title="参数" value={data.parameter_options.length} /></Card></Col>
             <Col xs={12} md={6}><Card><Statistic title="当前参数测量点" value={data.ft_total_point_count} /></Card></Col>
           </Row>

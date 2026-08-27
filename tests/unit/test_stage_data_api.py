@@ -35,7 +35,13 @@ class StubStageService:
         self.calls.append((business_domain, test_stage))
         assert business_domain in {"ENGINEERING", "PRODUCTION"}
         assert test_stage in {"CP", "FT"}
-        assert factory_code in {"huahong", "jetech", "lion", "guoyu", "riyuexin"}
+        assert factory_code in {
+            "huahong",
+            "jetech",
+            "lion",
+            "riyuexin",
+            "riyueguang",
+        }
         assert files[0].sha256
         return 41
 
@@ -311,7 +317,6 @@ def test_production_cp_upload_returns_queue_identity(
     [
         ("jetech", "sample.xls"),
         ("lion", "sample.xlsx"),
-        ("guoyu", "sample.zip"),
     ],
 )
 def test_cp_upload_accepts_registered_existing_company_cleaners(
@@ -327,6 +332,18 @@ def test_cp_upload_accepts_registered_existing_company_cleaners(
 
     assert response.status_code == 201
     assert response.json()["cleaner_release"]["cleaner_code"] == f"{factory.upper()}_CP"
+
+
+def test_general_cp_upload_rejects_custom_guoyu_tool(monkeypatch, tmp_path: Path) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+    response = _client(StubStageService()).post(
+        "/api/v1/production/cp/uploads",
+        files={"files": ("sample.zip", b"sample", "application/zip")},
+        data={"factory_code": "guoyu"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "FACTORY_UNSUPPORTED"
 
 
 def test_cp_upload_accepts_server_directory_and_preserves_source_paths(
@@ -353,20 +370,45 @@ def test_cp_upload_accepts_server_directory_and_preserves_source_paths(
     )
 
 
-def test_ft_upload_rejects_server_path_until_ft_path_adapter_exists(
+def test_ft_upload_accepts_direct_server_directory(
     monkeypatch, tmp_path: Path
 ) -> None:
     _stub_cp_cleaner(monkeypatch, tmp_path)
     source = tmp_path / "ft"
     source.mkdir()
     (source / "sample.xlsx").write_bytes(b"sample")
-    response = _client(StubStageService()).post(
+    nested = source / "DVDS"
+    nested.mkdir()
+    (nested / "not-dc.xlsx").write_bytes(b"sample")
+    service = StubStageService()
+    response = _client(service).post(
         "/api/v1/production/ft/uploads",
         data={"factory_code": "riyuexin", "source_path": str(source)},
     )
 
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "SOURCE_PATH_UNSUPPORTED"
+    assert response.status_code == 201
+    assert [item.original_name for item in service.registered_files] == [
+        "sample.xlsx"
+    ]
+
+
+def test_production_ft_upload_keeps_riyueguang_separate(monkeypatch, tmp_path: Path) -> None:
+    _stub_ft_cleaner(monkeypatch, tmp_path)
+    service = StubStageService()
+    response = _client(service).post(
+        "/api/v1/production/ft/uploads",
+        files={
+            "files": (
+                "NCT6528068_NCEA75ED120BT(LA)-3B00_FA54-9744_20250722_070217.xlsx",
+                b"workbook",
+                "application/octet-stream",
+            )
+        },
+        data={"factory_code": "riyueguang"},
+    )
+
+    assert response.status_code == 201
+    assert response.json()["cleaner_release"]["cleaner_code"] == "RIYUEGUANG_FT"
 
 
 def test_upload_rejects_unsupported_test_stage(monkeypatch, tmp_path: Path) -> None:
