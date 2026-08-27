@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 from dataclasses import asdict
@@ -13,6 +14,7 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+from app.core.logging import configure_logging
 from app.infrastructure.database import get_engine
 from app.infrastructure.quick_artifact_cleanup import QuickArtifactFileCleaner
 from app.infrastructure.sql_quick_cleanup_service import SqlQuickCleanupService
@@ -29,6 +31,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    configure_logging()
+    logger = logging.getLogger(__name__)
     if not os.getenv("TMS_DATABASE_URL"):
         raise RuntimeError("TMS_DATABASE_URL is required")
     work_root = Path(
@@ -47,18 +51,17 @@ def main() -> None:
         dry_run=args.dry_run,
         stale_after=timedelta(minutes=stale_minutes),
     )
-    print(
-        json.dumps(
-            {
-                "dry_run": args.dry_run,
-                "work_root": str(work_root),
-                "result_count": len(results),
-                "results": [asdict(item) for item in results],
-            },
-            ensure_ascii=False,
-            indent=2,
-        )
+    payload = {
+        "dry_run": args.dry_run,
+        "work_root": str(work_root),
+        "result_count": len(results),
+        "results": [asdict(item) for item in results],
+    }
+    logger.info(
+        "Quick Artifact cleanup completed: %s",
+        json.dumps(payload, ensure_ascii=False),
     )
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

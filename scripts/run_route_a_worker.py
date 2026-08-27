@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import socket
 import sys
 import time
@@ -12,6 +13,7 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+from app.core.logging import configure_logging
 from app.domain.jobs import JobType
 from app.infrastructure.cp_csv_triplet_writer import CpCsvTripletWriter
 from app.infrastructure.database import get_engine
@@ -38,6 +40,14 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    configure_logging()
+    logger = logging.getLogger(__name__)
+    logger.info(
+        "Route A Worker starting: worker_id=%s poll_seconds=%s once=%s",
+        args.worker_id,
+        args.poll_seconds,
+        args.once,
+    )
     engine = get_engine()
     queue = SqlJobService(engine)
     stage_data = SqlStageDataService(engine)
@@ -64,12 +74,16 @@ def main() -> None:
         lease_for=timedelta(minutes=5),
         heartbeat_every=timedelta(minutes=1),
     )
-    while True:
-        result = worker.run_once()
-        if args.once:
-            return
-        if result is None:
-            time.sleep(max(args.poll_seconds, 0.1))
+    try:
+        while True:
+            result = worker.run_once()
+            if args.once:
+                logger.info("Route A Worker one-shot run completed")
+                return
+            if result is None:
+                time.sleep(max(args.poll_seconds, 0.1))
+    except KeyboardInterrupt:
+        logger.info("Route A Worker stopped by operator")
 
 
 if __name__ == "__main__":
