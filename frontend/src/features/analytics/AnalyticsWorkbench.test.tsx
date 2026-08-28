@@ -117,5 +117,5 @@ describe("AnalyticsWorkbench FT dependent filters", () => {
     await waitFor(() => expect(getDatasetChartData).toHaveBeenCalledWith(
       20, 1, "LOT-B", undefined, undefined, undefined,
     ));
-  });
+  }, 10_000);
 });

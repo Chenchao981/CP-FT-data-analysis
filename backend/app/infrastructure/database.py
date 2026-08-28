@@ -25,11 +25,13 @@ def check_database() -> dict[str, str]:
         row = connection.execute(
             text(
                 "SELECT CAST(SERVERPROPERTY('ProductVersion') AS nvarchar(128)), "
-                "DB_NAME(), (SELECT version_num FROM alembic_version)"
+                "DB_NAME(), (SELECT version_num FROM alembic_version), "
+                "CAST(SERVERPROPERTY('ServerName') AS nvarchar(256))"
             )
         ).one()
     return {
         "database": str(row[1]),
         "database_version": str(row[0]),
         "schema_revision": str(row[2]),
+        "database_server": str(row[3]),
     }

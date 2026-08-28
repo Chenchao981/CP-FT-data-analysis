@@ -21,6 +21,7 @@ def test_ready(monkeypatch) -> None:
             "database": "TMS_G0_DEV",
             "database_version": "12.0.2000.8",
             "schema_revision": "sql2014_0004",
+            "database_server": "LOCALHOST\\SQLEXPRESS",
         },
     )
     client = TestClient(create_app())

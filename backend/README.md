@@ -13,24 +13,31 @@ $env:PYTHONPATH = "$PWD\backend"
 
 ## 启动
 
+完整本机功能验收优先使用仓库根目录的一键入口，它会加载 SQL 运行配置并同时管理 API、Worker 和前端：
+
 ```powershell
-$env:PYTHONPATH = "$PWD\backend"
-& .\.conda-env\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+.\启动TMS测试环境.bat
+```
+
+下面的命令只适用于分别调试单个后端进程。
+
+```powershell
+.\scripts\windows\run_tms_api.ps1
 ```
 
 另开一个 PowerShell 窗口启动 Route A Worker：
 
 ```powershell
-. .\.env.runtime.ps1
-$env:PYTHONPATH = "$PWD\backend"
-$env:TMS_JOB_REPOSITORY = "sql"
-& .\.conda-env\python.exe scripts\run_route_a_worker.py
+.\scripts\windows\run_tms_worker.ps1
 ```
+
+Windows PowerShell 5.1 必须通过 `scripts/windows/TmsRuntime.Common.ps1` 显式按 UTF-8 加载 `.env.runtime.ps1`；不要在包含中文路径的运行配置上直接 dot-source。生产计划任务使用 `run_tms_api.ps1` 和 `run_tms_worker.ps1`，本机完整测试使用 `start_tms_local_test.ps1`。
 
 部署新环境时，先升级 Migration，再按实际发布包 SHA256 幂等登记 Cleaner：
 
 ```powershell
-. .\.env.runtime.ps1
+. .\scripts\windows\TmsRuntime.Common.ps1
+Import-TmsRuntimeConfig -Path (Join-Path $PWD '.env.runtime.ps1')
 & .\.conda-env\Scripts\alembic.exe -c db\alembic\alembic.ini upgrade head
 & .\.conda-env\python.exe scripts\g0\bootstrap_existing_cleaner_releases.py
 ```
@@ -72,7 +79,8 @@ Quick Analysis容量按“活跃任务预留 + 失败任务未清理预留 + 尚
 过期结果清理先用只读模式确认范围，再执行物理删除：
 
 ```powershell
-. .\.env.runtime.ps1
+. .\scripts\windows\TmsRuntime.Common.ps1
+Import-TmsRuntimeConfig -Path (Join-Path $PWD '.env.runtime.ps1')
 & .\.conda-env\python.exe scripts\run_quick_artifact_cleanup.py --dry-run
 & .\.conda-env\python.exe scripts\run_quick_artifact_cleanup.py
 ```
@@ -82,7 +90,8 @@ Quick Analysis容量按“活跃任务预留 + 失败任务未清理预留 + 尚
 开发库可用小型合成过期文件复验完整清理链；脚本完成后会移除全部合成记录：
 
 ```powershell
-. .\.env.runtime.ps1
+. .\scripts\windows\TmsRuntime.Common.ps1
+Import-TmsRuntimeConfig -Path (Join-Path $PWD '.env.runtime.ps1')
 & .\.conda-env\python.exe scripts\g0\verify_quick_cleanup_sql_e2e.py
 ```
 
@@ -98,7 +107,8 @@ Quick Analysis容量按“活跃任务预留 + 失败任务未清理预留 + 尚
 真实开发库的API、SQL Queue、Worker、Artifact下载、所有权隔离与正式事实零增长验证：
 
 ```powershell
-. .\.env.runtime.ps1
+. .\scripts\windows\TmsRuntime.Common.ps1
+Import-TmsRuntimeConfig -Path (Join-Path $PWD '.env.runtime.ps1')
 & .\.conda-env\python.exe scripts\g0\verify_quick_pat_sql_e2e.py `
   --source-root 'JIEQUN_FT_SHARED' `
   --relative-path '520data'
@@ -133,6 +143,7 @@ $env:PYTHONPATH = "$PWD\backend"
 真实数据库与现有华虹 Cleaner 的 Route A Worker 验证：
 
 ```powershell
-. .\.env.runtime.ps1
+. .\scripts\windows\TmsRuntime.Common.ps1
+Import-TmsRuntimeConfig -Path (Join-Path $PWD '.env.runtime.ps1')
 & .\.conda-env\python.exe scripts\g0\verify_route_a_worker_foundation.py
 ```

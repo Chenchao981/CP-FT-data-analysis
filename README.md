@@ -12,6 +12,7 @@
 - [`docs/architecture/TMS_System_Architecture_v0.8_Dual_Channel.md`](docs/architecture/TMS_System_Architecture_v0.8_Dual_Channel.md)：正式 Canonical 与临时 Workspace 双通道架构。
 - [`docs/architecture/TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md`](docs/architecture/TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md)：正式入库缺 Lot 的暂停、人工确认、子 Job 重跑与审计合同。
 - [`docs/development/TMS_Lot_Input_Recovery_Completion_Report_2026-08-27.md`](docs/development/TMS_Lot_Input_Recovery_Completion_Report_2026-08-27.md)：日月新/日月光真实浏览器与 SQL Server 闭环证据及剩余生产门禁。
+- [`docs/development/TMS_Local_Test_Environment_Completion_Report_2026-08-28.md`](docs/development/TMS_Local_Test_Environment_Completion_Report_2026-08-28.md)：本机一键启停、常驻 Worker、UTF-8 修复和真实 FT 前端闭环证据。
 - [`docs/TMS_Development_Plan_v0.8_Dual_Channel.md`](docs/TMS_Development_Plan_v0.8_Dual_Channel.md)：Quick Analysis、临时 Workspace、Storage Adapter 与 Local Agent 的阶段计划。
 - [`docs/TMS_Development_Plan_v0.7_Route_A.md`](docs/TMS_Development_Plan_v0.7_Route_A.md)：后续开发阶段、交付物和验收门槛。
 - [`docs/TMS_Development_Baseline_v0.6_Unified_Cleaning_Analytics/`](docs/TMS_Development_Baseline_v0.6_Unified_Cleaning_Analytics/README.md)：已实现技术资产和历史基线；与 v0.2/v0.7 冲突时以后者为准。
@@ -42,6 +43,16 @@
 - 华虹格式证据：[docs/formats/huahong/README.md](docs/formats/huahong/README.md)。
 - Route A开发状态：[docs/development/TMS_Route_A_Development_Status_2026-08-24.md](docs/development/TMS_Route_A_Development_Status_2026-08-24.md)。
 - Quick Workspace生命周期验收：[docs/development/TMS_Quick_Workspace_Lifecycle_Q0_1_Completion_Report_2026-08-27.md](docs/development/TMS_Quick_Workspace_Lifecycle_Q0_1_Completion_Report_2026-08-27.md)。
+
+## 本机一键测试
+
+当前开发机可直接双击仓库根目录的：
+
+- [`启动TMS测试环境.bat`](启动TMS测试环境.bat)：后台启动 SQL API、Route A Worker 和前端，并打开浏览器；
+- [`查看TMS测试环境状态.bat`](查看TMS测试环境状态.bat)：确认 API、Worker、前端是否全部就绪；
+- [`停止TMS测试环境.bat`](停止TMS测试环境.bat)：先停止前端，等待 Worker 当前任务完成后退出，再停止 API。
+
+该入口只监听 `127.0.0.1`，默认关闭认证以便本机功能验收，不是生产部署方式。完整操作、缺 Lot 补录、分析入口和报障信息见 [`TMS 本机测试使用指南`](docs/development/TMS_Local_Test_User_Guide_2026-08-28.md)。
 
 ## Route A 产品主线
 

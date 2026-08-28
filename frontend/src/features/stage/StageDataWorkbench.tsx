@@ -3,20 +3,21 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, Card, Col, Form, Input, Modal, Popconfirm, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography, Upload, message } from "antd";
 import type { UploadFile } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BusinessDomain, TestStage, downloadStageUploadFile, listStageResults, listStageUploads, reprocessStageBatch, StageResultRow, StageUploadRow, uploadStageData } from "../../api/stageData";
+import { formatUtcDateTime } from "../../utils/dateTime";
 import { useAuth } from "../auth/AuthContext";
 import { factoryInputs, factoryNames, formalFactoryOptions, isFormalFactory } from "../capabilities/capabilityCatalog";
 import { LotEnrichmentModal } from "./LotEnrichmentModal";
 
 const statusColor: Record<string, string> = { RECEIVED: "blue", QUEUED: "gold", PROCESSING: "processing", PROCESSED: "success", NEEDS_INPUT: "orange", FAILED: "error" };
 const statusName: Record<string, string> = { RECEIVED: "已接收", QUEUED: "排队中", PROCESSING: "处理中", PROCESSED: "已处理", NEEDS_INPUT: "待补录", FAILED: "失败" };
+const activeUploadStatuses = new Set(["RECEIVED", "QUEUED", "PROCESSING"]);
 const domainName: Record<BusinessDomain, string> = { ENGINEERING: "工程", PRODUCTION: "量产" };
 const stageDescription: Record<TestStage, string> = {
   CP: "选择晶圆厂并上传对应CP源文件后，系统自动调用该厂现有清洗程序并形成Wafer分析数据。",
   FT: "选择日月新或日月光并提交已验收的FT DC XLSX，系统按各自格式严格校验后形成产品/Lot分析数据。",
 };
-const dt = (value?: string | null) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
 const size = (value: number) => value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(2)} MB`;
 const needsLotInput = (row: StageUploadRow) => row.status === "NEEDS_INPUT" || row.action_required === "LOT_ID";
 
@@ -40,6 +41,8 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
   const [messageApi, contextHolder] = message.useMessage();
   const queryClient = useQueryClient();
   const scopeKey = ["stage", businessDomain, testStage];
+  const previousActiveBatchIds = useRef<Set<number>>(new Set());
+  const previousPollingScope = useRef(`${businessDomain}:${testStage}`);
   useEffect(() => {
     setOpen(false);
     setLotBatchId(undefined);
@@ -48,8 +51,27 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
     form.resetFields();
     form.setFieldsValue({ factory_code: defaultFactory, remark: undefined, source_path: undefined });
   }, [businessDomain, defaultFactory, form, testStage]);
-  const uploads = useQuery({ queryKey: [...scopeKey, "uploads"], queryFn: () => listStageUploads(businessDomain, testStage), refetchInterval: (query) => (query.state.data ?? []).some((row) => ["RECEIVED", "QUEUED", "PROCESSING"].includes(row.status)) ? 3000 : false });
-  const results = useQuery({ queryKey: [...scopeKey, "results"], queryFn: () => listStageResults(businessDomain, testStage), refetchInterval: (query) => (uploads.data ?? []).some((row) => ["QUEUED", "PROCESSING"].includes(row.status)) ? 3000 : false });
+  const uploads = useQuery({ queryKey: [...scopeKey, "uploads"], queryFn: () => listStageUploads(businessDomain, testStage), refetchInterval: (query) => (query.state.data ?? []).some((row) => activeUploadStatuses.has(row.status)) ? 3000 : false });
+  const results = useQuery({ queryKey: [...scopeKey, "results"], queryFn: () => listStageResults(businessDomain, testStage) });
+  useEffect(() => {
+    const pollingScope = `${businessDomain}:${testStage}`;
+    const currentActiveBatchIds = new Set(
+      (uploads.data ?? [])
+        .filter((row) => activeUploadStatuses.has(row.status))
+        .map((row) => row.import_batch_id),
+    );
+    if (previousPollingScope.current !== pollingScope) {
+      previousPollingScope.current = pollingScope;
+      previousActiveBatchIds.current = currentActiveBatchIds;
+      return;
+    }
+    const batchReachedTerminalStatus = [...previousActiveBatchIds.current]
+      .some((batchId) => !currentActiveBatchIds.has(batchId));
+    previousActiveBatchIds.current = currentActiveBatchIds;
+    if (batchReachedTerminalStatus) {
+      void queryClient.invalidateQueries({ queryKey: [...scopeKey, "results"] });
+    }
+  }, [businessDomain, queryClient, testStage, uploads.data]);
   const refresh = async () => Promise.all([uploads.refetch(), results.refetch()]);
   const mutation = useMutation({
     mutationFn: async (values: { factory_code: string; remark?: string; source_path?: string }) => {
@@ -80,13 +102,14 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
   );
   const uploadColumns: ColumnsType<StageUploadRow> = [
     { title: "批次编号", dataIndex: "import_batch_id", width: 95, fixed: "left" },
+    { title: "当前任务", dataIndex: "latest_job_id", width: 105, render: (v) => v ? `Job #${v}` : "—" },
     { title: "SEQ", dataIndex: "sequence_no", width: 70 },
     { title: "源文件名称", dataIndex: "original_file_name", width: 300, ellipsis: true },
     { title: "扩展名", dataIndex: "extension", width: 80, render: (v) => v.toUpperCase() },
     { title: "大小", dataIndex: "size_bytes", width: 100, render: size },
     { title: testStage === "CP" ? "晶圆厂" : "封测厂", dataIndex: "factory_code", width: 100, render: (v) => factoryNames[String(v).toLowerCase()] ?? v },
-    { title: "上传时间", dataIndex: "upload_time_utc", width: 175, render: dt },
-    { title: "完成时间", dataIndex: "completion_time_utc", width: 175, render: dt },
+    { title: "上传时间", dataIndex: "upload_time_utc", width: 175, render: formatUtcDateTime },
+    { title: "完成时间", dataIndex: "completion_time_utc", width: 175, render: formatUtcDateTime },
     { title: "上传账号", dataIndex: "uploader_login", width: 120 },
     { title: "上传人", dataIndex: "uploader_name", width: 110 },
     { title: "状态", dataIndex: "status", width: 100, fixed: "right", render: (_, row) => {
@@ -117,7 +140,7 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
     { title: "良率", dataIndex: "yield_rate", width: 100, render: (v: number | null) => v == null ? "—" : `${(v * 100).toFixed(2)}%` },
     { title: "状态", dataIndex: "status", width: 100, render: (v) => <Tag color="success">{statusName[v] ?? v}</Tag> },
     { title: "Data Type", dataIndex: "data_type", width: 105 },
-    { title: "处理时间", dataIndex: "created_at_utc", width: 175, render: dt },
+    { title: "处理时间", dataIndex: "created_at_utc", width: 175, render: formatUtcDateTime },
     { title: "操作", key: "actions", width: 210, fixed: "right", render: (_, row) => <Space size={0}>
       {row.dataset_id && row.dataset_version_no && can("ANALYSIS_RUN") && <Button type="link" size="small" icon={<BarChartOutlined />} onClick={() => onOpenAnalytics?.(row.dataset_id!, row.dataset_version_no!)}>数据分析</Button>}
       {can("TASK_CREATE") && isFormalFactory(testStage, row.factory_code) && <Popconfirm title="重新处理该批次？" description="将重跑现有清洗程序并归档旧结果。" onConfirm={() => reprocessMutation.mutate(row.import_batch_id)}><Button type="link" size="small" icon={<RedoOutlined />} loading={reprocessMutation.isPending && reprocessMutation.variables === row.import_batch_id}>重新处理</Button></Popconfirm>}
@@ -125,7 +148,7 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
   ];
   const metrics = useMemo(() => ({
     total: batchRows.length,
-    processing: batchRows.filter((row) => ["QUEUED", "PROCESSING"].includes(row.status)).length,
+    processing: batchRows.filter((row) => activeUploadStatuses.has(row.status)).length,
     processed: new Set((results.data ?? []).map((row) => row.import_batch_id)).size,
     needsInput: batchRows.filter(needsLotInput).length,
     failed: batchRows.filter((row) => row.status === "FAILED" && !needsLotInput(row)).length,
@@ -170,6 +193,7 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
         description={failureRow?.error_message || "系统未返回详细原因，请重新处理；如仍失败请联系管理员。"}
       />
       {failureRow?.error_code && <Typography.Paragraph type="secondary" style={{ marginTop: 16 }}>错误类型：{failureRow.error_code}</Typography.Paragraph>}
+      {failureRow?.latest_job_id && <Typography.Paragraph type="secondary">当前任务：Job #{failureRow.latest_job_id}</Typography.Paragraph>}
     </Modal>
   </div>;
 }

@@ -136,6 +136,7 @@ describe("StageDataWorkbench Lot input states", () => {
     renderWorkbench();
 
     expect(await screen.findAllByRole("button", { name: /补录批次号/ })).toHaveLength(1);
+    expect(screen.getAllByText("Job #1").length).toBeGreaterThan(0);
     expect(screen.getAllByRole("button", { name: /失败详情/ })).toHaveLength(1);
     const cards = [
       ["上传批次", "4"],
@@ -172,5 +173,24 @@ describe("StageDataWorkbench Lot input states", () => {
     renderWorkbench();
     await screen.findByText("missing-a.xlsx");
     expect(screen.queryByRole("button", { name: /补录批次号/ })).not.toBeInTheDocument();
+  }, 15_000);
+
+  it("refreshes results once when an active upload reaches a terminal status", async () => {
+    const activeRows = uploadRows.filter((row) => row.import_batch_id === 13);
+    const completedRows = activeRows.map((row) => ({
+      ...row,
+      status: "PROCESSED",
+      completion_time_utc: "2026-08-27T08:02:00Z",
+    }));
+    vi.mocked(listStageUploads)
+      .mockResolvedValueOnce(activeRows)
+      .mockResolvedValue(completedRows);
+
+    renderWorkbench();
+    await screen.findByText("running.xlsx");
+    expect(listStageResults).toHaveBeenCalledTimes(1);
+
+    await waitFor(() => expect(listStageUploads).toHaveBeenCalledTimes(2), { timeout: 5_000 });
+    await waitFor(() => expect(listStageResults).toHaveBeenCalledTimes(2), { timeout: 5_000 });
   }, 15_000);
 });

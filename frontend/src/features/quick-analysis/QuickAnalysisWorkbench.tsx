@@ -34,6 +34,7 @@ import {
   type QuickAnalysisSession,
   type QuickSourceDirectory,
 } from "../../api/quickAnalysis";
+import { formatUtcDateTime } from "../../utils/dateTime";
 
 const statusColor: Record<string, string> = {
   QUEUED: "gold",
@@ -51,7 +52,6 @@ const statusName: Record<string, string> = {
   CANCELLED: "已取消",
   EXPIRED: "已过期",
 };
-const dt = (value?: string | null) => value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
 const size = (value?: number | null) => {
   if (value == null) return "—";
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
@@ -114,8 +114,8 @@ export function QuickAnalysisWorkbench() {
     { title: "解析数据行", dataIndex: "record_count", width: 125, render: count },
     { title: "计算耗时", key: "elapsed", width: 105, render: (_, row) => row.summary?.elapsed_seconds == null ? "—" : `${row.summary.elapsed_seconds.toFixed(3)} 秒` },
     { title: "创建人", dataIndex: "owner_name", width: 100 },
-    { title: "创建时间", dataIndex: "created_at_utc", width: 175, render: dt },
-    { title: "结果到期", dataIndex: "expires_at_utc", width: 175, render: dt },
+    { title: "创建时间", dataIndex: "created_at_utc", width: 175, render: formatUtcDateTime },
+    { title: "结果到期", dataIndex: "expires_at_utc", width: 175, render: formatUtcDateTime },
     { title: "错误", dataIndex: "error_message", width: 240, ellipsis: true, render: (value) => value || "—" },
     { title: "操作", key: "actions", width: 100, fixed: "right", render: (_, row) => row.status === "SUCCESS" && row.result_file_name ? <Button type="link" size="small" icon={<DownloadOutlined />} onClick={() => void downloadQuickPat(row.analysis_session_id, row.result_file_name!)}>下载 PAT</Button> : "—" },
   ];

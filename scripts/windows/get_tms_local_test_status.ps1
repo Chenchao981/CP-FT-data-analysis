@@ -1,0 +1,163 @@
+[CmdletBinding()]
+param(
+    [switch]$AsJson,
+    [switch]$RequireReady
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$workspace = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
+$python = Join-Path $workspace '.conda-env\python.exe'
+$stateDirectory = Join-Path $workspace 'artifacts\runtime\local-test'
+$statePath = Join-Path $stateDirectory 'processes.json'
+$workerStopFile = Join-Path $stateDirectory 'worker.stop'
+$workerReadyFile = Join-Path $stateDirectory 'worker.ready.json'
+$apiUrl = 'http://127.0.0.1:8000/api/v1/health/ready'
+$frontendUrl = 'http://127.0.0.1:5173/'
+. (Join-Path $PSScriptRoot 'TmsLocalRuntime.Common.ps1')
+
+$nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
+$node = if ($null -eq $nodeCommand) { '' } else { $nodeCommand.Source }
+
+function Get-TmsListenerProcessId {
+    param([int]$Port)
+    $listeners = @(
+        Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique
+    )
+    if ($listeners.Count -eq 1) { return [int]$listeners[0] }
+    return $null
+}
+
+function Test-TmsWebEndpoint {
+    param([string]$Uri)
+    foreach ($attempt in 1..3) {
+        try {
+            $response = Invoke-WebRequest -Uri $Uri -UseBasicParsing -TimeoutSec 5
+            if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 400) { return $true }
+        } catch {
+            if ($attempt -lt 3) { Start-Sleep -Milliseconds 300 }
+        }
+    }
+    return $false
+}
+
+function Get-TmsRoleRecord {
+    param([PSCustomObject]$State, [string]$Role)
+    $matches = @($State.processes | Where-Object { $_.role -eq $Role })
+    if ($matches.Count -eq 1) { return $matches[0] }
+    return $null
+}
+
+$statePresent = Test-Path -LiteralPath $statePath -PathType Leaf
+$state = $null
+$processes = @()
+$apiReady = $false
+$frontendReady = $false
+$workerReady = $false
+$workerDraining = Test-Path -LiteralPath $workerStopFile -PathType Leaf
+$database = $null
+$schemaRevision = $null
+$apiDatabaseServer = $null
+$workerDatabase = $null
+$workerSchemaRevision = $null
+$workerDatabaseServer = $null
+
+if ($statePresent) {
+    $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    if ([string]$state.workspace -ne $workspace) {
+        throw 'The local test state belongs to a different workspace.'
+    }
+    $processes = @($state.processes | ForEach-Object {
+        $running = if ([string]::IsNullOrWhiteSpace($node)) {
+            $false
+        } else {
+            Test-TmsLocalProcess -Record $_ -Workspace $workspace -Python $python -Node $node
+        }
+        [PSCustomObject]@{
+            role = $_.role
+            process_id = $_.process_id
+            running = $running
+        }
+    })
+
+    $apiRecord = Get-TmsRoleRecord -State $state -Role 'api'
+    $apiProcessReady = $null -ne $apiRecord -and @($processes | Where-Object { $_.role -eq 'api' -and $_.running }).Count -eq 1
+    $apiListener = Get-TmsListenerProcessId -Port 8000
+    if ($apiProcessReady -and $apiListener -eq [int]$apiRecord.process_id) {
+        try {
+            $ready = Invoke-RestMethod -Uri $apiUrl -Method Get -TimeoutSec 5
+            $database = $ready.database
+            $schemaRevision = $ready.schema_revision
+            $apiDatabaseServer = $ready.database_server
+            $apiReady = (
+                $ready.status -eq 'ready' -and
+                $ready.database -eq $state.expected_database -and
+                $ready.schema_revision -eq $state.expected_schema_revision -and
+                $apiDatabaseServer -eq [string]$state.database_server
+            )
+        } catch { $apiReady = $false }
+    }
+
+    $frontendRecord = Get-TmsRoleRecord -State $state -Role 'frontend'
+    $frontendProcessReady = $null -ne $frontendRecord -and @($processes | Where-Object { $_.role -eq 'frontend' -and $_.running }).Count -eq 1
+    $frontendListener = Get-TmsListenerProcessId -Port 5173
+    if ($frontendProcessReady -and $frontendListener -eq [int]$frontendRecord.process_id) {
+        $frontendReady = Test-TmsWebEndpoint -Uri $frontendUrl
+    }
+
+    $workerRecord = Get-TmsRoleRecord -State $state -Role 'worker'
+    $workerProcessReady = $null -ne $workerRecord -and @($processes | Where-Object { $_.role -eq 'worker' -and $_.running }).Count -eq 1
+    if ($workerProcessReady -and -not $workerDraining -and (Test-Path -LiteralPath $workerReadyFile -PathType Leaf)) {
+        try {
+            $workerMetadata = Get-Content -LiteralPath $workerReadyFile -Raw | ConvertFrom-Json
+            $workerDatabase = [string]$workerMetadata.database
+            $workerSchemaRevision = [string]$workerMetadata.schema_revision
+            $workerDatabaseServer = [string]$workerMetadata.database_server
+            $workerReady = (
+                $workerMetadata.status -eq 'READY' -and
+                [int]$workerMetadata.pid -eq [int]$workerRecord.process_id -and
+                $workerDatabase -eq [string]$state.expected_database -and
+                $workerSchemaRevision -eq [string]$state.expected_schema_revision -and
+                $workerDatabaseServer -eq [string]$state.database_server
+            )
+        } catch { $workerReady = $false }
+    }
+}
+
+$allReady = (
+    $statePresent -and
+    [string]$state.status -eq 'RUNNING' -and
+    $apiReady -and
+    $frontendReady -and
+    $workerReady -and
+    @($processes).Count -eq 3 -and
+    @($processes | Where-Object { -not $_.running }).Count -eq 0
+)
+$result = [PSCustomObject]@{
+    mode = 'LOCAL_TEST'
+    state_present = $statePresent
+    state_status = if ($null -eq $state) { 'MISSING' } else { [string]$state.status }
+    all_ready = $allReady
+    api_ready = $apiReady
+    frontend_ready = $frontendReady
+    worker_ready = $workerReady
+    worker_draining = $workerDraining
+    database = $database
+    schema_revision = $schemaRevision
+    worker_database = $workerDatabase
+    worker_schema_revision = $workerSchemaRevision
+    database_server = $apiDatabaseServer
+    worker_database_server = $workerDatabaseServer
+    frontend_url = $frontendUrl
+    processes = $processes
+}
+
+if ($AsJson) {
+    $result | ConvertTo-Json -Depth 5
+} else {
+    $result | Select-Object mode, state_present, state_status, all_ready, api_ready, frontend_ready, worker_ready, worker_draining, database, schema_revision, worker_database, worker_schema_revision, database_server, frontend_url | Format-List
+    $processes | Format-Table -AutoSize
+}
+if ($RequireReady -and -not $allReady) { exit 1 }

@@ -1,6 +1,41 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Read-TmsUtf8File {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    try {
+        $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
+        return [IO.File]::ReadAllText($Path, $utf8)
+    } catch {
+        throw "Runtime configuration must be valid UTF-8: $Path"
+    }
+}
+
+function Import-TmsRuntimeConfig {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    $content = Read-TmsUtf8File -Path $Path
+    $tokens = $null
+    $errors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseInput(
+        $content,
+        [ref]$tokens,
+        [ref]$errors
+    )
+    if ($errors.Count -gt 0) {
+        throw "Runtime configuration contains PowerShell syntax errors: $Path"
+    }
+    $scriptBlock = [ScriptBlock]::Create($content)
+    . $scriptBlock
+}
+
 function Get-TmsRuntimeContext {
     param(
         [Parameter(Mandatory = $true)]
@@ -16,16 +51,7 @@ function Get-TmsRuntimeContext {
     if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
         throw "Missing TMS Python runtime: $python"
     }
-    $configTokens = $null
-    $configErrors = $null
-    [void][System.Management.Automation.Language.Parser]::ParseFile(
-        $runtimeConfig,
-        [ref]$configTokens,
-        [ref]$configErrors
-    )
-    if ($configErrors.Count -gt 0) {
-        throw "Runtime configuration contains PowerShell syntax errors: $runtimeConfig"
-    }
+    [void](Read-TmsUtf8File -Path $runtimeConfig)
 
     return [PSCustomObject]@{
         Role = $Role
@@ -43,7 +69,7 @@ function Initialize-TmsRuntime {
         [PSCustomObject]$Context
     )
 
-    . $Context.RuntimeConfig
+    Import-TmsRuntimeConfig -Path $Context.RuntimeConfig
     $env:TMS_PROCESS_NAME = $Context.Role
     if ([string]::IsNullOrWhiteSpace($env:TMS_LOG_DIR)) {
         $env:TMS_LOG_DIR = $Context.LogDir
