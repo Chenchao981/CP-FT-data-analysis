@@ -181,7 +181,7 @@ export function JobDetailsDrawer({ jobId, open, onClose, onSelectJob, onOpenAnal
         <Typography.Title level={5}>可执行动作</Typography.Title>
         <Space wrap>
           {details.actions?.length ? details.actions.map((action) => {
-            const canReprocess = action.code === "REPROCESS" && hasReprocessableBatch;
+            const canReprocess = action.code === "REPROCESS_BATCH" && hasReprocessableBatch;
             const canOpenDataset = ["OPEN_ANALYTICS", "VIEW_RESULT"].includes(action.code ?? "") && hasDataset;
             const supported = canReprocess || canOpenDataset;
             return <Button

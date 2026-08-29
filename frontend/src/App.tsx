@@ -1,7 +1,7 @@
-import { ApartmentOutlined, BarChartOutlined, DatabaseOutlined, DashboardOutlined, ExperimentOutlined, LinkOutlined, LogoutOutlined, PlayCircleOutlined, ProfileOutlined, SafetyCertificateOutlined, ThunderboltOutlined, ToolOutlined, UserOutlined } from "@ant-design/icons";
+import { ApartmentOutlined, DatabaseOutlined, DashboardOutlined, ExperimentOutlined, LinkOutlined, LogoutOutlined, PlayCircleOutlined, ProfileOutlined, SafetyCertificateOutlined, ThunderboltOutlined, UserOutlined } from "@ant-design/icons";
 import { PageContainer, ProLayout } from "@ant-design/pro-components";
 import { Avatar, Dropdown, Result, Spin, Typography } from "antd";
-import { lazy, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { LoginPage } from "./features/auth/LoginPage";
 import { useAuth } from "./features/auth/AuthContext";
 import { UserManagement } from "./features/users/UserManagement";
@@ -12,7 +12,6 @@ import "./styles.css";
 
 const AnalyticsWorkbench = lazy(() => import("./features/analytics/AnalyticsWorkbench").then((module) => ({ default: module.AnalyticsWorkbench })));
 const QuickAnalysisWorkbench = lazy(() => import("./features/quick-analysis/QuickAnalysisWorkbench").then((module) => ({ default: module.QuickAnalysisWorkbench })));
-const CapabilityCenter = lazy(() => import("./features/capabilities/CapabilityCenter").then((module) => ({ default: module.CapabilityCenter })));
 const OperationsConsistency = lazy(() => import("./features/operations/OperationsConsistency").then((module) => ({ default: module.OperationsConsistency })));
 const DatasetCurrentCatalog = lazy(() => import("./features/datasets/DatasetCurrentCatalog").then((module) => ({ default: module.DatasetCurrentCatalog })));
 const QualityManagementDashboard = lazy(() => import("./features/management/QualityManagementDashboard").then((module) => ({ default: module.QualityManagementDashboard })));
@@ -37,9 +36,7 @@ const routes: AppRoute[] = [
     { path: "/production/ft", name: "FT数据", icon: <ThunderboltOutlined />, permission: "DATASET_READ" },
   ] },
   { path: "/quick-analysis", name: "快速分析", icon: <PlayCircleOutlined />, permission: "ANALYSIS_RUN" },
-  { path: "/capabilities", name: "能力与定制工具", icon: <ToolOutlined />, permission: "DATASET_READ" },
-  { path: "/datasets/current", name: "Dataset Current", icon: <ProfileOutlined />, permission: "DATASET_READ" },
-  { path: "/analytics", name: "分析图表", icon: <BarChartOutlined />, permission: "ANALYSIS_RUN" },
+  { path: "/datasets/current", name: "历史正式数据", icon: <ProfileOutlined />, permission: "DATASET_READ" },
   { path: "/management/quality", name: "质量管理摘要", icon: <DashboardOutlined />, permission: "MANAGEMENT_READ" },
   { path: "/master-data/product-crosswalks", name: "产品 Crosswalk", icon: <LinkOutlined />, permission: ["MANAGEMENT_READ", "RULE_GOVERN"] },
   { path: "/operations", name: "运行一致性", icon: <SafetyCertificateOutlined />, permission: "AUDIT_READ" },
@@ -47,13 +44,44 @@ const routes: AppRoute[] = [
 ];
 
 const readBrowserLocation = () => ({
-  pathname: window.location.pathname === "/" ? "/production/cp" : window.location.pathname,
+  pathname: window.location.pathname || "/",
   search: window.location.search,
 });
 
 const positiveQueryInt = (params: URLSearchParams, key: string) => {
   const value = Number(params.get(key));
-  return Number.isInteger(value) && value > 0 ? value : undefined;
+  return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+};
+
+interface AnalyticsDatasetSelection { datasetId: number; versionNo: number }
+
+const analyticsDatasetKey = (selection: AnalyticsDatasetSelection) => `${selection.datasetId}:${selection.versionNo}`;
+const parseAnalyticsDatasets = (params: URLSearchParams): AnalyticsDatasetSelection[] => {
+  const selected = params.getAll("dataset").flatMap((value) => {
+    const match = /^(\d+):(\d+)$/.exec(value.trim());
+    if (!match) return [];
+    const datasetId = Number(match[1]);
+    const versionNo = Number(match[2]);
+    return Number.isSafeInteger(datasetId) && datasetId > 0 && Number.isSafeInteger(versionNo) && versionNo > 0 ? [{ datasetId, versionNo }] : [];
+  });
+  if (!selected.length) {
+    const datasetId = positiveQueryInt(params, "dataset_id");
+    const versionNo = positiveQueryInt(params, "version_no");
+    if (datasetId && versionNo) selected.push({ datasetId, versionNo });
+  }
+  return selected
+    .filter((item, index, items) => items.findIndex((candidate) => candidate.datasetId === item.datasetId) === index)
+    .slice(0, 8);
+};
+
+const analyticsSearch = (datasets: AnalyticsDatasetSelection[]) => {
+  const params = new URLSearchParams();
+  const valid = datasets
+    .filter((item) => Number.isSafeInteger(item.datasetId) && item.datasetId > 0 && Number.isSafeInteger(item.versionNo) && item.versionNo > 0)
+    .filter((item, index, items) => items.findIndex((candidate) => candidate.datasetId === item.datasetId) === index)
+    .slice(0, 8);
+  for (const dataset of valid) params.append("dataset", analyticsDatasetKey(dataset));
+  return params;
 };
 
 export default function App() {
@@ -69,14 +97,15 @@ export default function App() {
     return () => window.removeEventListener("popstate", onPopState);
   }, []);
   const searchParams = useMemo(() => new URLSearchParams(browserLocation.search), [browserLocation.search]);
-  const navigate = (path: string, params = new URLSearchParams(), replace = false) => {
+  const navigate = useCallback((path: string, params = new URLSearchParams(), replace = false) => {
     const url = `${path}${params.size ? `?${params.toString()}` : ""}`;
     window.history[replace ? "replaceState" : "pushState"]({}, "", url);
     setBrowserLocation({ pathname: path, search: params.size ? `?${params.toString()}` : "" });
-  };
+  }, []);
   const openAnalytics = (datasetId: number, versionNo: number) => {
-    navigate("/analytics", new URLSearchParams({ dataset_id: String(datasetId), version_no: String(versionNo) }));
+    navigate("/analytics", analyticsSearch([{ datasetId, versionNo }]));
   };
+  const openComparison = (datasets: AnalyticsDatasetSelection[]) => navigate("/analytics", analyticsSearch(datasets));
   const openJob = (jobId: number) => {
     const next = new URLSearchParams(searchParams);
     next.set("job_id", String(jobId));
@@ -87,12 +116,26 @@ export default function App() {
     next.delete("job_id");
     navigate(browserLocation.pathname, next, true);
   };
+  const visibleLeafPaths = permittedRoutes.flatMap((route) => route.routes?.length
+    ? route.routes.map((child) => child.path)
+    : [route.path]);
+  const parentDefaultPath = permittedRoutes
+    .find((route) => route.path === browserLocation.pathname)
+    ?.routes?.[0]?.path;
+  const redirectPath = browserLocation.pathname === "/"
+    ? visibleLeafPaths[0]
+    : parentDefaultPath;
+  useEffect(() => {
+    if (!loading && user && redirectPath && redirectPath !== browserLocation.pathname) {
+      navigate(redirectPath, new URLSearchParams(browserLocation.search), true);
+    }
+  }, [browserLocation.pathname, browserLocation.search, loading, navigate, redirectPath, user]);
   if (loading) return <div className="page-loading fullscreen"><Spin size="large" /></div>;
   if (!user) return <LoginPage />;
-  const visiblePaths = permittedRoutes.flatMap((route) => [route.path, ...(route.routes?.map((child) => child.path) ?? [])]);
-  const activePage = visiblePaths.includes(browserLocation.pathname) ? browserLocation.pathname : "/forbidden";
-  const analyticsDatasetId = positiveQueryInt(searchParams, "dataset_id");
-  const analyticsVersionNo = positiveQueryInt(searchParams, "version_no");
+  const resolvedPath = redirectPath ?? browserLocation.pathname;
+  const hiddenAnalyticsAllowed = resolvedPath === "/analytics" && can("DATASET_READ");
+  const activePage = visibleLeafPaths.includes(resolvedPath) || hiddenAnalyticsAllowed ? resolvedPath : "/forbidden";
+  const analyticsDatasets = parseAnalyticsDatasets(searchParams);
   const jobId = positiveQueryInt(searchParams, "job_id");
   return <ProLayout
     title="TMS"
@@ -110,6 +153,6 @@ export default function App() {
     actionsRender={() => []}
     token={{ sider: { colorMenuBackground: "#082f52", colorTextMenu: "#c8d8e5", colorTextMenuSelected: "#ffffff", colorBgMenuItemSelected: "#1167a8" } }}
   ><PageContainer title={false} className="app-content">
-    {activePage === "/engineering/cp" ? <StageDataWorkbench businessDomain="ENGINEERING" testStage="CP" onOpenAnalytics={openAnalytics} onOpenJob={openJob} /> : activePage === "/engineering/ft" ? <StageDataWorkbench businessDomain="ENGINEERING" testStage="FT" onOpenAnalytics={openAnalytics} onOpenJob={openJob} /> : activePage === "/production/cp" ? <StageDataWorkbench businessDomain="PRODUCTION" testStage="CP" onOpenAnalytics={openAnalytics} onOpenJob={openJob} /> : activePage === "/production/ft" ? <StageDataWorkbench businessDomain="PRODUCTION" testStage="FT" onOpenAnalytics={openAnalytics} onOpenJob={openJob} /> : activePage === "/quick-analysis" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><QuickAnalysisWorkbench /></Suspense> : activePage === "/capabilities" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><CapabilityCenter /></Suspense> : activePage === "/datasets/current" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><DatasetCurrentCatalog searchParams={searchParams} onSearchParamsChange={(params) => navigate("/datasets/current", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} /></Suspense> : activePage === "/analytics" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><AnalyticsWorkbench initialSelection={analyticsDatasetId && analyticsVersionNo ? { datasetId: analyticsDatasetId, versionNo: analyticsVersionNo } : undefined} onSelectionChange={openAnalytics} /></Suspense> : activePage === "/management/quality" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><QualityManagementDashboard searchParams={searchParams} onSearchParamsChange={(params) => navigate("/management/quality", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} canOpenAnalytics={can("ANALYSIS_RUN")} /></Suspense> : activePage === "/master-data/product-crosswalks" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><ProductCrosswalkWorkbench searchParams={searchParams} onSearchParamsChange={(params) => navigate("/master-data/product-crosswalks", params)} /></Suspense> : activePage === "/operations" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><OperationsConsistency /></Suspense> : activePage === "/users" ? <UserManagement /> : <Result status="403" title="无权访问" subTitle="当前 URL 对应的功能不存在，或当前账户没有访问权限。" />}
+    {activePage === "/engineering/cp" ? <StageDataWorkbench businessDomain="ENGINEERING" testStage="CP" searchParams={searchParams} onSearchParamsChange={(params) => navigate("/engineering/cp", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} /> : activePage === "/engineering/ft" ? <StageDataWorkbench businessDomain="ENGINEERING" testStage="FT" searchParams={searchParams} onSearchParamsChange={(params) => navigate("/engineering/ft", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} /> : activePage === "/production/cp" ? <StageDataWorkbench businessDomain="PRODUCTION" testStage="CP" searchParams={searchParams} onSearchParamsChange={(params) => navigate("/production/cp", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} /> : activePage === "/production/ft" ? <StageDataWorkbench businessDomain="PRODUCTION" testStage="FT" searchParams={searchParams} onSearchParamsChange={(params) => navigate("/production/ft", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} /> : activePage === "/quick-analysis" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><QuickAnalysisWorkbench /></Suspense> : activePage === "/datasets/current" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><DatasetCurrentCatalog searchParams={searchParams} onSearchParamsChange={(params) => navigate("/datasets/current", params)} onOpenAnalytics={openAnalytics} onOpenComparison={openComparison} onOpenJob={openJob} /></Suspense> : activePage === "/analytics" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><AnalyticsWorkbench datasets={analyticsDatasets} searchParams={searchParams} onSearchParamsChange={(params) => navigate("/analytics", params)} onOpenCatalog={() => navigate("/datasets/current")} /></Suspense> : activePage === "/management/quality" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><QualityManagementDashboard searchParams={searchParams} onSearchParamsChange={(params) => navigate("/management/quality", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} canOpenAnalytics={can("DATASET_READ")} /></Suspense> : activePage === "/master-data/product-crosswalks" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><ProductCrosswalkWorkbench searchParams={searchParams} onSearchParamsChange={(params) => navigate("/master-data/product-crosswalks", params)} /></Suspense> : activePage === "/operations" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><OperationsConsistency /></Suspense> : activePage === "/users" ? <UserManagement /> : <Result status="403" title="无权访问" subTitle="当前 URL 对应的功能不存在，或当前账户没有访问权限。" />}
   </PageContainer><JobDetailsDrawer jobId={jobId} open={jobId !== undefined} onClose={closeJob} onSelectJob={openJob} onOpenAnalytics={openAnalytics} /></ProLayout>;
 }

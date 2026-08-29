@@ -35,13 +35,19 @@ vi.mock("./features/jobs/JobDetailsDrawer", () => ({
   JobDetailsDrawer: ({ jobId, open }: { jobId?: number; open: boolean }) => open ? <div>{`job-drawer:${jobId}`}</div> : null,
 }));
 vi.mock("./features/analytics/AnalyticsWorkbench", () => ({
-  AnalyticsWorkbench: ({ initialSelection, onSelectionChange }: { initialSelection?: { datasetId: number; versionNo: number }; onSelectionChange?: (datasetId: number, versionNo: number) => void }) => <div>
-    <span>{`analytics:${initialSelection?.datasetId ?? "none"}/${initialSelection?.versionNo ?? "none"}`}</span>
-    <button onClick={() => onSelectionChange?.(21, 4)}>change-dataset</button>
+  AnalyticsWorkbench: ({ datasets, searchParams, onSearchParamsChange, onOpenCatalog }: {
+    datasets: Array<{ datasetId: number; versionNo: number }>;
+    searchParams: URLSearchParams;
+    onSearchParamsChange: (params: URLSearchParams) => void;
+    onOpenCatalog: () => void;
+  }) => <div>
+    <span>{`analytics:${datasets.length ? datasets.map((item) => `${item.datasetId}/${item.versionNo}`).join(",") : "none"}`}</span>
+    <span>{`analytics-search:${searchParams.toString()}`}</span>
+    <button onClick={() => { const next = new URLSearchParams(searchParams); next.append("lot_id", "LOT-8"); next.set("page", "1"); onSearchParamsChange(next); }}>analytics-filter</button>
+    <button onClick={onOpenCatalog}>analytics-catalog</button>
   </div>,
 }));
 vi.mock("./features/quick-analysis/QuickAnalysisWorkbench", () => ({ QuickAnalysisWorkbench: () => <div>quick-analysis</div> }));
-vi.mock("./features/capabilities/CapabilityCenter", () => ({ CapabilityCenter: () => <div>capabilities</div> }));
 vi.mock("./features/operations/OperationsConsistency", () => ({ OperationsConsistency: () => <div>operations</div> }));
 vi.mock("./features/management/QualityManagementDashboard", () => ({
   QualityManagementDashboard: ({ searchParams, onSearchParamsChange, onOpenAnalytics, onOpenJob, canOpenAnalytics }: {
@@ -64,9 +70,16 @@ vi.mock("./features/master-data/ProductCrosswalkWorkbench", () => ({
   </div>,
 }));
 vi.mock("./features/datasets/DatasetCurrentCatalog", () => ({
-  DatasetCurrentCatalog: ({ searchParams, onSearchParamsChange }: { searchParams: URLSearchParams; onSearchParamsChange: (params: URLSearchParams) => void }) => <div>
+  DatasetCurrentCatalog: ({ searchParams, onSearchParamsChange, onOpenAnalytics, onOpenComparison }: {
+    searchParams: URLSearchParams;
+    onSearchParamsChange: (params: URLSearchParams) => void;
+    onOpenAnalytics: (datasetId: number, versionNo: number) => void;
+    onOpenComparison?: (datasets: Array<{ datasetId: number; versionNo: number }>) => void;
+  }) => <div>
     <span>{`catalog:${searchParams.toString()}`}</span>
     <button onClick={() => onSearchParamsChange(new URLSearchParams({ page: "3", product_name: "NCE-MOS" }))}>catalog-page-3</button>
+    <button onClick={() => onOpenAnalytics(20, 3)}>catalog-analysis</button>
+    <button onClick={() => onOpenComparison?.([{ datasetId: 20, versionNo: 3 }, { datasetId: 21, versionNo: 4 }])}>catalog-comparison</button>
   </div>,
 }));
 
@@ -109,6 +122,32 @@ describe("App navigation and deep links", () => {
     vi.clearAllMocks();
   });
 
+  it.each([
+    [["DATASET_READ"], "/engineering/cp", "stage:ENGINEERING/CP"],
+    [["MANAGEMENT_READ"], "/management/quality", "quality::analytics-false"],
+    [["AUDIT_READ"], "/operations", "operations"],
+  ])("redirects the root route to the first permitted leaf for %j", async (permissions, expectedPath, expectedPage) => {
+    vi.mocked(useAuth).mockReturnValue(authFor(permissions));
+
+    render(<App />);
+
+    expect(await screen.findByText(expectedPage)).toBeInTheDocument();
+    await waitFor(() => expect(window.location.pathname).toBe(expectedPath));
+  }, 15_000);
+
+  it.each([
+    ["/engineering", "/engineering/cp", "stage:ENGINEERING/CP"],
+    ["/production", "/production/cp", "stage:PRODUCTION/CP"],
+  ])("redirects the permitted parent route %s to its first leaf", async (path, expectedPath, expectedPage) => {
+    vi.mocked(useAuth).mockReturnValue(authFor(["DATASET_READ"]));
+    window.history.replaceState({}, "", path);
+
+    render(<App />);
+
+    expect(await screen.findByText(expectedPage)).toBeInTheDocument();
+    await waitFor(() => expect(window.location.pathname).toBe(expectedPath));
+  }, 15_000);
+
   it("shows Dataset Current by permission and preserves catalog URL filters", async () => {
     vi.mocked(useAuth).mockReturnValue(authFor(["DATASET_READ"]));
     window.history.replaceState({}, "", "/datasets/current?page=2&page_size=50&product_name=NCE-IGBT");
@@ -116,7 +155,7 @@ describe("App navigation and deep links", () => {
     render(<App />);
 
     expect(await screen.findByText("catalog:page=2&page_size=50&product_name=NCE-IGBT")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Dataset Current" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "历史正式数据" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "运行一致性" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "catalog-page-3" }));
@@ -138,6 +177,66 @@ describe("App navigation and deep links", () => {
     window.dispatchEvent(new PopStateEvent("popstate"));
     expect(await screen.findByText("stage:PRODUCTION/FT")).toBeInTheDocument();
     expect(screen.getByText("job-drawer:92")).toBeInTheDocument();
+  }, 15_000);
+
+  it("allows DATASET_READ to open analytics without ANALYSIS_RUN", async () => {
+    vi.mocked(useAuth).mockReturnValue(authFor(["DATASET_READ"]));
+    window.history.replaceState({}, "", "/analytics?dataset_id=20&version_no=3");
+
+    render(<App />);
+
+    expect(await screen.findByText("analytics:20/3")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "分析图表" })).not.toBeInTheDocument();
+  }, 15_000);
+
+  it("opens one or multiple catalog selections in analytics and keeps URL-driven filters", async () => {
+    vi.mocked(useAuth).mockReturnValue(authFor(["DATASET_READ"]));
+    window.history.replaceState({}, "", "/datasets/current");
+
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "catalog-comparison" }));
+    expect(await screen.findByText("analytics:20/3,21/4")).toBeInTheDocument();
+    expect(window.location.search).toBe("?dataset=20%3A3&dataset=21%3A4");
+
+    fireEvent.click(screen.getByRole("button", { name: "analytics-filter" }));
+    await waitFor(() => expect(window.location.search).toContain("lot_id=LOT-8"));
+    expect(window.location.search).toContain("dataset=20%3A3&dataset=21%3A4");
+    expect(await screen.findByText(/analytics-search:.*lot_id=LOT-8/)).toBeInTheDocument();
+  }, 15_000);
+
+  it("caps a modern analytics deep link at eight unique Dataset selections", async () => {
+    vi.mocked(useAuth).mockReturnValue(authFor(["DATASET_READ"]));
+    const params = new URLSearchParams();
+    for (let datasetId = 1; datasetId <= 9; datasetId += 1) params.append("dataset", `${datasetId}:1`);
+    window.history.replaceState({}, "", `/analytics?${params}`);
+
+    render(<App />);
+
+    expect(await screen.findByText("analytics:1/1,2/1,3/1,4/1,5/1,6/1,7/1,8/1")).toBeInTheDocument();
+    expect(screen.queryByText(/9\/1/)).not.toBeInTheDocument();
+  }, 15_000);
+
+  it("keeps an explicit analytics URL forbidden without DATASET_READ", async () => {
+    vi.mocked(useAuth).mockReturnValue(authFor(["ANALYSIS_RUN"]));
+    window.history.replaceState({}, "", "/analytics?dataset_id=20&version_no=3");
+
+    render(<App />);
+
+    expect(await screen.findByText("无权访问")).toBeInTheDocument();
+    expect(screen.queryByText(/^analytics:/)).not.toBeInTheDocument();
+    expect(window.location.pathname).toBe("/analytics");
+  }, 15_000);
+
+  it("removes the standalone capability route from the product navigation", async () => {
+    vi.mocked(useAuth).mockReturnValue(authFor(["DATASET_READ"]));
+    window.history.replaceState({}, "", "/capabilities");
+
+    render(<App />);
+
+    expect(await screen.findByText("无权访问")).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "能力与定制工具" })).not.toBeInTheDocument();
+    expect(window.location.pathname).toBe("/capabilities");
   }, 15_000);
 
   it.each([
@@ -167,7 +266,7 @@ describe("App navigation and deep links", () => {
   }, 15_000);
 
   it("exposes quality management and Crosswalk to MANAGEMENT_READ and preserves deep links", async () => {
-    vi.mocked(useAuth).mockReturnValue(authFor(["MANAGEMENT_READ", "ANALYSIS_RUN"]));
+    vi.mocked(useAuth).mockReturnValue(authFor(["MANAGEMENT_READ", "DATASET_READ"]));
     window.history.replaceState({}, "", "/management/quality?from_utc=2026-08-01T00%3A00%3A00Z&product_name=NCE-MOS");
 
     render(<App />);

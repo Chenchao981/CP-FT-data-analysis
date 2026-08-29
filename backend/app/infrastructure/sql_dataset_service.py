@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from typing import Any
 
@@ -15,6 +16,13 @@ from app.domain.datasets import (
     CreateDatasetRequest,
     CreateDatasetVersionRequest,
     DatasetChartData,
+    DatasetComparisonItem,
+    DatasetComparisonRequest,
+    DatasetComparisonResult,
+    DatasetDetailMeasurement,
+    DatasetDetailPage,
+    DatasetDetailRow,
+    DatasetParameterStatistic,
     DatasetRecord,
     DatasetResultSummary,
     DatasetVersionRecord,
@@ -27,6 +35,52 @@ from app.domain.datasets import (
     WaferOption,
     WaferYieldPoint,
 )
+
+_CURRENT_DATA_READ_GRANT = """
+EXISTS(
+    SELECT 1
+    FROM iam.user_role scope_ur
+    JOIN iam.role scope_r
+      ON scope_r.role_id=scope_ur.role_id AND scope_r.active=1
+    JOIN iam.data_scope_grant scope_g
+      ON scope_g.role_id=scope_ur.role_id AND scope_g.user_id IS NULL
+    WHERE scope_ur.user_id=:user_id
+      AND scope_g.scope_type='GLOBAL'
+      AND scope_g.scope_key=N'TMS_CURRENT_DATA'
+      AND scope_g.permission_mode='READ'
+      AND (scope_g.expires_at_utc IS NULL
+           OR scope_g.expires_at_utc>SYSUTCDATETIME())
+)
+"""
+
+_CURRENT_PUBLISHED_DATASET_VERSION = """
+EXISTS(
+    SELECT 1
+    FROM dataset.dataset_version access_dv
+    WHERE access_dv.dataset_id=d.dataset_id
+      AND access_dv.status='PUBLISHED'
+      AND access_dv.is_current=1
+)
+"""
+
+_CURRENT_PUBLISHED_REQUESTED_VERSION = """
+EXISTS(
+    SELECT 1
+    FROM dataset.dataset_version access_dv
+    WHERE access_dv.dataset_id=d.dataset_id
+      AND access_dv.version_no=:access_version_no
+      AND access_dv.status='PUBLISHED'
+      AND access_dv.is_current=1
+)
+"""
+
+_MAX_SQL_SERVER_OFFSET = 2_147_483_647
+_DETAIL_FILTER_LIMITS = {
+    "lot_ids": 50,
+    "wafer_ids": 100,
+    "bin_codes": 50,
+    "parameters": 20,
+}
 
 
 def _dataset(row: Mapping[str, Any]) -> DatasetRecord:
@@ -55,6 +109,140 @@ def _version(row: Mapping[str, Any], *, run_count: int) -> DatasetVersionRecord:
     )
 
 
+def _wafer_yield(row: Mapping[str, Any]) -> WaferYieldPoint:
+    pass_count = int(row["pass_count"] or 0)
+    fail_count = int(row["fail_count"] or 0)
+    unknown_count = int(row["unknown_count"] or 0)
+    abort_count = int(row["abort_count"] or 0)
+    known_yield_denominator = pass_count + fail_count
+    return WaferYieldPoint(
+        lot_id=str(row["lot_id"]),
+        wafer_id=str(row["wafer_id"] or ""),
+        unit_count=int(row["unit_count"]),
+        pass_count=pass_count,
+        fail_count=fail_count,
+        unknown_count=unknown_count,
+        abort_count=abort_count,
+        known_yield_denominator=known_yield_denominator,
+        yield_rate=(pass_count / known_yield_denominator)
+        if known_yield_denominator
+        else None,
+    )
+
+
+def _normalized_filter_values(
+    values: tuple[str, ...], *, field: str
+) -> tuple[str, ...]:
+    limit = _DETAIL_FILTER_LIMITS[field]
+    if len(values) > limit:
+        raise DomainError(
+            "ANALYSIS_FILTER_LIMIT_EXCEEDED",
+            f"{field} exceeds the maximum of {limit} values",
+            422,
+        )
+    normalized = tuple(str(value).strip() for value in values)
+    if any(not value or len(value) > 200 for value in normalized):
+        raise DomainError(
+            "ANALYSIS_FILTER_INVALID",
+            f"{field} contains an empty or oversized value",
+            422,
+        )
+    if len(normalized) != len(set(normalized)):
+        raise DomainError(
+            "ANALYSIS_FILTER_INVALID",
+            f"{field} contains duplicate values",
+            422,
+        )
+    return normalized
+
+
+def _condition_text(value: object, *, parameter: str) -> str | None:
+    if value is None or not str(value).strip():
+        return None
+    try:
+        decoded = json.loads(str(value))
+    except (TypeError, ValueError) as exc:
+        raise DomainError(
+            "ANALYSIS_SPEC_CONTRACT_INVALID",
+            f"parameter {parameter} has invalid test-condition metadata",
+            409,
+        ) from exc
+    if not isinstance(decoded, dict):
+        raise DomainError(
+            "ANALYSIS_SPEC_CONTRACT_INVALID",
+            f"parameter {parameter} has invalid test-condition metadata",
+            409,
+        )
+    raw_text = decoded.get("text")
+    if raw_text is None:
+        return None
+    if not isinstance(raw_text, str):
+        raise DomainError(
+            "ANALYSIS_SPEC_CONTRACT_INVALID",
+            f"parameter {parameter} has invalid test-condition metadata",
+            409,
+        )
+    normalized = " ".join(raw_text.split())
+    return normalized or None
+
+
+def _optional_finite_float(value: object, *, field: str) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise DomainError(
+            "ANALYSIS_NUMERIC_CONTRACT_INVALID",
+            f"{field} is not numeric",
+            409,
+        ) from exc
+    if not math.isfinite(numeric):
+        raise DomainError(
+            "ANALYSIS_NUMERIC_CONTRACT_INVALID",
+            f"{field} is not a finite numeric value",
+            409,
+        )
+    return numeric
+
+
+def _analysis_filter_sql(
+    *,
+    lot_ids: tuple[str, ...] = (),
+    wafer_ids: tuple[str, ...] = (),
+    bin_codes: tuple[str, ...] = (),
+) -> tuple[str, dict[str, object], tuple[str, ...]]:
+    clauses: list[str] = []
+    parameters: dict[str, object] = {}
+    expanding: list[str] = []
+    if lot_ids:
+        clauses.append("tr.lot_id IN :lot_ids")
+        parameters["lot_ids"] = lot_ids
+        expanding.append("lot_ids")
+    if wafer_ids:
+        clauses.append("COALESCE(ur.wafer_id,tr.wafer_id) IN :wafer_ids")
+        parameters["wafer_ids"] = wafer_ids
+        expanding.append("wafer_ids")
+    if bin_codes:
+        clauses.append("COALESCE(ur.soft_bin,ur.hard_bin,N'UNKNOWN') IN :bin_codes")
+        parameters["bin_codes"] = bin_codes
+        expanding.append("bin_codes")
+    return (
+        " AND " + " AND ".join(clauses) if clauses else "",
+        parameters,
+        tuple(expanding),
+    )
+
+
+def _statement(sql: str, expanding: tuple[str, ...] = ()):
+    statement = text(sql)
+    if expanding:
+        statement = statement.bindparams(
+            *(bindparam(name, expanding=True) for name in expanding)
+        )
+    return statement
+
+
 class SqlDatasetService:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
@@ -70,7 +258,11 @@ class SqlDatasetService:
                     text(
                         "SELECT d.dataset_id,d.dataset_code,d.dataset_name,d.dataset_type,d.test_stage,"
                         "d.supplier_id,d.product_id,d.owner_user_id FROM dataset.dataset d "
-                        "WHERE :is_admin=1 OR d.owner_user_id=:user_id "
+                        "WHERE :is_admin=1 OR d.owner_user_id=:user_id OR ("
+                        + _CURRENT_DATA_READ_GRANT
+                        + " AND "
+                        + _CURRENT_PUBLISHED_DATASET_VERSION
+                        + ") "
                         "ORDER BY d.dataset_id DESC"
                     ),
                     params,
@@ -81,11 +273,46 @@ class SqlDatasetService:
         return tuple(_dataset(row) for row in rows)
 
     def assert_dataset_access(
-        self, dataset_id: int, principal: Principal, mode: str = "READ"
+        self,
+        dataset_id: int,
+        principal: Principal,
+        mode: str = "READ",
+        *,
+        version_no: int | None = None,
     ) -> None:
-        if not any(
-            item.dataset_id == dataset_id for item in self.list_datasets(principal)
-        ):
+        normalized_mode = mode.strip().upper()
+        if normalized_mode not in {"READ", "WRITE"}:
+            raise ValueError("dataset access mode must be READ or WRITE")
+        scope = ":is_admin=1 OR d.owner_user_id=:user_id"
+        if normalized_mode == "READ":
+            current_version_scope = (
+                _CURRENT_PUBLISHED_REQUESTED_VERSION
+                if version_no is not None
+                else _CURRENT_PUBLISHED_DATASET_VERSION
+            )
+            scope += (
+                " OR ("
+                + _CURRENT_DATA_READ_GRANT
+                + " AND "
+                + current_version_scope
+                + ")"
+            )
+        parameters: dict[str, object] = {
+            "dataset_id": dataset_id,
+            "user_id": principal.user_id,
+            "is_admin": "SYSTEM_ADMIN" in principal.roles,
+        }
+        if normalized_mode == "READ" and version_no is not None:
+            parameters["access_version_no"] = version_no
+        with self._engine.connect() as connection:
+            found = connection.execute(
+                text(
+                    "SELECT TOP (1) d.dataset_id FROM dataset.dataset d "
+                    "WHERE d.dataset_id=:dataset_id AND (" + scope + ")"
+                ),
+                parameters,
+            ).scalar_one_or_none()
+        if found is None:
             raise DomainError("DATASET_ACCESS_DENIED", "无权访问该数据集", 403)
 
     def create_dataset(self, request: CreateDatasetRequest) -> DatasetRecord:
@@ -150,6 +377,14 @@ class SqlDatasetService:
             context = self._version_context(
                 connection, dataset_id, version_no, lock=False
             )
+            if str(context["status"]) != "PUBLISHED" or not bool(
+                context["is_current"]
+            ):
+                raise DomainError(
+                    "ANALYSIS_VERSION_NOT_CURRENT",
+                    "图表只允许查看当前已发布的正式版本",
+                    409,
+                )
             if str(context["test_stage"]) == "FT":
                 return self._get_ft_chart_data(
                     connection,
@@ -174,7 +409,10 @@ class SqlDatasetService:
                 connection.execute(
                     text(
                         "SELECT tr.lot_id,tr.wafer_id,COUNT_BIG(*) AS unit_count,"
-                        "SUM(CASE WHEN ur.overall_result='PASS' THEN 1 ELSE 0 END) AS pass_count "
+                        "SUM(CASE WHEN ur.overall_result='PASS' THEN CONVERT(bigint,1) ELSE 0 END) AS pass_count,"
+                        "SUM(CASE WHEN ur.overall_result='FAIL' THEN CONVERT(bigint,1) ELSE 0 END) AS fail_count,"
+                        "SUM(CASE WHEN ur.overall_result='UNKNOWN' THEN CONVERT(bigint,1) ELSE 0 END) AS unknown_count,"
+                        "SUM(CASE WHEN ur.overall_result='ABORT' THEN CONVERT(bigint,1) ELSE 0 END) AS abort_count "
                         + version_join
                         + "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
                         "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no"
@@ -221,19 +459,7 @@ class SqlDatasetService:
                     .all()
                 )
         total_bins = sum(int(row["unit_count"]) for row in bin_rows)
-        wafer_yield = tuple(
-            WaferYieldPoint(
-                lot_id=str(row["lot_id"]),
-                wafer_id=str(row["wafer_id"] or ""),
-                unit_count=int(row["unit_count"]),
-                pass_count=int(row["pass_count"] or 0),
-                fail_count=int(row["unit_count"]) - int(row["pass_count"] or 0),
-                yield_rate=(int(row["pass_count"] or 0) / int(row["unit_count"]))
-                if int(row["unit_count"])
-                else 0.0,
-            )
-            for row in yield_rows
-        )
+        wafer_yield = tuple(_wafer_yield(row) for row in yield_rows)
         return DatasetChartData(
             dataset_id=dataset_id,
             version_no=version_no,
@@ -273,6 +499,472 @@ class SqlDatasetService:
             ft_parameter_points=(),
             ft_total_point_count=0,
             ft_sampled=False,
+        )
+
+    def compare(self, request: DatasetComparisonRequest) -> DatasetComparisonResult:
+        refs = tuple(request.datasets)
+        contexts: list[Mapping[str, Any]] = []
+        items: list[DatasetComparisonItem] = []
+        parameter_signatures: dict[str, set[tuple[object, ...]]] = {
+            name: set() for name in request.parameters
+        }
+        parameter_presence: dict[str, int] = {name: 0 for name in request.parameters}
+        with self._engine.connect() as connection:
+            for ref in refs:
+                context = self._version_context(
+                    connection, ref.dataset_id, ref.version_no, lock=False
+                )
+                if str(context["status"]) != "PUBLISHED" or not bool(
+                    context["is_current"]
+                ):
+                    raise DomainError(
+                        "ANALYSIS_VERSION_NOT_CURRENT",
+                        "比较分析只允许选择当前已发布的正式版本",
+                        409,
+                    )
+                contexts.append(context)
+            stages = {str(context["test_stage"]) for context in contexts}
+            if len(stages) != 1:
+                raise DomainError(
+                    "ANALYSIS_STAGE_INCOMPATIBLE",
+                    "CP 与 FT 数据不能放入同一次比较",
+                    409,
+                )
+            stage = next(iter(stages))
+            if len(contexts) > 1 and stage == "CP":
+                spec_ids = {context["spec_set_id"] for context in contexts}
+                if None in spec_ids or len(spec_ids) != 1:
+                    raise DomainError(
+                        "ANALYSIS_SPEC_INCOMPATIBLE",
+                        "所选 CP 数据的 Spec 不一致或无法证明一致，已阻止合并比较",
+                        409,
+                    )
+
+            filter_sql, filter_parameters, expanding = _analysis_filter_sql(
+                lot_ids=tuple(request.lot_ids),
+                wafer_ids=tuple(request.wafer_ids),
+                bin_codes=tuple(request.bin_codes),
+            )
+            version_join = (
+                " FROM dataset.dataset_version dv "
+                "JOIN dataset.dataset_version_run dvr ON dvr.dataset_version_id=dv.dataset_version_id "
+                "JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
+                "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
+            )
+            for ref, context in zip(refs, contexts, strict=True):
+                product_name = (
+                    str(context["product_name"]).strip() or None
+                    if context["product_name"] is not None
+                    else None
+                )
+                parameters: dict[str, object] = {
+                    "dataset_id": ref.dataset_id,
+                    "version_no": ref.version_no,
+                    **filter_parameters,
+                }
+                aggregate = (
+                    connection.execute(
+                        _statement(
+                            "SELECT COUNT_BIG(*) AS unit_count,"
+                            "SUM(CASE WHEN ur.overall_result='PASS' THEN CONVERT(bigint,1) ELSE 0 END) AS pass_count,"
+                            "SUM(CASE WHEN ur.overall_result='FAIL' THEN CONVERT(bigint,1) ELSE 0 END) AS fail_count,"
+                            "SUM(CASE WHEN ur.overall_result='UNKNOWN' THEN CONVERT(bigint,1) ELSE 0 END) AS unknown_count,"
+                            "SUM(CASE WHEN ur.overall_result='ABORT' THEN CONVERT(bigint,1) ELSE 0 END) AS abort_count"
+                            + version_join
+                            + "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no"
+                            + filter_sql,
+                            expanding,
+                        ),
+                        parameters,
+                    )
+                    .mappings()
+                    .one()
+                )
+                statistics: list[DatasetParameterStatistic] = []
+                if request.parameters:
+                    parameter_params = {
+                        **parameters,
+                        "analysis_parameters": tuple(request.parameters),
+                    }
+                    parameter_expanding = expanding + ("analysis_parameters",)
+                    rows = (
+                        connection.execute(
+                            _statement(
+                                "SELECT tid.raw_item_name,tid.unit_code,tid.program_lsl,"
+                                "tid.program_usl,tid.condition_json,COUNT_BIG(*) AS row_count,"
+                                "SUM(CASE WHEN m.value_numeric IS NULL THEN CONVERT(bigint,1) ELSE 0 END) AS missing_count,"
+                                "MIN(m.value_numeric) AS minimum,MAX(m.value_numeric) AS maximum,"
+                                "AVG(m.value_numeric) AS average"
+                                + version_join
+                                + "JOIN test.measurement m ON m.unit_id=ur.unit_id "
+                                "JOIN mdm.test_item_definition tid ON tid.test_item_id=m.test_item_id "
+                                "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no"
+                                + filter_sql
+                                + " AND tid.raw_item_name IN :analysis_parameters "
+                                "GROUP BY tid.raw_item_name,tid.unit_code,tid.program_lsl,"
+                                "tid.program_usl,tid.condition_json ORDER BY tid.raw_item_name",
+                                parameter_expanding,
+                            ),
+                            parameter_params,
+                        )
+                        .mappings()
+                        .all()
+                    )
+                    present: set[str] = set()
+                    for row in rows:
+                        name = str(row["raw_item_name"])
+                        present.add(name)
+                        condition = _condition_text(
+                            row["condition_json"], parameter=name
+                        )
+                        unit = (
+                            str(row["unit_code"]).strip() or None
+                            if row["unit_code"] is not None
+                            else None
+                        )
+                        signature = (
+                            unit,
+                            _optional_finite_float(
+                                row["program_lsl"], field=f"{name} LSL"
+                            ),
+                            _optional_finite_float(
+                                row["program_usl"], field=f"{name} USL"
+                            ),
+                            condition,
+                        )
+                        row_count = int(row["row_count"] or 0)
+                        missing_count = int(row["missing_count"] or 0)
+                        if (
+                            row_count < 0
+                            or missing_count < 0
+                            or missing_count > row_count
+                        ):
+                            raise DomainError(
+                                "ANALYSIS_AGGREGATE_CONTRACT_INVALID",
+                                f"parameter {name} has invalid aggregate counts",
+                                409,
+                            )
+                        parameter_signatures.setdefault(name, set()).add(signature)
+                        statistics.append(
+                            DatasetParameterStatistic(
+                                name=name,
+                                unit=signature[0],
+                                lsl=signature[1],
+                                usl=signature[2],
+                                test_condition=condition,
+                                measured_count=row_count - missing_count,
+                                missing_count=missing_count,
+                                minimum=_optional_finite_float(
+                                    row["minimum"], field=f"{name} minimum"
+                                ),
+                                maximum=_optional_finite_float(
+                                    row["maximum"], field=f"{name} maximum"
+                                ),
+                                average=_optional_finite_float(
+                                    row["average"], field=f"{name} average"
+                                ),
+                            )
+                        )
+                    for name in present:
+                        parameter_presence[name] = parameter_presence.get(name, 0) + 1
+                unit_count = int(aggregate["unit_count"] or 0)
+                passed = int(aggregate["pass_count"] or 0)
+                failed = int(aggregate["fail_count"] or 0)
+                unknown = int(aggregate["unknown_count"] or 0)
+                aborted = int(aggregate["abort_count"] or 0)
+                counts = (unit_count, passed, failed, unknown, aborted)
+                if any(value < 0 for value in counts) or (
+                    passed + failed + unknown + aborted != unit_count
+                ):
+                    raise DomainError(
+                        "ANALYSIS_AGGREGATE_CONTRACT_INVALID",
+                        "PASS/FAIL/UNKNOWN/ABORT counts do not reconcile to units",
+                        409,
+                    )
+                known = passed + failed
+                items.append(
+                    DatasetComparisonItem(
+                        dataset_id=ref.dataset_id,
+                        version_no=ref.version_no,
+                        test_stage=stage,
+                        product_name=product_name,
+                        unit_count=unit_count,
+                        pass_count=passed,
+                        fail_count=failed,
+                        unknown_count=unknown,
+                        abort_count=aborted,
+                        known_yield_denominator=known,
+                        yield_rate=passed / known if known else None,
+                        parameter_statistics=tuple(statistics),
+                    )
+                )
+
+        if request.parameters:
+            incompatible = [
+                name
+                for name in request.parameters
+                if parameter_presence.get(name, 0) != len(refs)
+                or len(parameter_signatures.get(name, set())) != 1
+            ]
+            if incompatible:
+                raise DomainError(
+                    "ANALYSIS_PARAMETER_INCOMPATIBLE",
+                    "所选参数在各 Dataset 中缺失，或单位/Spec/测试条件不一致",
+                    409,
+                    details=[{"parameters": incompatible}],
+                )
+        compatibility = (
+            "SINGLE_DATASET"
+            if len(refs) == 1
+            else "COMPATIBLE"
+            if (stage == "CP" or request.parameters)
+            else "NOT_EVALUATED"
+        )
+        return DatasetComparisonResult(
+            test_stage=stage,
+            spec_compatibility=compatibility,
+            lot_ids=tuple(request.lot_ids),
+            wafer_ids=tuple(request.wafer_ids),
+            bin_codes=tuple(request.bin_codes),
+            parameters=tuple(request.parameters),
+            items=tuple(items),
+        )
+
+    def get_detail_page(
+        self,
+        dataset_id: int,
+        version_no: int,
+        *,
+        page: int,
+        page_size: int,
+        lot_ids: tuple[str, ...] = (),
+        wafer_ids: tuple[str, ...] = (),
+        bin_codes: tuple[str, ...] = (),
+        parameters: tuple[str, ...] = (),
+    ) -> DatasetDetailPage:
+        if (
+            not isinstance(page, int)
+            or isinstance(page, bool)
+            or not isinstance(page_size, int)
+            or isinstance(page_size, bool)
+            or page < 1
+            or page_size < 1
+            or page_size > 200
+            or (page - 1) * page_size > _MAX_SQL_SERVER_OFFSET
+        ):
+            raise DomainError(
+                "ANALYSIS_PAGE_INVALID", "明细页码或每页行数超出允许范围", 422
+            )
+        lot_ids = _normalized_filter_values(lot_ids, field="lot_ids")
+        wafer_ids = _normalized_filter_values(wafer_ids, field="wafer_ids")
+        bin_codes = _normalized_filter_values(bin_codes, field="bin_codes")
+        parameters = _normalized_filter_values(parameters, field="parameters")
+        filter_sql, filter_parameters, expanding = _analysis_filter_sql(
+            lot_ids=lot_ids, wafer_ids=wafer_ids, bin_codes=bin_codes
+        )
+        params: dict[str, object] = {
+            "dataset_id": dataset_id,
+            "version_no": version_no,
+            "offset": (page - 1) * page_size,
+            "page_size": page_size,
+            **filter_parameters,
+        }
+        version_join = (
+            " FROM dataset.dataset_version dv "
+            "JOIN dataset.dataset_version_run dvr ON dvr.dataset_version_id=dv.dataset_version_id "
+            "JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
+        )
+        unit_from = version_join + "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
+        version_where = (
+            "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no"
+        )
+        with self._engine.connect() as connection:
+            context = self._version_context(connection, dataset_id, version_no, lock=False)
+            if str(context["status"]) != "PUBLISHED" or not bool(
+                context["is_current"]
+            ):
+                raise DomainError(
+                    "ANALYSIS_VERSION_NOT_CURRENT",
+                    "只能查看当前已发布正式版本的明细",
+                    409,
+                )
+            lot_options = tuple(
+                str(row[0])
+                for row in connection.execute(
+                    text(
+                        "SELECT DISTINCT tr.lot_id"
+                        + version_join
+                        + version_where
+                        + " AND tr.lot_id IS NOT NULL"
+                        + " ORDER BY tr.lot_id"
+                    ),
+                    params,
+                ).all()
+            )
+            wafer_options = tuple(
+                str(row[0])
+                for row in connection.execute(
+                    text(
+                        "SELECT DISTINCT COALESCE(ur.wafer_id,tr.wafer_id) AS wafer_id"
+                        + unit_from
+                        + version_where
+                        + " AND COALESCE(ur.wafer_id,tr.wafer_id) IS NOT NULL "
+                        "ORDER BY wafer_id"
+                    ),
+                    params,
+                ).all()
+            )
+            bin_options = tuple(
+                str(row[0])
+                for row in connection.execute(
+                    text(
+                        "SELECT DISTINCT COALESCE(ur.soft_bin,ur.hard_bin,N'UNKNOWN') AS bin_code"
+                        + unit_from
+                        + version_where
+                        + " ORDER BY bin_code"
+                    ),
+                    params,
+                ).all()
+            )
+            parameter_options = tuple(
+                str(row[0])
+                for row in connection.execute(
+                    text(
+                        "SELECT DISTINCT tid.raw_item_name"
+                        + version_join
+                        + "JOIN mdm.test_item_definition tid ON tid.program_version_id=tr.program_version_id "
+                        + version_where
+                        + " AND tid.is_analysis_parameter=1 AND tid.raw_item_name IS NOT NULL "
+                        "ORDER BY tid.raw_item_name"
+                    ),
+                    params,
+                ).all()
+            )
+            unavailable_parameters = tuple(
+                parameter
+                for parameter in parameters
+                if parameter not in set(parameter_options)
+            )
+            if unavailable_parameters:
+                raise DomainError(
+                    "ANALYSIS_PARAMETER_NOT_FOUND",
+                    "one or more selected parameters are unavailable in this version",
+                    422,
+                    details=[{"parameters": list(unavailable_parameters)}],
+                )
+            total = int(
+                connection.execute(
+                    _statement(
+                        "SELECT COUNT_BIG(*)" + unit_from + version_where + filter_sql,
+                        expanding,
+                    ),
+                    params,
+                ).scalar_one()
+            )
+            unit_rows = (
+                connection.execute(
+                    _statement(
+                        "SELECT ur.unit_id,ur.logical_unit_key,tr.lot_id,"
+                        "COALESCE(ur.wafer_id,tr.wafer_id) AS wafer_id,"
+                        "ur.x_coord,ur.y_coord,ur.soft_bin,ur.hard_bin,"
+                        "ur.overall_result,ur.source_row_no"
+                        + unit_from
+                        + version_where
+                        + filter_sql
+                        + " ORDER BY tr.run_id,COALESCE(ur.unit_sequence,ur.unit_id),ur.unit_id "
+                        "OFFSET :offset ROWS FETCH NEXT :page_size ROWS ONLY",
+                        expanding,
+                    ),
+                    params,
+                )
+                .mappings()
+                .all()
+            )
+            measurements_by_unit: dict[int, list[DatasetDetailMeasurement]] = {}
+            if unit_rows and parameters:
+                unit_ids = tuple(int(row["unit_id"]) for row in unit_rows)
+                measurement_rows = (
+                    connection.execute(
+                        _statement(
+                            "SELECT m.unit_id,tid.raw_item_name,m.value_numeric,m.value_text,"
+                            "m.measurement_status,tid.unit_code,tid.program_lsl,tid.program_usl "
+                            "FROM test.measurement m JOIN mdm.test_item_definition tid "
+                            "ON tid.test_item_id=m.test_item_id "
+                            "WHERE m.unit_id IN :unit_ids AND tid.raw_item_name IN :detail_parameters "
+                            "ORDER BY m.unit_id,tid.sequence_no",
+                            ("unit_ids", "detail_parameters"),
+                        ),
+                        {
+                            "unit_ids": unit_ids,
+                            "detail_parameters": parameters,
+                        },
+                    )
+                    .mappings()
+                    .all()
+                )
+                for row in measurement_rows:
+                    unit_id = int(row["unit_id"])
+                    measurements_by_unit.setdefault(unit_id, []).append(
+                        DatasetDetailMeasurement(
+                            parameter=str(row["raw_item_name"]),
+                            value_numeric=_optional_finite_float(
+                                row["value_numeric"],
+                                field=f"{row['raw_item_name']} measurement",
+                            ),
+                            value_text=str(row["value_text"])
+                            if row["value_text"] is not None
+                            else None,
+                            status=str(row["measurement_status"]),
+                            unit=str(row["unit_code"])
+                            if row["unit_code"] is not None
+                            else None,
+                            lsl=_optional_finite_float(
+                                row["program_lsl"],
+                                field=f"{row['raw_item_name']} LSL",
+                            ),
+                            usl=_optional_finite_float(
+                                row["program_usl"],
+                                field=f"{row['raw_item_name']} USL",
+                            ),
+                        )
+                    )
+        return DatasetDetailPage(
+            dataset_id=dataset_id,
+            version_no=version_no,
+            test_stage=str(context["test_stage"]),
+            page=page,
+            page_size=page_size,
+            total=total,
+            lot_options=lot_options,
+            wafer_options=wafer_options,
+            bin_options=bin_options,
+            parameter_options=parameter_options,
+            items=tuple(
+                DatasetDetailRow(
+                    unit_id=int(row["unit_id"]),
+                    logical_unit_key=str(row["logical_unit_key"]),
+                    lot_id=(
+                        str(row["lot_id"]) if row["lot_id"] is not None else None
+                    ),
+                    wafer_id=str(row["wafer_id"])
+                    if row["wafer_id"] is not None
+                    else None,
+                    x=int(row["x_coord"]) if row["x_coord"] is not None else None,
+                    y=int(row["y_coord"]) if row["y_coord"] is not None else None,
+                    soft_bin=str(row["soft_bin"])
+                    if row["soft_bin"] is not None
+                    else None,
+                    hard_bin=str(row["hard_bin"])
+                    if row["hard_bin"] is not None
+                    else None,
+                    overall_result=str(row["overall_result"]),
+                    source_row_no=int(row["source_row_no"])
+                    if row["source_row_no"] is not None
+                    else None,
+                    measurements=tuple(measurements_by_unit.get(int(row["unit_id"]), ())),
+                )
+                for row in unit_rows
+            ),
         )
 
     def _get_ft_chart_data(
@@ -625,21 +1317,53 @@ class SqlDatasetService:
         return found
 
     def _version_context(
-        self, connection: Connection, dataset_id: int, version_no: int, *, lock: bool
+        self,
+        connection: Connection,
+        dataset_id: int,
+        version_no: int,
+        *,
+        lock: bool,
+        principal: Principal | None = None,
     ) -> Mapping[str, Any]:
         lock_hint = " WITH (UPDLOCK,HOLDLOCK)" if lock else ""
+        access_clause = ""
+        parameters: dict[str, object] = {
+            "dataset_id": dataset_id,
+            "version_no": version_no,
+        }
+        if principal is not None:
+            access_clause = (
+                " AND (:is_admin=1 OR d.owner_user_id=:user_id OR ("
+                + _CURRENT_DATA_READ_GRANT
+                + " AND dv.status='PUBLISHED' AND dv.is_current=1))"
+            )
+            parameters.update(
+                {
+                    "user_id": principal.user_id,
+                    "is_admin": "SYSTEM_ADMIN" in principal.roles,
+                }
+            )
         row = (
             connection.execute(
                 text(
                     "SELECT dv.dataset_version_id,dv.dataset_id,dv.version_no,"
                     "dv.input_batch_id,dv.canonical_model_version,dv.status,dv.is_current,"
-                    "d.supplier_id,d.product_id,d.test_stage,p.product_name,dv.spec_set_id "
+                    "d.supplier_id,d.product_id,d.test_stage,"
+                    "COALESCE(product_enrichment.value_text,p.product_name) AS product_name,"
+                    "dv.spec_set_id "
                     f"FROM dataset.dataset_version dv{lock_hint} "
                     "JOIN dataset.dataset d ON d.dataset_id=dv.dataset_id "
                     "LEFT JOIN mdm.product p ON p.product_id=d.product_id "
+                    "OUTER APPLY(SELECT TOP (1) fe.value_text FROM "
+                    "ingestion.field_enrichment fe WHERE "
+                    "fe.import_batch_id=dv.input_batch_id AND fe.source_file_id IS NULL "
+                    "AND fe.test_stage=d.test_stage AND fe.field_code='PRODUCT_CODE' "
+                    "AND fe.action='FILL' AND fe.is_current=1 "
+                    "ORDER BY fe.enrichment_id DESC) product_enrichment "
                     "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no"
+                    + access_clause
                 ),
-                {"dataset_id": dataset_id, "version_no": version_no},
+                parameters,
             )
             .mappings()
             .one_or_none()
@@ -651,9 +1375,21 @@ class SqlDatasetService:
         return row
 
     def _evaluate(
-        self, connection: Connection, dataset_id: int, version_no: int, *, lock: bool
+        self,
+        connection: Connection,
+        dataset_id: int,
+        version_no: int,
+        *,
+        lock: bool,
+        principal: Principal | None = None,
     ) -> DqGateResult:
-        context = self._version_context(connection, dataset_id, version_no, lock=lock)
+        context = self._version_context(
+            connection,
+            dataset_id,
+            version_no,
+            lock=lock,
+            principal=principal,
+        )
         version_id = int(context["dataset_version_id"])
         run_rows = (
             connection.execute(
@@ -778,9 +1514,20 @@ class SqlDatasetService:
             reasons=tuple(reasons),
         )
 
-    def evaluate_gate(self, dataset_id: int, version_no: int) -> DqGateResult:
+    def evaluate_gate(
+        self,
+        dataset_id: int,
+        version_no: int,
+        principal: Principal,
+    ) -> DqGateResult:
         with self._engine.connect() as connection:
-            return self._evaluate(connection, dataset_id, version_no, lock=False)
+            return self._evaluate(
+                connection,
+                dataset_id,
+                version_no,
+                lock=False,
+                principal=principal,
+            )
 
     def publish(
         self, dataset_id: int, version_no: int, request: PublishDatasetVersionRequest
@@ -892,7 +1639,23 @@ class SqlDatasetService:
             )
         return _version(row, run_count=run_count)
 
-    def get_summary(self, dataset_id: int, version_no: int) -> DatasetResultSummary:
+    def get_summary(
+        self,
+        dataset_id: int,
+        version_no: int,
+        principal: Principal,
+    ) -> DatasetResultSummary:
+        access_clause = (
+            " AND (:is_admin=1 OR d.owner_user_id=:user_id OR ("
+            + _CURRENT_DATA_READ_GRANT
+            + " AND dv.status='PUBLISHED' AND dv.is_current=1))"
+        )
+        parameters: dict[str, object] = {
+            "dataset_id": dataset_id,
+            "version_no": version_no,
+            "user_id": principal.user_id,
+            "is_admin": "SYSTEM_ADMIN" in principal.roles,
+        }
         with self._engine.connect() as connection:
             base = (
                 connection.execute(
@@ -905,14 +1668,17 @@ class SqlDatasetService:
                         "COUNT(ur.unit_id) AS unit_count,"
                         "SUM(CASE WHEN ur.overall_result='PASS' THEN 1 ELSE 0 END) AS pass_count,"
                         "SUM(CASE WHEN ur.overall_result='FAIL' THEN 1 ELSE 0 END) AS fail_count "
-                        "FROM dataset.dataset d JOIN dataset.dataset_version dv ON dv.dataset_id=d.dataset_id "
+                        "FROM dataset.dataset d JOIN dataset.dataset_version dv "
+                        "ON dv.dataset_id=d.dataset_id "
                         "LEFT JOIN dataset.dataset_version_run dvr ON dvr.dataset_version_id=dv.dataset_version_id "
                         "LEFT JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
                         "LEFT JOIN test.unit_result ur ON ur.run_id=tr.run_id "
-                        "WHERE d.dataset_id=:dataset_id AND dv.version_no=:version_no "
+                        "WHERE d.dataset_id=:dataset_id AND dv.version_no=:version_no"
+                        + access_clause
+                        + " "
                         "GROUP BY d.dataset_code,d.dataset_name,dv.status,dv.is_current"
                     ),
-                    {"dataset_id": dataset_id, "version_no": version_no},
+                    parameters,
                 )
                 .mappings()
                 .one_or_none()

@@ -1,10 +1,11 @@
 import { BarChartOutlined, DeleteOutlined, DownloadOutlined, FilterOutlined, ReloadOutlined, SyncOutlined, UnorderedListOutlined } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Alert, Button, Card, Checkbox, Col, Descriptions, Drawer, Empty, Form, Input, Modal, Row, Select, Space, Table, Tag, Typography, message } from "antd";
+import { Alert, Button, Card, Checkbox, Col, Descriptions, Drawer, Empty, Form, Input, InputNumber, Modal, Row, Select, Space, Table, Tag, Typography, message } from "antd";
 import type { ColumnsType, TablePaginationConfig } from "antd/es/table";
 import { useEffect, useMemo, useState } from "react";
 
 import { listCurrentDatasets, type CurrentDatasetRequest, type CurrentDatasetRow } from "../../api/catalog";
+import { createFieldEnrichment } from "../../api/enrichments";
 import {
   archiveDataset,
   createDatasetReprocess,
@@ -14,19 +15,23 @@ import {
   type LifecycleExportArtifact,
   type LifecycleJobReceipt,
 } from "../../api/lifecycle";
-import { formatUtcDateTime } from "../../utils/dateTime";
+import { formatUtcDateTime, shanghaiLocalInputToUtc, utcToShanghaiLocalInput } from "../../utils/dateTime";
 import { useAuth } from "../auth/AuthContext";
 import { factoryNames } from "../capabilities/capabilityCatalog";
 
 interface CatalogFilterValues {
   product_name?: string;
   lot_id?: string;
+  wafer_id?: string;
+  import_batch_id?: number;
+  cleaner_version?: string;
+  owner_login?: string;
   factory_code?: string;
   business_domain?: "ENGINEERING" | "PRODUCTION";
   test_stage?: "CP" | "FT";
   status?: string;
-  from_utc?: string;
-  to_utc?: string;
+  from_local?: string;
+  to_local?: string;
 }
 
 type LifecycleActionKind = "EXPORT" | "REPROCESS" | "ARCHIVE";
@@ -40,11 +45,17 @@ interface LifecycleActionValues {
   confirmation?: string;
   reason?: string;
 }
+interface ProductEnrichmentValues {
+  action: "FILL" | "IGNORE";
+  value_text?: string;
+  reason: string;
+}
 
 export interface DatasetCurrentCatalogProps {
   searchParams: URLSearchParams;
   onSearchParamsChange: (params: URLSearchParams) => void;
   onOpenAnalytics: (datasetId: number, versionNo: number) => void;
+  onOpenComparison?: (datasets: Array<{ datasetId: number; versionNo: number }>) => void;
   onOpenJob: (jobId: number) => void;
 }
 
@@ -77,9 +88,14 @@ const exportAvailabilityColor: Record<string, string> = {
   UNAVAILABLE: "warning",
 };
 
-const FILTER_KEYS = ["product_name", "lot_id", "factory_code", "business_domain", "test_stage", "status", "from_utc", "to_utc"] as const;
+const FILTER_KEYS = ["product_name", "lot_id", "wafer_id", "cleaner_version", "owner_login", "factory_code", "business_domain", "test_stage", "status"] as const;
 
-export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOpenAnalytics, onOpenJob }: DatasetCurrentCatalogProps) {
+const displayLot = (row: CurrentDatasetRow) => (
+  row.lot_count > 1 ? `多 Lot（${row.lot_count}）` : row.lot_id || "—"
+);
+const URL_FILTER_KEYS = [...FILTER_KEYS, "import_batch_id", "from_utc", "to_utc"] as const;
+
+export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOpenAnalytics, onOpenComparison, onOpenJob }: DatasetCurrentCatalogProps) {
   const { user, can } = useAuth();
   const canExport = can("EXPORT_DATA");
   const canReprocess = can("TASK_CREATE");
@@ -90,6 +106,9 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
   const [action, setAction] = useState<LifecycleActionTarget>();
   const [actionError, setActionError] = useState<string>();
   const [downloadError, setDownloadError] = useState<string>();
+  const [selectedRows, setSelectedRows] = useState<CurrentDatasetRow[]>([]);
+  const [productTarget, setProductTarget] = useState<CurrentDatasetRow>();
+  const [productForm] = Form.useForm<ProductEnrichmentValues>();
   const [messageApi, messageContext] = message.useMessage();
   const searchKey = searchParams.toString();
   const request = useMemo<CurrentDatasetRequest>(() => ({
@@ -97,6 +116,10 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
     page_size: Math.min(100, positiveInt(searchParams.get("page_size"), 20)),
     product_name: searchParams.get("product_name") || undefined,
     lot_id: searchParams.get("lot_id") || undefined,
+    wafer_id: searchParams.get("wafer_id") || undefined,
+    import_batch_id: optionalPositiveInt(searchParams.get("import_batch_id")),
+    cleaner_version: searchParams.get("cleaner_version") || undefined,
+    owner_login: searchParams.get("owner_login") || undefined,
     factory_code: searchParams.get("factory_code") || undefined,
     business_domain: (searchParams.get("business_domain") as CurrentDatasetRequest["business_domain"]) || undefined,
     test_stage: (searchParams.get("test_stage") as CurrentDatasetRequest["test_stage"]) || undefined,
@@ -105,16 +128,21 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
     to_utc: searchParams.get("to_utc") || undefined,
   }), [searchKey]);
   useEffect(() => {
+    setSelectedRows([]);
     form.resetFields();
     form.setFieldsValue({
       product_name: request.product_name,
       lot_id: request.lot_id,
+      wafer_id: request.wafer_id,
+      import_batch_id: request.import_batch_id,
+      cleaner_version: request.cleaner_version,
+      owner_login: request.owner_login,
       factory_code: request.factory_code,
       business_domain: request.business_domain,
       test_stage: request.test_stage,
       status: request.status,
-      from_utc: request.from_utc,
-      to_utc: request.to_utc,
+      from_local: utcToShanghaiLocalInput(request.from_utc),
+      to_local: utcToShanghaiLocalInput(request.to_utc),
     });
   }, [form, request]);
   const query = useQuery({
@@ -159,27 +187,56 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
     onSuccess: () => messageApi.success("导出文件下载已开始"),
     onError: () => setDownloadError("导出文件下载失败。该 Artifact 可能已过期、已清理或完整性校验未通过；请刷新状态或重新发起导出。"),
   });
+  const productMutation = useMutation({
+    mutationFn: (values: ProductEnrichmentValues) => createFieldEnrichment({
+      import_batch_id: productTarget!.import_batch_id,
+      test_stage: productTarget!.test_stage,
+      field_code: "PRODUCT_CODE",
+      action: values.action,
+      value_text: values.action === "FILL" ? values.value_text?.trim() : undefined,
+      reason: values.reason.trim(),
+    }),
+    onSuccess: async () => {
+      setProductTarget(undefined);
+      productForm.resetFields();
+      messageApi.success("产品业务信息已保存；Cleaner 原始解析值未被改写");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["datasets", "current"] }),
+        queryClient.invalidateQueries({ queryKey: ["management", "quality-summary"] }),
+      ]);
+    },
+    onError: (error) => messageApi.error(error.message),
+  });
 
   const updateSearch = (values: CatalogFilterValues, page = 1, pageSize = request.page_size) => {
     const next = new URLSearchParams(searchParams);
-    for (const key of FILTER_KEYS) next.delete(key);
+    for (const key of URL_FILTER_KEYS) next.delete(key);
     next.set("page", String(page));
     next.set("page_size", String(pageSize));
     for (const key of FILTER_KEYS) {
-      const value = values[key]?.trim();
-      if (value) next.set(key, value);
+      const value = values[key];
+      if (typeof value === "string" && value.trim()) next.set(key, value.trim());
     }
+    if (values.import_batch_id) next.set("import_batch_id", String(values.import_batch_id));
+    const fromUtc = shanghaiLocalInputToUtc(values.from_local);
+    const toUtc = shanghaiLocalInputToUtc(values.to_local);
+    if (fromUtc) next.set("from_utc", fromUtc);
+    if (toUtc) next.set("to_utc", toUtc);
     onSearchParamsChange(next);
   };
   const currentValues = (): CatalogFilterValues => ({
     product_name: request.product_name,
     lot_id: request.lot_id,
+    wafer_id: request.wafer_id,
+    import_batch_id: request.import_batch_id,
+    cleaner_version: request.cleaner_version,
+    owner_login: request.owner_login,
     factory_code: request.factory_code,
     business_domain: request.business_domain,
     test_stage: request.test_stage,
     status: request.status,
-    from_utc: request.from_utc,
-    to_utc: request.to_utc,
+    from_local: utcToShanghaiLocalInput(request.from_utc),
+    to_local: utcToShanghaiLocalInput(request.to_utc),
   });
   const onPageChange = (pagination: TablePaginationConfig) => {
     updateSearch(currentValues(), pagination.current ?? 1, pagination.pageSize ?? request.page_size);
@@ -194,10 +251,10 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
     onSearchParamsChange(next);
     setDownloadError(undefined);
   };
+  const selectedStage = selectedRows[0]?.test_stage;
   const columns: ColumnsType<CurrentDatasetRow> = [
-    { title: "Dataset", dataIndex: "dataset_id", width: 105, fixed: "left", render: (value, row) => `#${value} / V${row.version_no}` },
-    { title: "产品", dataIndex: "product_name", width: 190, ellipsis: true, render: (value) => value || "—" },
-    { title: "Lot", dataIndex: "lot_id", width: 160, ellipsis: true, render: (value) => value || "—" },
+    { title: "产品", dataIndex: "product_name", width: 190, fixed: "left", ellipsis: true, render: (value) => value || "待补录" },
+    { title: "Lot", key: "lot_scope", width: 160, ellipsis: true, render: (_, row) => displayLot(row) },
     { title: "厂家", dataIndex: "factory_code", width: 110, render: (value) => factoryNames[String(value).toLowerCase()] ?? value },
     { title: "范围", key: "scope", width: 125, render: (_, row) => `${row.business_domain === "ENGINEERING" ? "工程" : "量产"} / ${row.test_stage}` },
     { title: "状态", dataIndex: "status", width: 105, render: (value) => <Tag color={value === "PUBLISHED" ? "success" : "default"}>{value}</Tag> },
@@ -205,8 +262,8 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
     { title: "Pass", dataIndex: "pass_count", width: 100, render: (value) => value == null ? "—" : value },
     { title: "良率", dataIndex: "yield_rate", width: 100, render: (value: number | null) => value == null ? "—" : `${(value * 100).toFixed(2)}%` },
     { title: "源文件", dataIndex: "source_file_count", width: 90 },
-    { title: "Batch", dataIndex: "import_batch_id", width: 95, render: (value) => `#${value}` },
-    { title: "Run", dataIndex: "processing_run_id", width: 90, render: (value) => value == null ? "—" : `#${value}` },
+    { title: "Cleaner", dataIndex: "cleaner_version", width: 120, render: (value) => value || "—" },
+    { title: "上传人", dataIndex: "owner_name", width: 120, ellipsis: true },
     { title: "处理时间", dataIndex: "processed_at_utc", width: 180, render: formatUtcDateTime },
     {
       title: "操作",
@@ -216,9 +273,10 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
       render: (_, row) => <Space size={0} wrap>
         <Button type="link" size="small" icon={<BarChartOutlined />} onClick={() => onOpenAnalytics(row.dataset_id, row.version_no)}>分析</Button>
         {row.job_id != null && <Button type="link" size="small" icon={<UnorderedListOutlined />} onClick={() => onOpenJob(row.job_id!)}>Job #{row.job_id}</Button>}
+        {canReprocess && row.can_archive && <Button type="link" size="small" onClick={() => { productForm.setFieldsValue({ action: "FILL", value_text: row.product_name ?? undefined, reason: "补充或纠正正式数据产品业务信息" }); setProductTarget(row); }}>{row.product_name ? "修正产品" : "补录产品"}</Button>}
         {canExport && <Button type="link" size="small" icon={<DownloadOutlined />} onClick={() => openLifecycleAction("EXPORT", row)}>导出最新</Button>}
         {canReprocess && <Button type="link" size="small" icon={<SyncOutlined />} onClick={() => openLifecycleAction("REPROCESS", row)}>显式重处理</Button>}
-        <Button type="link" danger size="small" icon={<DeleteOutlined />} title="仅 Dataset Owner 或 SYSTEM_ADMIN 可创建，后端按行级范围校验" onClick={() => openLifecycleAction("ARCHIVE", row)}>逻辑归档</Button>
+        {row.can_archive && <Button type="link" danger size="small" icon={<DeleteOutlined />} title="仅 Dataset Owner 或 SYSTEM_ADMIN 可创建" onClick={() => openLifecycleAction("ARCHIVE", row)}>逻辑归档</Button>}
       </Space>,
     },
   ];
@@ -228,8 +286,8 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
     <div className="page-heading">
       <div>
         <Typography.Text type="secondary">正式事实 / Dataset Current</Typography.Text>
-        <Typography.Title level={2}>Dataset Current 目录</Typography.Title>
-        <Typography.Text type="secondary">按业务身份检索当前正式版本，无需手填 Dataset、Job 或 Run 内部编号。</Typography.Text>
+        <Typography.Title level={2}>历史正式数据</Typography.Title>
+        <Typography.Text type="secondary">按业务身份检索当前正式版本，多选后进入比较；日常操作无需手填 Dataset、Job 或 Run 内部编号。</Typography.Text>
       </div>
       <Button icon={<ReloadOutlined />} loading={query.isFetching} onClick={() => void query.refetch()}>刷新</Button>
     </div>
@@ -244,17 +302,27 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
         <Typography.Text><strong>逻辑归档</strong>：仅 Owner / SYSTEM_ADMIN 可执行；不删除 FTP/NAS 原始文件、Source Receipt，也不影响其他 Owner 的同 Lot 数据。{isSystemAdmin ? "当前账户具有 SYSTEM_ADMIN 角色。" : "是否为 Dataset Owner 由后端行级授权最终判定。"}</Typography.Text>
       </Space>}
     />
-    <Card className="review-filter-card">
+    <Card
+      className="review-filter-card"
+      extra={<Space wrap>
+        <Typography.Text type="secondary">同次比较仅支持同一测试阶段（CP 或 FT），最多 8 个</Typography.Text>
+        {selectedRows.length ? <Button type="primary" icon={<BarChartOutlined />} onClick={() => selectedRows.length === 1 ? onOpenAnalytics(selectedRows[0].dataset_id, selectedRows[0].version_no) : onOpenComparison?.(selectedRows.map((row) => ({ datasetId: row.dataset_id, versionNo: row.version_no })))} disabled={selectedRows.length > 1 && !onOpenComparison}>{selectedRows.length > 1 ? `比较分析（${selectedRows.length}）` : "分析所选数据"}</Button> : null}
+      </Space>}
+    >
       <Form<CatalogFilterValues> form={form} layout="vertical" onFinish={(values) => updateSearch(values)}>
         <Row gutter={[12, 0]}>
           <Col xs={24} sm={12} lg={6}><Form.Item label="产品" name="product_name"><Input allowClear placeholder="产品名称（精确或后端支持的匹配口径）" /></Form.Item></Col>
           <Col xs={24} sm={12} lg={6}><Form.Item label="Lot" name="lot_id"><Input allowClear placeholder="业务 Lot" /></Form.Item></Col>
-          <Col xs={24} sm={12} lg={6}><Form.Item label="厂家" name="factory_code"><Input allowClear placeholder="厂家编码" /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={6}><Form.Item label="Wafer" name="wafer_id"><Input allowClear placeholder="Wafer ID" /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={6}><Form.Item label="上传任务" name="import_batch_id"><InputNumber min={1} precision={0} className="full-width" placeholder="Batch 编号" /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={6}><Form.Item label="Cleaner 版本" name="cleaner_version"><Input allowClear /></Form.Item></Col>
+          {isSystemAdmin && <Col xs={24} sm={12} lg={6}><Form.Item label="上传账号" name="owner_login"><Input allowClear /></Form.Item></Col>}
+          <Col xs={24} sm={12} lg={6}><Form.Item label="厂家" name="factory_code"><Select allowClear showSearch placeholder="全部厂家" options={Object.entries(factoryNames).map(([value, label]) => ({ value, label }))} /></Form.Item></Col>
           <Col xs={12} sm={6} lg={3}><Form.Item label="业务域" name="business_domain"><Select allowClear options={[{ label: "工程", value: "ENGINEERING" }, { label: "量产", value: "PRODUCTION" }]} /></Form.Item></Col>
           <Col xs={12} sm={6} lg={3}><Form.Item label="阶段" name="test_stage"><Select allowClear options={[{ label: "CP", value: "CP" }, { label: "FT", value: "FT" }]} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={6}><Form.Item label="状态" name="status"><Select allowClear options={[{ label: "PUBLISHED", value: "PUBLISHED" }]} /></Form.Item></Col>
-          <Col xs={24} sm={12} lg={6}><Form.Item label="开始时间（UTC）" name="from_utc"><Input allowClear placeholder="2026-08-01T00:00:00Z" /></Form.Item></Col>
-          <Col xs={24} sm={12} lg={6}><Form.Item label="结束时间（UTC）" name="to_utc"><Input allowClear placeholder="2026-08-31T23:59:59Z" /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={6}><Form.Item label="开始时间（上海，含）" name="from_local"><Input type="datetime-local" allowClear /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={6}><Form.Item label="结束时间（上海，不含）" name="to_local"><Input type="datetime-local" allowClear /></Form.Item></Col>
           <Col xs={24} sm={12} lg={6} style={{ display: "flex", alignItems: "end" }}><Form.Item><Space><Button type="primary" htmlType="submit" icon={<FilterOutlined />}>检索</Button><Button onClick={() => { form.resetFields(); updateSearch({}); }}>清空</Button></Space></Form.Item></Col>
         </Row>
       </Form>
@@ -263,6 +331,22 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
     <Card className="production-table-card">
       <Table
         rowKey={(row) => `${row.dataset_id}-${row.version_no}`}
+        rowSelection={{
+          selectedRowKeys: selectedRows.map((row) => `${row.dataset_id}-${row.version_no}`),
+          preserveSelectedRowKeys: false,
+          hideSelectAll: true,
+          onChange: (_keys, rows) => {
+            const stage = rows[0]?.test_stage;
+            setSelectedRows(rows.filter((row) => row.test_stage === stage).slice(0, 8));
+          },
+          getCheckboxProps: (row) => {
+            const isSelected = selectedRows.some((selected) => selected.dataset_id === row.dataset_id && selected.version_no === row.version_no);
+            const stageMismatch = !isSelected && selectedStage !== undefined && row.test_stage !== selectedStage;
+            return {
+              disabled: !isSelected && (selectedRows.length >= 8 || stageMismatch),
+            };
+          },
+        }}
         columns={columns}
         dataSource={query.data?.items ?? []}
         loading={query.isLoading}
@@ -291,7 +375,7 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
     >
       <Descriptions size="small" bordered column={1} style={{ marginBottom: 16 }}>
         <Descriptions.Item label="Dataset">{action ? `#${action.row.dataset_id} / V${action.row.version_no}` : "—"}</Descriptions.Item>
-        <Descriptions.Item label="产品 / Lot">{action ? `${action.row.product_name || "—"} / ${action.row.lot_id || "—"}` : "—"}</Descriptions.Item>
+        <Descriptions.Item label="产品 / Lot">{action ? `${action.row.product_name || "—"} / ${displayLot(action.row)}` : "—"}</Descriptions.Item>
       </Descriptions>
       {action?.kind === "EXPORT" && <Alert type="info" showIcon message="非变异临时导出" description="导出只生成临时文件并登记 SHA-256/TTL；Current Dataset、Canonical 数据与补录在导出前后保持不变。" style={{ marginBottom: 16 }} />}
       {action?.kind === "REPROCESS" && <Alert type="warning" showIcon message="将创建新版本" description="新版本全量校验成功后才会取代旧 Current；Cleaner、入库或切换失败时，旧 Current 不变。" style={{ marginBottom: 16 }} />}
@@ -315,6 +399,34 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
             <Input.TextArea rows={4} maxLength={1000} showCount />
           </Form.Item>
         </>}
+      </Form>
+    </Modal>
+    <Modal
+      title={productTarget?.product_name ? "修正产品业务信息" : "补录产品业务信息"}
+      open={Boolean(productTarget)}
+      okText="保存业务信息"
+      confirmLoading={productMutation.isPending}
+      onCancel={() => { if (!productMutation.isPending) { setProductTarget(undefined); productForm.resetFields(); } }}
+      onOk={() => productForm.submit()}
+      destroyOnHidden
+    >
+      <Alert type="info" showIcon message="人工补录与 Cleaner 原值分离" description="本操作保存可追溯的业务有效值，用于后续检索和管理汇总，不改写原始文件或 Cleaner 原始解析值。" style={{ marginBottom: 16 }} />
+      <Form<ProductEnrichmentValues>
+        form={productForm}
+        layout="vertical"
+        preserve={false}
+        initialValues={{ action: "FILL" }}
+        onFinish={(values) => productMutation.mutate(values)}
+      >
+        <Form.Item label="处理方式" name="action" rules={[{ required: true }]}>
+          <Select options={[{ label: "填写/修正产品", value: "FILL" }, { label: "本任务暂不提供产品", value: "IGNORE" }]} />
+        </Form.Item>
+        <Form.Item noStyle shouldUpdate={(previous, current) => previous.action !== current.action}>
+          {({ getFieldValue }) => getFieldValue("action") === "FILL" ? <Form.Item label="产品型号" name="value_text" rules={[{ required: true, whitespace: true, message: "请填写产品型号" }, { max: 500 }]}><Input autoComplete="off" /></Form.Item> : <Alert type="warning" showIcon message="跳过后仍可按 Lot、Wafer 和参数分析，但不能按 Product 检索" style={{ marginBottom: 16 }} />}
+        </Form.Item>
+        <Form.Item label="补录或修正原因" name="reason" rules={[{ required: true, whitespace: true }, { min: 8, message: "原因至少 8 个字符" }, { max: 500 }]}>
+          <Input.TextArea rows={3} showCount maxLength={500} />
+        </Form.Item>
       </Form>
     </Modal>
     <Drawer

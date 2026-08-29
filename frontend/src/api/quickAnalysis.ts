@@ -1,4 +1,5 @@
 import { apiRequest, downloadAuthenticatedFile } from "./auth";
+import type { PageResult } from "./stageData";
 
 export interface QuickSourceRoot {
   code: string;
@@ -21,6 +22,18 @@ export interface QuickDirectoryListing {
   current_relative_path: string;
   parent_relative_path: string | null;
   directories: QuickSourceDirectory[];
+}
+
+export interface QuickManifestPreview {
+  root_code: string;
+  relative_path: string;
+  mode: string;
+  recursive: boolean;
+  file_count: number;
+  total_bytes: number;
+  sha: string;
+  allowed_suffixes: string[];
+  tool_code: string;
 }
 
 export interface QuickAnalysisSession {
@@ -67,17 +80,47 @@ export const listQuickSourceDirectories = (rootCode: string, relativePath = ".")
   );
 };
 
-export const createQuickPat = (sourceRootCode: string, sourceRelativePath: string) =>
+export const previewQuickSourceManifest = (rootCode: string, relativePath = ".") => {
+  const query = new URLSearchParams({ relative_path: relativePath });
+  return apiRequest<QuickManifestPreview>(
+    `${base}/source-roots/${encodeURIComponent(rootCode)}/manifest-preview?${query}`,
+  );
+};
+
+export const createQuickPat = (
+  sourceRootCode: string,
+  sourceRelativePath: string,
+  sourceManifestMode: string,
+  sourceManifestSha256: string,
+) =>
   apiRequest<QuickAnalysisSession>(`${base}/pat`, {
     method: "POST",
     body: JSON.stringify({
       source_root_code: sourceRootCode,
       source_relative_path: sourceRelativePath,
+      source_manifest_mode: sourceManifestMode,
+      source_manifest_sha256: sourceManifestSha256,
     }),
   });
 
-export const listQuickAnalysisSessions = () =>
-  apiRequest<QuickAnalysisSession[]>(`${base}/sessions`);
+export interface QuickSessionRequest {
+  page: number;
+  page_size: number;
+  status?: QuickAnalysisSession["status"];
+  from_utc?: string;
+  to_utc?: string;
+}
+
+export const listQuickAnalysisSessions = (request: QuickSessionRequest) => {
+  const query = new URLSearchParams({
+    page: String(request.page),
+    page_size: String(request.page_size),
+  });
+  if (request.status) query.set("status", request.status);
+  if (request.from_utc) query.set("from_utc", request.from_utc);
+  if (request.to_utc) query.set("to_utc", request.to_utc);
+  return apiRequest<PageResult<QuickAnalysisSession>>(`${base}/sessions?${query}`);
+};
 
 export async function downloadQuickPat(sessionId: number, fileName: string) {
   return downloadAuthenticatedFile(`${base}/sessions/${sessionId}/download`, fileName);

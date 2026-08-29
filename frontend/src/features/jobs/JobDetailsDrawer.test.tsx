@@ -108,7 +108,7 @@ const details: JobDetails = {
     },
   ],
   actions: [
-    { code: "REPROCESS", label: "重新处理", enabled: true, reason: null },
+    { code: "REPROCESS_BATCH", label: "重新处理", enabled: true, reason: null },
     { code: "VIEW_RESULT", label: "打开分析", enabled: true, reason: null },
     { code: "UNSAFE_ACTION", label: "未接入动作", enabled: true, reason: null },
   ],

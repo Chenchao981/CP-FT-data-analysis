@@ -211,7 +211,7 @@ function Wait-TmsWorkerReady {
         }
         if (Test-Path -LiteralPath $workerReadyFile -PathType Leaf) {
             try {
-                $ready = Get-Content -LiteralPath $workerReadyFile -Raw | ConvertFrom-Json
+                $ready = Read-TmsLocalJsonFile -Path $workerReadyFile
                 if (
                     $ready.status -eq 'READY' -and
                     [int]$ready.pid -eq [int]$Record.process_id -and
@@ -295,7 +295,7 @@ try {
 
     $priorState = $null
     if (Test-Path -LiteralPath $statePath -PathType Leaf) {
-        $priorState = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+        $priorState = Read-TmsLocalJsonFile -Path $statePath
         if ([string]$priorState.workspace -ne $workspace) {
             throw 'The existing local test state belongs to a different workspace.'
         }

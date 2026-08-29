@@ -12,6 +12,7 @@ from app.domain.auth import Principal
 from app.domain.quick_analysis import (
     NewQuickAnalysisSession,
     QuickAnalysisArtifact,
+    QuickAnalysisPage,
     QuickAnalysisSession,
     QuickAnalysisStatus,
     QuickAnalysisWorkItem,
@@ -50,7 +51,15 @@ OUTER APPLY (
 def _utc(value: datetime | None) -> datetime | None:
     if value is None:
         return None
-    return value.replace(tzinfo=UTC)
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+
+
+def _sql_utc(value: datetime) -> datetime:
+    return (
+        value.replace(tzinfo=None)
+        if value.tzinfo is None
+        else value.astimezone(UTC).replace(tzinfo=None)
+    )
 
 
 def _to_session(row: Mapping[str, Any]) -> QuickAnalysisSession:
@@ -243,6 +252,63 @@ class SqlQuickAnalysisService:
                 .all()
             )
         return tuple(_to_session(row) for row in rows)
+
+    def list_page_for_principal(
+        self,
+        principal: Principal,
+        *,
+        page: int,
+        page_size: int,
+        status: QuickAnalysisStatus | None = None,
+        from_utc: datetime | None = None,
+        to_utc: datetime | None = None,
+    ) -> QuickAnalysisPage:
+        clauses: list[str] = []
+        parameters: dict[str, object] = {
+            "owner": principal.user_id,
+            "offset": (page - 1) * page_size,
+            "page_size": page_size,
+        }
+        if "SYSTEM_ADMIN" not in principal.roles:
+            clauses.append("scoped.owner_user_id=:owner")
+        if status is not None:
+            clauses.append("scoped.effective_status=:status")
+            parameters["status"] = status.value
+        if from_utc is not None:
+            clauses.append("scoped.created_at_utc>=:from_utc")
+            parameters["from_utc"] = _sql_utc(from_utc)
+        if to_utc is not None:
+            clauses.append("scoped.created_at_utc<:to_utc")
+            parameters["to_utc"] = _sql_utc(to_utc)
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+        scoped = " FROM (" + SESSION_SELECT + ") scoped"
+        with self._engine.connect() as connection:
+            total = int(
+                connection.execute(
+                    text("SELECT COUNT_BIG(*)" + scoped + where), parameters
+                ).scalar_one()
+            )
+            rows = (
+                connection.execute(
+                    text(
+                        "SELECT scoped.*"
+                        + scoped
+                        + where
+                        + " ORDER BY scoped.created_at_utc DESC,"
+                        "scoped.analysis_session_id DESC "
+                        "OFFSET :offset ROWS FETCH NEXT :page_size ROWS ONLY"
+                    ),
+                    parameters,
+                )
+                .mappings()
+                .all()
+            )
+        return QuickAnalysisPage(
+            items=tuple(_to_session(row) for row in rows),
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
 
     def get_for_principal(
         self, analysis_session_id: int, principal: Principal

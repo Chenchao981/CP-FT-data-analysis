@@ -69,6 +69,39 @@ class PublishDatasetVersionRequest(StrictRequest):
     published_by: int = Field(gt=0)
 
 
+class DatasetReference(StrictRequest):
+    dataset_id: int = Field(gt=0)
+    version_no: int = Field(gt=0)
+
+
+class DatasetComparisonRequest(StrictRequest):
+    datasets: list[DatasetReference] = Field(min_length=1, max_length=8)
+    lot_ids: list[str] = Field(default_factory=list, max_length=50)
+    wafer_ids: list[str] = Field(default_factory=list, max_length=100)
+    bin_codes: list[str] = Field(default_factory=list, max_length=50)
+    parameters: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("datasets")
+    @classmethod
+    def dataset_refs_are_unique(
+        cls, value: list[DatasetReference]
+    ) -> list[DatasetReference]:
+        dataset_ids = [item.dataset_id for item in value]
+        if len(dataset_ids) != len(set(dataset_ids)):
+            raise ValueError("each dataset may appear only once in a comparison")
+        return value
+
+    @field_validator("lot_ids", "wafer_ids", "bin_codes", "parameters")
+    @classmethod
+    def filter_values_are_unique_and_non_empty(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value]
+        if any(not item or len(item) > 200 for item in normalized):
+            raise ValueError("analysis filter values must be non-empty and bounded")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("analysis filter values must be unique")
+        return normalized
+
+
 @dataclass(frozen=True, slots=True)
 class DatasetRecord:
     dataset_id: int
@@ -143,7 +176,10 @@ class WaferYieldPoint:
     unit_count: int
     pass_count: int
     fail_count: int
-    yield_rate: float
+    unknown_count: int
+    abort_count: int
+    known_yield_denominator: int
+    yield_rate: float | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -201,10 +237,99 @@ class DatasetChartData:
     ft_sampled: bool
 
 
+@dataclass(frozen=True, slots=True)
+class DatasetParameterStatistic:
+    name: str
+    unit: str | None
+    lsl: float | None
+    usl: float | None
+    test_condition: str | None
+    measured_count: int
+    missing_count: int
+    minimum: float | None
+    maximum: float | None
+    average: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetComparisonItem:
+    dataset_id: int
+    version_no: int
+    test_stage: str
+    product_name: str | None
+    unit_count: int
+    pass_count: int
+    fail_count: int
+    unknown_count: int
+    abort_count: int
+    known_yield_denominator: int
+    yield_rate: float | None
+    parameter_statistics: tuple[DatasetParameterStatistic, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetComparisonResult:
+    test_stage: str
+    spec_compatibility: str
+    lot_ids: tuple[str, ...]
+    wafer_ids: tuple[str, ...]
+    bin_codes: tuple[str, ...]
+    parameters: tuple[str, ...]
+    items: tuple[DatasetComparisonItem, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetDetailMeasurement:
+    parameter: str
+    value_numeric: float | None
+    value_text: str | None
+    status: str
+    unit: str | None
+    lsl: float | None
+    usl: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetDetailRow:
+    unit_id: int
+    logical_unit_key: str
+    lot_id: str | None
+    wafer_id: str | None
+    x: int | None
+    y: int | None
+    soft_bin: str | None
+    hard_bin: str | None
+    overall_result: str
+    source_row_no: int | None
+    measurements: tuple[DatasetDetailMeasurement, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetDetailPage:
+    dataset_id: int
+    version_no: int
+    test_stage: str
+    page: int
+    page_size: int
+    total: int
+    lot_options: tuple[str, ...]
+    wafer_options: tuple[str, ...]
+    bin_options: tuple[str, ...]
+    parameter_options: tuple[str, ...]
+    items: tuple[DatasetDetailRow, ...]
+
+
 class DatasetService(Protocol):
     def list_datasets(self, principal) -> tuple[DatasetRecord, ...]: ...
 
-    def assert_dataset_access(self, dataset_id: int, principal, mode: str = "READ") -> None: ...
+    def assert_dataset_access(
+        self,
+        dataset_id: int,
+        principal,
+        mode: str = "READ",
+        *,
+        version_no: int | None = None,
+    ) -> None: ...
 
     def create_dataset(self, request: CreateDatasetRequest) -> DatasetRecord: ...
 
@@ -212,14 +337,16 @@ class DatasetService(Protocol):
         self, dataset_id: int, request: CreateDatasetVersionRequest
     ) -> DatasetVersionRecord: ...
 
-    def evaluate_gate(self, dataset_id: int, version_no: int) -> DqGateResult: ...
+    def evaluate_gate(
+        self, dataset_id: int, version_no: int, principal
+    ) -> DqGateResult: ...
 
     def publish(
         self, dataset_id: int, version_no: int, request: PublishDatasetVersionRequest
     ) -> DatasetVersionRecord: ...
 
     def get_summary(
-        self, dataset_id: int, version_no: int
+        self, dataset_id: int, version_no: int, principal
     ) -> DatasetResultSummary: ...
 
     def get_chart_data(
@@ -231,3 +358,18 @@ class DatasetService(Protocol):
         source_id: str | None = None,
         parameter: str | None = None,
     ) -> DatasetChartData: ...
+
+    def compare(self, request: DatasetComparisonRequest) -> DatasetComparisonResult: ...
+
+    def get_detail_page(
+        self,
+        dataset_id: int,
+        version_no: int,
+        *,
+        page: int,
+        page_size: int,
+        lot_ids: tuple[str, ...] = (),
+        wafer_ids: tuple[str, ...] = (),
+        bin_codes: tuple[str, ...] = (),
+        parameters: tuple[str, ...] = (),
+    ) -> DatasetDetailPage: ...

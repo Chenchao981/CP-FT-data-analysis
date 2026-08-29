@@ -19,6 +19,10 @@ describe("dataset current catalog api", () => {
       page_size: 20,
       product_name: "NCE Power",
       lot_id: "LOT/202608",
+      wafer_id: "W%_01",
+      import_batch_id: 77,
+      cleaner_version: "Cleaner 2.4",
+      owner_login: "owner.name",
       factory_code: "riyuexin",
       business_domain: "PRODUCTION",
       test_stage: "FT",
@@ -28,7 +32,7 @@ describe("dataset current catalog api", () => {
     });
 
     expect(fetchMock.mock.calls[0][0]).toBe(
-      "/api/v1/catalog/datasets/current?page=3&page_size=20&product_name=NCE+Power&lot_id=LOT%2F202608&factory_code=riyuexin&business_domain=PRODUCTION&test_stage=FT&status=PUBLISHED&from_utc=2026-08-01T00%3A00%3A00Z&to_utc=2026-08-31T23%3A59%3A59Z",
+      "/api/v1/catalog/datasets/current?page=3&page_size=20&product_name=NCE+Power&lot_id=LOT%2F202608&wafer_id=W%25_01&cleaner_version=Cleaner+2.4&owner_login=owner.name&factory_code=riyuexin&business_domain=PRODUCTION&test_stage=FT&status=PUBLISHED&from_utc=2026-08-01T00%3A00%3A00Z&to_utc=2026-08-31T23%3A59%3A59Z&import_batch_id=77",
     );
     expect((fetchMock.mock.calls[0][1]?.headers as Headers).get("Authorization")).toBe("Bearer mock-token");
   });

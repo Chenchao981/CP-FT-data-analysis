@@ -32,11 +32,59 @@ export async function authenticatedFetch(url: string, init: RequestInit = {}): P
   return response;
 }
 
+export interface ApiErrorPayload {
+  code?: string;
+  message?: string;
+  details?: unknown;
+  field_errors?: Record<string, string[]>;
+  retryable?: boolean;
+  recommended_action?: string;
+}
+
+const retryableStatus = new Set([408, 425, 429, 502, 503, 504]);
+
+export class ApiError extends Error {
+  readonly httpStatus: number;
+  readonly code: string;
+  readonly details: unknown;
+  readonly fieldErrors: Record<string, string[]>;
+  readonly retryable: boolean;
+  readonly recommendedAction: string | null;
+
+  constructor(httpStatus: number, payload: ApiErrorPayload | null, fallback: string) {
+    super(payload?.message ?? fallback);
+    this.name = "ApiError";
+    this.httpStatus = httpStatus;
+    this.code = payload?.code ?? `HTTP_${httpStatus}`;
+    this.details = payload?.details ?? null;
+    this.fieldErrors = payload?.field_errors ?? fieldErrorsFromDetails(payload?.details);
+    this.retryable = payload?.retryable ?? retryableStatus.has(httpStatus);
+    this.recommendedAction = payload?.recommended_action ?? null;
+  }
+}
+
+function fieldErrorsFromDetails(details: unknown): Record<string, string[]> {
+  if (!Array.isArray(details)) return {};
+  const result: Record<string, string[]> = {};
+  for (const item of details) {
+    if (!item || typeof item !== "object") continue;
+    const path = "path" in item && typeof item.path === "string" ? item.path : undefined;
+    const message = "message" in item && typeof item.message === "string" ? item.message : undefined;
+    if (!path || !message) continue;
+    (result[path] ??= []).push(message);
+  }
+  return result;
+}
+
+async function responseError(response: Response, fallback: string): Promise<ApiError> {
+  const payload = await response.json().catch(() => null) as { error?: ApiErrorPayload } | null;
+  return new ApiError(response.status, payload?.error ?? null, fallback);
+}
+
 export async function apiRequest<T>(url: string, init: RequestInit = {}): Promise<T> {
   const response = await authenticatedFetch(url, init);
   if (!response.ok) {
-    const payload = await response.json().catch(() => null);
-    throw new Error(payload?.error?.message ?? `请求失败（${response.status}）`);
+    throw await responseError(response, `请求失败（${response.status}）`);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
@@ -45,8 +93,7 @@ export async function apiRequest<T>(url: string, init: RequestInit = {}): Promis
 export async function downloadAuthenticatedFile(url: string, fileName: string): Promise<void> {
   const response = await authenticatedFetch(url);
   if (!response.ok) {
-    const payload = await response.json().catch(() => null);
-    throw new Error(payload?.error?.message ?? `下载失败（${response.status}）`);
+    throw await responseError(response, `下载失败（${response.status}）`);
   }
   const blob = await response.blob();
   const objectUrl = URL.createObjectURL(blob);

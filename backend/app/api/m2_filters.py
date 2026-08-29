@@ -19,6 +19,10 @@ def build_page_filters(
     status: str | None = None,
     product_name: str | None = None,
     lot_id: str | None = None,
+    wafer_id: str | None = None,
+    import_batch_id: int | None = None,
+    cleaner_version: str | None = None,
+    owner_login: str | None = None,
     from_utc: datetime | None = None,
     to_utc: datetime | None = None,
     allowed_statuses: frozenset[str],
@@ -31,6 +35,9 @@ def build_page_filters(
     normalized_status = _choice(status, "status", allowed_statuses)
     product = _text(product_name, "product_name")
     lot = _text(lot_id, "lot_id")
+    wafer = _text(wafer_id, "wafer_id")
+    cleaner = _text(cleaner_version, "cleaner_version")
+    owner = _text(owner_login, "owner_login")
     lower = _utc(from_utc, "from_utc")
     upper = _utc(to_utc, "to_utc")
     if lower is not None and upper is not None and lower > upper:
@@ -46,6 +53,10 @@ def build_page_filters(
         status=normalized_status,
         product_name=product,
         lot_id=lot,
+        wafer_id=wafer,
+        import_batch_id=import_batch_id,
+        cleaner_version=cleaner,
+        owner_login=owner,
         from_utc=lower,
         to_utc=upper,
     )

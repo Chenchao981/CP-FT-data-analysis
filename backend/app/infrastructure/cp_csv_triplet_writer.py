@@ -3,6 +3,8 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
+import unicodedata
 from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -67,7 +69,10 @@ class CpCsvTriplet:
     spec_items: tuple[CpSpecItem, ...]
     rows: tuple[CpCleanedRow, ...]
     spec_sha256: str
+    spec_fingerprint_sha256: str
+    spec_source_sha256s: tuple[str, ...]
     source_paths: tuple[str, ...]
+    lot_ids: tuple[str, ...]
     pass_count: int
 
 
@@ -87,9 +92,15 @@ def _number(raw: str, *, field: str, allow_blank: bool = False) -> float | None:
     if not value and allow_blank:
         return None
     try:
-        return float(Decimal(value))
+        decimal_value = Decimal(value)
     except (InvalidOperation, ValueError) as exc:
         raise CpCsvTripletError(f"{field} is not numeric: {raw!r}") from exc
+    if not decimal_value.is_finite():
+        raise CpCsvTripletError(f"{field} must be finite: {raw!r}")
+    numeric_value = float(decimal_value)
+    if not math.isfinite(numeric_value):
+        raise CpCsvTripletError(f"{field} is outside the supported numeric range")
+    return numeric_value
 
 
 def _wafer_id(raw: str) -> str:
@@ -119,22 +130,124 @@ def _artifact_paths(
 CP_PROCESS_COLUMNS = {"CONT", "SITE_NUM", "T_TIME", "TEST_NUM"}
 
 
+def _normalized_contract_text(value: object, *, field: str) -> str | None:
+    if value is None:
+        return None
+    normalized = unicodedata.normalize("NFKC", str(value))
+    normalized = " ".join(normalized.split())
+    if not normalized:
+        return None
+    if any(unicodedata.category(character) == "Cc" for character in normalized):
+        raise CpCsvTripletError(f"{field} contains a control character")
+    return normalized
+
+
+def _normalized_parameter_name(value: object, *, field: str) -> str:
+    normalized = _normalized_contract_text(value, field=field)
+    if normalized is None:
+        raise CpCsvTripletError(f"{field} is blank")
+    return normalized
+
+
+def _normalized_decimal(raw: object, *, field: str) -> str | None:
+    normalized = _normalized_contract_text(raw, field=field)
+    if normalized is None:
+        return None
+    try:
+        number = Decimal(normalized)
+    except InvalidOperation as exc:
+        raise CpCsvTripletError(f"{field} is not numeric: {raw!r}") from exc
+    if not number.is_finite():
+        raise CpCsvTripletError(f"{field} must be finite: {raw!r}")
+    if number == 0:
+        return "0"
+    canonical = format(number, "f")
+    if "." in canonical:
+        canonical = canonical.rstrip("0").rstrip(".")
+    return canonical
+
+
+def _normalized_spec_entries(
+    items: tuple[CpSpecItem, ...],
+) -> tuple[dict[str, str | None], ...]:
+    entries: list[dict[str, str | None]] = []
+    seen_names: set[str] = set()
+    for item in items:
+        name = _normalized_parameter_name(item.name, field="CP Spec parameter")
+        if name in seen_names:
+            raise CpCsvTripletError(
+                f"CP Spec has an ambiguous normalized parameter: {name}"
+            )
+        seen_names.add(name)
+        entries.append(
+            {
+                "name": name,
+                "unit": _normalized_contract_text(
+                    item.unit, field=f"CP Spec {name} unit"
+                ),
+                "lsl": _normalized_decimal(
+                    item.raw_lsl, field=f"CP Spec {name} LSL"
+                ),
+                "usl": _normalized_decimal(
+                    item.raw_usl, field=f"CP Spec {name} USL"
+                ),
+                "test_condition": _normalized_contract_text(
+                    item.test_condition, field=f"CP Spec {name} test condition"
+                ),
+            }
+        )
+    return tuple(sorted(entries, key=lambda entry: str(entry["name"])))
+
+
+def _spec_fingerprint_sha256(items: tuple[CpSpecItem, ...]) -> str:
+    payload = {
+        "schema_version": "CP_NORMALIZED_SPEC_V1",
+        "parameters": _normalized_spec_entries(items),
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _parameter_columns_by_normalized_name(
+    columns: tuple[str, ...], *, source: str
+) -> dict[str, str]:
+    mapped: dict[str, str] = {}
+    for column in columns:
+        normalized = _normalized_parameter_name(
+            column, field=f"CP parameter column in {source}"
+        )
+        if normalized in mapped:
+            raise CpCsvTripletError(
+                f"CP parameter columns are ambiguous after normalization: {source}"
+            )
+        mapped[normalized] = column
+    return mapped
+
+
+def _lot_binding_key(value: object, *, field: str) -> str:
+    return _normalized_parameter_name(value, field=field).casefold()
+
+
+def _spec_filename_lot_key(path: Path) -> str | None:
+    marker_index = path.name.casefold().rfind("_spec_")
+    if marker_index <= 0:
+        return None
+    prefix = path.name[:marker_index]
+    try:
+        return _lot_binding_key(prefix, field=f"CP Spec filename {path.name}")
+    except CpCsvTripletError:
+        return None
+
+
 def _parameter_contract_sha256(triplet: CpCsvTriplet) -> str:
-    """Fingerprint the canonical parameter contract, not only the raw Spec file."""
+    """Fingerprint the normalized canonical parameter contract."""
 
     payload = {
-        "schema_version": "CP_PARAMETER_CONTRACT_V1",
+        "schema_version": "CP_PARAMETER_CONTRACT_V2",
         "non_parameter_columns": sorted(CP_PROCESS_COLUMNS),
-        "parameters": [
-            {
-                "name": item.name,
-                "unit": item.unit,
-                "raw_lsl": item.raw_lsl,
-                "raw_usl": item.raw_usl,
-                "test_condition": item.test_condition,
-            }
-            for item in triplet.spec_items
-        ],
+        "parameters": _normalized_spec_entries(triplet.spec_items),
     }
     encoded = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -147,32 +260,53 @@ def _stored_parameter_contract_matches(
 ) -> bool:
     if len(rows) != len(triplet.spec_items):
         return False
-
-    def normalized(value: object) -> str | None:
-        if value is None:
-            return None
-        text_value = str(value).strip()
-        return text_value or None
-
-    for index, (row, item) in enumerate(zip(rows, triplet.spec_items, strict=True), start=1):
-        condition_text = None
+    stored_items: list[CpSpecItem] = []
+    sequences: set[int] = set()
+    for row in rows:
         try:
             condition = json.loads(str(row["condition_json"] or "{}"))
-            condition_text = normalized(condition.get("text"))
-        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
-            return False
-        if (
-            int(row["sequence_no"]) != index
-            or str(row["raw_item_name"]) != item.name
-            or str(row["canonical_parameter_code"] or "") != item.name
-            or normalized(row["unit_code"]) != normalized(item.unit)
-            or normalized(row["lower_limit_raw"]) != normalized(item.raw_lsl)
-            or normalized(row["upper_limit_raw"]) != normalized(item.raw_usl)
-            or condition_text != normalized(item.test_condition)
-            or not bool(row["is_analysis_parameter"])
+            condition_text = condition.get("text")
+            sequence = int(row["sequence_no"])
+            raw_name = _normalized_parameter_name(
+                row["raw_item_name"], field="stored CP raw item name"
+            )
+            canonical_name = _normalized_parameter_name(
+                row["canonical_parameter_code"],
+                field="stored CP canonical parameter code",
+            )
+        except (
+            AttributeError,
+            KeyError,
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+            CpCsvTripletError,
         ):
             return False
-    return True
+        if sequence < 1 or sequence in sequences or raw_name != canonical_name:
+            return False
+        if not bool(row["is_analysis_parameter"]):
+            return False
+        sequences.add(sequence)
+        stored_items.append(
+            CpSpecItem(
+                name=raw_name,
+                unit=row["unit_code"],
+                lsl=None,
+                usl=None,
+                raw_lsl=row["lower_limit_raw"],
+                raw_usl=row["upper_limit_raw"],
+                test_condition=condition_text,
+            )
+        )
+    if sequences != set(range(1, len(rows) + 1)):
+        return False
+    try:
+        return _normalized_spec_entries(tuple(stored_items)) == _normalized_spec_entries(
+            triplet.spec_items
+        )
+    except CpCsvTripletError:
+        return False
 
 
 def _read_spec(path: Path) -> tuple[tuple[str, ...], tuple[CpSpecItem, ...]]:
@@ -260,8 +394,39 @@ def parse_cp_csv_triplet(
 ) -> CpCsvTriplet:
     cleaned_paths = _artifact_paths(artifacts, "cleaned")
     yield_paths = _artifact_paths(artifacts, "yield")
-    spec_path = _artifact_paths(artifacts, "spec")[0]
-    spec_parameters, declared_spec_items = _read_spec(spec_path)
+    spec_paths = _artifact_paths(artifacts, "spec")
+    parsed_specs: list[
+        tuple[Path, tuple[str, ...], tuple[CpSpecItem, ...], str]
+    ] = []
+    for path in spec_paths:
+        try:
+            spec_parameters, spec_items = _read_spec(path)
+            fingerprint = _spec_fingerprint_sha256(spec_items)
+        except CpCsvTripletError as exc:
+            if len(spec_paths) > 1:
+                raise CpMultiLotSpecBindingRequired(
+                    f"{CP_MULTI_LOT_SPEC_BINDING_REQUIRED}: cannot prove a "
+                    f"shared normalized Spec because {path.name} is invalid: {exc}"
+                ) from exc
+            raise
+        parsed_specs.append((path, spec_parameters, spec_items, fingerprint))
+    fingerprints = {spec[3] for spec in parsed_specs}
+    if len(fingerprints) != 1:
+        evidence = ", ".join(
+            f"{path.name}={fingerprint[:12]}"
+            for path, _parameters, _items, fingerprint in parsed_specs
+        )
+        raise CpMultiLotSpecBindingRequired(
+            f"{CP_MULTI_LOT_SPEC_BINDING_REQUIRED}: Cleaner emitted incompatible "
+            f"normalized Spec fingerprints; explicit per-Lot binding is required: "
+            f"{evidence}"
+        )
+    spec_path, spec_parameters, declared_spec_items, spec_fingerprint_sha256 = (
+        parsed_specs[0]
+    )
+    normalized_spec_names = _parameter_columns_by_normalized_name(
+        spec_parameters, source=spec_path.name
+    )
     identity_aliases = {
         "Lot_ID": ("Lot_ID", "LotID"),
         "Wafer_ID": ("Wafer_ID", "WaferID"),
@@ -270,8 +435,7 @@ def parse_cp_csv_triplet(
         "X": ("X",),
         "Y": ("Y",),
     }
-    parameters: tuple[str, ...] | None = None
-    source_parameter_columns: tuple[str, ...] | None = None
+    parameters = tuple(item.name for item in declared_spec_items)
     cleaned_rows: list[CpCleanedRow] = []
     seen_keys: set[str] = set()
     for path in cleaned_paths:
@@ -298,17 +462,22 @@ def parse_cp_csv_triplet(
                 raise CpCsvTripletError(
                     f"CP cleaned measurement columns are invalid: {path.name}"
                 )
-            if parameters is None:
-                source_parameter_columns = measured_columns
-                parameters = measured_columns
-                if parameters != spec_parameters:
-                    raise CpCsvTripletError(
-                        "CP cleaned parameters do not match first Spec after excluding CONT"
-                    )
-            if measured_columns != source_parameter_columns:
+            measured_by_name = _parameter_columns_by_normalized_name(
+                measured_columns, source=path.name
+            )
+            if set(measured_by_name) != set(normalized_spec_names):
                 raise CpCsvTripletError(
-                    f"CP cleaned measurement columns differ: {path.name}"
+                    "CP cleaned parameters do not match the normalized Spec contract "
+                    f"after excluding process columns: {path.name}"
                 )
+            aligned_columns = tuple(
+                measured_by_name[
+                    _normalized_parameter_name(
+                        parameter, field="CP normalized Spec parameter"
+                    )
+                ]
+                for parameter in parameters
+            )
             for source_row_no, row in enumerate(reader, start=2):
                 lot_id = (row[str(resolved["Lot_ID"])] or "").strip()
                 raw_wafer_id = (row[str(resolved["Wafer_ID"])] or "").strip()
@@ -326,7 +495,9 @@ def parse_cp_csv_triplet(
                         bin_value=str(int(Decimal(row[str(resolved["Bin"])]))),
                         x=int(Decimal(row[str(resolved["X"])])),
                         y=int(Decimal(row[str(resolved["Y"])])),
-                        values=tuple((row[name] or "").strip() for name in parameters),
+                        values=tuple(
+                            (row[name] or "").strip() for name in aligned_columns
+                        ),
                         source_row_no=source_row_no,
                     )
                 except (TypeError, ValueError) as exc:
@@ -343,7 +514,6 @@ def parse_cp_csv_triplet(
                 cleaned_rows.append(parsed)
     if not cleaned_rows:
         raise CpCsvTripletError("CP cleaned CSV contains no Die rows")
-    assert parameters is not None
 
     expected_counts: Counter[tuple[str, str]] = Counter()
     expected_passes: Counter[tuple[str, str]] = Counter()
@@ -378,13 +548,30 @@ def parse_cp_csv_triplet(
         key=lambda value: (value.casefold(), value),
     )
     if len(lot_ids) > 1:
-        lot_preview = ", ".join(lot_ids[:10])
-        if len(lot_ids) > 10:
-            lot_preview = f"{lot_preview}, ..."
-        raise CpMultiLotSpecBindingRequired(
-            f"{CP_MULTI_LOT_SPEC_BINDING_REQUIRED}: CP CSV triplet V1 has no "
-            f"explicit per-Lot Spec binding; found {len(lot_ids)} Lots: {lot_preview}"
-        )
+        lot_keys: dict[str, str] = {}
+        for lot_id in lot_ids:
+            key = _lot_binding_key(lot_id, field="CP Lot_ID")
+            if key in lot_keys:
+                raise CpMultiLotSpecBindingRequired(
+                    f"{CP_MULTI_LOT_SPEC_BINDING_REQUIRED}: Lot_ID values are "
+                    "ambiguous after normalization"
+                )
+            lot_keys[key] = lot_id
+        spec_lot_keys = [_spec_filename_lot_key(path) for path in spec_paths]
+        if any(key is None or key not in lot_keys for key in spec_lot_keys):
+            raise CpMultiLotSpecBindingRequired(
+                f"{CP_MULTI_LOT_SPEC_BINDING_REQUIRED}: cannot prove per-Lot "
+                "Spec coverage from Cleaner artifact names"
+            )
+        covered_lot_keys = {str(key) for key in spec_lot_keys}
+        missing_lots = [
+            lot_id for key, lot_id in lot_keys.items() if key not in covered_lot_keys
+        ]
+        if missing_lots:
+            raise CpMultiLotSpecBindingRequired(
+                f"{CP_MULTI_LOT_SPEC_BINDING_REQUIRED}: normalized Spec evidence "
+                f"is missing for Lots: {', '.join(missing_lots)}"
+            )
     if len(products) > 1:
         raise CpCsvTripletError(
             "CP Route A requires at most one explicit Product per upload task"
@@ -403,7 +590,14 @@ def parse_cp_csv_triplet(
         spec_items=declared_spec_items,
         rows=tuple(cleaned_rows),
         spec_sha256=hashlib.sha256(spec_path.read_bytes()).hexdigest(),
-        source_paths=tuple(str(path) for path in cleaned_paths + yield_paths + (spec_path,)),
+        spec_fingerprint_sha256=spec_fingerprint_sha256,
+        spec_source_sha256s=tuple(
+            hashlib.sha256(path.read_bytes()).hexdigest() for path in spec_paths
+        ),
+        source_paths=tuple(
+            str(path) for path in cleaned_paths + yield_paths + spec_paths
+        ),
+        lot_ids=tuple(lot_ids),
         pass_count=sum(actual_passes.values()),
     )
 
@@ -428,7 +622,11 @@ class CpCsvTripletWriter:
     ) -> CpCanonicalImportResult:
         triplet = parse_cp_csv_triplet(artifacts)
         measurement_count = len(triplet.rows) * len(triplet.parameters)
-        single_lot_id = triplet.rows[0].lot_id
+        spec_selection_rule = (
+            "SINGLE_LOT_EXPLICIT_SPEC"
+            if len(triplet.lot_ids) == 1
+            else "MULTI_LOT_SHARED_NORMALIZED_SPEC"
+        )
         with self._engine.begin() as connection:
             preparation = prepare_atomic_stage(
                 connection,
@@ -532,7 +730,10 @@ class CpCsvTripletWriter:
                         "WHERE test_program_id=:program AND program_checksum=:checksum "
                         "ORDER BY program_version_id"
                     ),
-                    {"program": program_id, "checksum": triplet.spec_sha256},
+                    {
+                        "program": program_id,
+                        "checksum": triplet.spec_fingerprint_sha256,
+                    },
                 )
                 .mappings()
                 .all()
@@ -560,7 +761,7 @@ class CpCsvTripletWriter:
                 str(compatible_version["version_code"])
                 if compatible_version is not None
                 else (
-                    f"SPEC-{triplet.spec_sha256[:16].upper()}-"
+                    f"SPEC-{triplet.spec_fingerprint_sha256[:16].upper()}-"
                     f"PARAM-{parameter_contract_sha256[:12].upper()}"
                 )
             )
@@ -585,12 +786,13 @@ class CpCsvTripletWriter:
                         "program": program_id,
                         "version": version_code,
                         "raw_program": program_code,
-                        "sha": triplet.spec_sha256,
+                        "sha": triplet.spec_fingerprint_sha256,
                         "metadata": json.dumps(
                             {
-                                "spec_binding_contract": "SINGLE_LOT_EXPLICIT_SPEC",
+                                "spec_binding_contract": "NORMALIZED_SPEC_FINGERPRINT_V1",
                                 "binding_scope": "DATASET_VERSION",
-                                "spec_sha256": triplet.spec_sha256,
+                                "spec_fingerprint_sha256": triplet.spec_fingerprint_sha256,
+                                "spec_source_sha256s": triplet.spec_source_sha256s,
                                 "parameter_contract_sha256": parameter_contract_sha256,
                                 "non_parameter_columns": sorted(CP_PROCESS_COLUMNS),
                             }
@@ -637,7 +839,12 @@ class CpCsvTripletWriter:
                 raise CpCsvTripletError(
                     "stored CP test items differ from the canonical parameter contract"
                 )
-            item_ids = {str(row["raw_item_name"]): int(row["test_item_id"]) for row in item_rows}
+            item_ids = {
+                _normalized_parameter_name(
+                    row["raw_item_name"], field="stored CP raw item name"
+                ): int(row["test_item_id"])
+                for row in item_rows
+            }
 
             parser_format = f"{supplier_code}_CP_CSV_TRIPLET"
             parser_version = "1.1" if supplier_code == "HUAHONG" else "1.0"
@@ -670,7 +877,7 @@ class CpCsvTripletWriter:
                     },
                 )
             spec_source_ref = (
-                f"sha256:{triplet.spec_sha256}:{supplier_code}:"
+                f"spec-fingerprint:{triplet.spec_fingerprint_sha256}:{supplier_code}:"
                 f"PARAM:{parameter_contract_sha256[:16]}"
             )
             spec_set_id = connection.execute(
@@ -690,15 +897,16 @@ class CpCsvTripletWriter:
                         "product": product_id,
                         "name": (
                             f"{triplet.product_name or supplier_name} "
-                            "single-Lot explicit Spec"
+                            "normalized CP Spec"
                         ),
                         "version": version_code,
                         "source": spec_source_ref,
                         "metadata": json.dumps(
                             {
-                                "selection_rule": "SINGLE_LOT_EXPLICIT_SPEC",
+                                "selection_rule": "NORMALIZED_SPEC_FINGERPRINT_V1",
                                 "binding_scope": "DATASET_VERSION",
-                                "spec_sha256": triplet.spec_sha256,
+                                "spec_fingerprint_sha256": triplet.spec_fingerprint_sha256,
+                                "spec_source_sha256s": triplet.spec_source_sha256s,
                                 "parameter_contract_sha256": parameter_contract_sha256,
                                 "non_parameter_columns": sorted(CP_PROCESS_COLUMNS),
                             }
@@ -714,7 +922,11 @@ class CpCsvTripletWriter:
                     [
                         {
                             "spec": spec_set_id,
-                            "item": item_ids[item.name],
+                            "item": item_ids[
+                                _normalized_parameter_name(
+                                    item.name, field="CP Spec parameter"
+                                )
+                            ],
                             "name": item.name,
                             "lsl": item.lsl,
                             "usl": item.usl,
@@ -751,6 +963,10 @@ class CpCsvTripletWriter:
                             "business_domain": context["business_domain"],
                             "source_paths": triplet.source_paths,
                             "spec_set_id": spec_set_id,
+                            "spec_selection_rule": spec_selection_rule,
+                            "spec_fingerprint_sha256": triplet.spec_fingerprint_sha256,
+                            "spec_source_sha256s": triplet.spec_source_sha256s,
+                            "lot_ids": triplet.lot_ids,
                             "atomic_finalize_summary": dict(finalize_summary),
                         },
                         ensure_ascii=False,
@@ -779,6 +995,8 @@ class CpCsvTripletWriter:
                         "metadata": json.dumps(
                             {
                                 "spec_set_id": spec_set_id,
+                                "spec_selection_rule": spec_selection_rule,
+                                "spec_fingerprint_sha256": triplet.spec_fingerprint_sha256,
                                 "raw_wafer_id": raw_wafer_ids[(lot_id, wafer_id)],
                                 "source_group": lot_id,
                                 "business_lot_available": business_lot_id is not None,
@@ -831,7 +1049,11 @@ class CpCsvTripletWriter:
                     measurement_parameters.append(
                         {
                             "unit": unit_ids[row.logical_key],
-                            "item": item_ids[name],
+                            "item": item_ids[
+                                _normalized_parameter_name(
+                                    name, field="CP measurement parameter"
+                                )
+                            ],
                             "numeric": _number(
                                 raw,
                                 field=f"row {row.source_row_no} {name}",
@@ -876,9 +1098,16 @@ class CpCsvTripletWriter:
                 spec_set_id=int(spec_set_id),
                 metadata_json=json.dumps(
                     {
-                        "spec_selection_rule": "SINGLE_LOT_EXPLICIT_SPEC",
-                        "lot_id": single_lot_id,
+                        "spec_selection_rule": spec_selection_rule,
+                        "lot_id": (
+                            triplet.lot_ids[0]
+                            if len(triplet.lot_ids) == 1
+                            else None
+                        ),
+                        "lot_ids": triplet.lot_ids,
                         "spec_sha256": triplet.spec_sha256,
+                        "spec_fingerprint_sha256": triplet.spec_fingerprint_sha256,
+                        "spec_source_sha256s": triplet.spec_source_sha256s,
                         "parameter_contract_sha256": parameter_contract_sha256,
                     },
                     ensure_ascii=False,

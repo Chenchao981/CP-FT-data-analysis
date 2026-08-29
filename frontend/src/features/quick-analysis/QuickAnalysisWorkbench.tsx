@@ -13,6 +13,8 @@ import {
   Card,
   Col,
   Empty,
+  Input,
+  Modal,
   Row,
   Select,
   Space,
@@ -31,10 +33,15 @@ import {
   listQuickAnalysisSessions,
   listQuickSourceDirectories,
   listQuickSourceRoots,
+  previewQuickSourceManifest,
   type QuickAnalysisSession,
   type QuickSourceDirectory,
 } from "../../api/quickAnalysis";
-import { formatUtcDateTime } from "../../utils/dateTime";
+import {
+  formatUtcDateTime,
+  recentShanghaiDayRange,
+  shanghaiLocalInputToUtc,
+} from "../../utils/dateTime";
 
 const statusColor: Record<string, string> = {
   QUEUED: "gold",
@@ -63,6 +70,12 @@ const count = (value?: number | null) => value == null ? "—" : value.toLocaleS
 export function QuickAnalysisWorkbench() {
   const [rootCode, setRootCode] = useState<string>();
   const [relativePath, setRelativePath] = useState(".");
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [sessionPage, setSessionPage] = useState(1);
+  const [sessionPageSize, setSessionPageSize] = useState(20);
+  const [sessionStatus, setSessionStatus] = useState<QuickAnalysisSession["status"]>();
+  const [sessionRange, setSessionRange] = useState(() => recentShanghaiDayRange(30));
+  const [downloadError, setDownloadError] = useState<string>();
   const [messageApi, contextHolder] = message.useMessage();
   const queryClient = useQueryClient();
   const roots = useQuery({ queryKey: ["quick-analysis", "roots"], queryFn: listQuickSourceRoots });
@@ -78,25 +91,48 @@ export function QuickAnalysisWorkbench() {
     queryFn: () => listQuickSourceDirectories(rootCode!, relativePath),
     enabled: Boolean(rootCode),
   });
+  const manifest = useQuery({
+    queryKey: ["quick-analysis", "manifest", rootCode, directories.data?.current_relative_path ?? relativePath],
+    queryFn: () => previewQuickSourceManifest(rootCode!, directories.data?.current_relative_path ?? relativePath),
+    enabled: Boolean(rootCode && directories.data),
+  });
   const sessions = useQuery({
-    queryKey: ["quick-analysis", "sessions"],
-    queryFn: listQuickAnalysisSessions,
-    refetchInterval: (query) => (query.state.data ?? []).some((item) => ["QUEUED", "RUNNING"].includes(item.status)) ? 3000 : false,
+    queryKey: ["quick-analysis", "sessions", sessionPage, sessionPageSize, sessionStatus, sessionRange.from, sessionRange.to],
+    queryFn: () => listQuickAnalysisSessions({
+      page: sessionPage,
+      page_size: sessionPageSize,
+      status: sessionStatus,
+      from_utc: shanghaiLocalInputToUtc(sessionRange.from),
+      to_utc: shanghaiLocalInputToUtc(sessionRange.to),
+    }),
+    refetchInterval: (query) => (query.state.data?.items ?? []).some((item) => ["QUEUED", "RUNNING"].includes(item.status)) ? 3000 : false,
   });
   const createMutation = useMutation({
-    mutationFn: () => createQuickPat(rootCode!, directories.data?.current_relative_path ?? relativePath),
+    mutationFn: () => createQuickPat(
+      rootCode!,
+      manifest.data!.relative_path,
+      manifest.data!.mode,
+      manifest.data!.sha,
+    ),
     onSuccess: async (created) => {
+      setConfirmOpen(false);
+      setSessionPage(1);
       messageApi.success(`快速 PAT 会话 ${created.analysis_session_id} 已进入后台队列（任务 ${created.job_id}）`);
       await queryClient.invalidateQueries({ queryKey: ["quick-analysis", "sessions"] });
     },
     onError: (error) => messageApi.error(error.message),
   });
   const metrics = useMemo(() => ({
-    total: sessions.data?.length ?? 0,
-    running: (sessions.data ?? []).filter((item) => ["QUEUED", "RUNNING"].includes(item.status)).length,
-    success: (sessions.data ?? []).filter((item) => item.status === "SUCCESS").length,
-    failed: (sessions.data ?? []).filter((item) => item.status === "FAILED").length,
+    total: sessions.data?.total ?? 0,
+    running: (sessions.data?.items ?? []).filter((item) => ["QUEUED", "RUNNING"].includes(item.status)).length,
+    success: (sessions.data?.items ?? []).filter((item) => item.status === "SUCCESS").length,
+    failed: (sessions.data?.items ?? []).filter((item) => item.status === "FAILED").length,
   }), [sessions.data]);
+  const downloadMutation = useMutation({
+    mutationFn: (row: QuickAnalysisSession) => downloadQuickPat(row.analysis_session_id, row.result_file_name!),
+    onMutate: () => setDownloadError(undefined),
+    onError: (error) => setDownloadError(error.message),
+  });
 
   const directoryColumns: ColumnsType<QuickSourceDirectory> = [
     { title: "目录", dataIndex: "name", render: (name, row) => <Button type="link" icon={<FolderOpenOutlined />} onClick={() => setRelativePath(row.relative_path)}>{name}</Button> },
@@ -117,7 +153,7 @@ export function QuickAnalysisWorkbench() {
     { title: "创建时间", dataIndex: "created_at_utc", width: 175, render: formatUtcDateTime },
     { title: "结果到期", dataIndex: "expires_at_utc", width: 175, render: formatUtcDateTime },
     { title: "错误", dataIndex: "error_message", width: 240, ellipsis: true, render: (value) => value || "—" },
-    { title: "操作", key: "actions", width: 100, fixed: "right", render: (_, row) => row.status === "SUCCESS" && row.result_file_name ? <Button type="link" size="small" icon={<DownloadOutlined />} onClick={() => void downloadQuickPat(row.analysis_session_id, row.result_file_name!)}>下载 PAT</Button> : "—" },
+    { title: "操作", key: "actions", width: 100, fixed: "right", render: (_, row) => row.status === "SUCCESS" && row.result_file_name ? <Button type="link" size="small" icon={<DownloadOutlined />} loading={downloadMutation.isPending && downloadMutation.variables?.analysis_session_id === row.analysis_session_id} onClick={() => downloadMutation.mutate(row)}>下载 PAT</Button> : "—" },
   ];
   const selectedRoot = roots.data?.find((item) => item.code === rootCode);
 
@@ -125,11 +161,11 @@ export function QuickAnalysisWorkbench() {
     {contextHolder}
     <div className="page-heading">
       <div><Typography.Text type="secondary">快速计算 / FT PAT</Typography.Text><Typography.Title level={2}>快速分析</Typography.Title><Typography.Text type="secondary">直接读取受控服务器目录，复用已发布杰群 PAT 工具；不上传原始文件，也不写入正式 Canonical 明细。</Typography.Text></div>
-      <Button icon={<ReloadOutlined />} onClick={() => void Promise.all([roots.refetch(), directories.refetch(), sessions.refetch()])}>刷新</Button>
+      <Button icon={<ReloadOutlined />} onClick={() => void Promise.all([roots.refetch(), directories.refetch(), manifest.refetch(), sessions.refetch()])}>刷新</Button>
     </div>
     <Alert className="quick-analysis-alert" showIcon type="info" message="当前 P0：杰群统一 CSV 原始目录 → 低内存 PAT Excel" description="系统只保存来源 Manifest、工具版本、运行状态和结果文件，默认 7 天后过期。若要长期追溯或跨批次正式分析，请使用正式入库。" />
-    <Row gutter={16} className="production-stats"><Col span={6}><Card><Statistic title="快速会话" value={metrics.total} /></Card></Col><Col span={6}><Card><Statistic title="排队/计算" value={metrics.running} valueStyle={{ color: "#1677ff" }} /></Card></Col><Col span={6}><Card><Statistic title="已完成" value={metrics.success} valueStyle={{ color: "#3f8600" }} /></Card></Col><Col span={6}><Card><Statistic title="失败" value={metrics.failed} valueStyle={{ color: metrics.failed ? "#cf1322" : undefined }} /></Card></Col></Row>
-    <Card title={<Space><CloudServerOutlined />选择受控服务器目录</Space>} className="quick-source-card" extra={<Button type="primary" icon={<PlayCircleOutlined />} disabled={!selectedRoot?.available || !directories.data} loading={createMutation.isPending} onClick={() => createMutation.mutate()}>用当前目录计算 PAT</Button>}>
+    <Row gutter={16} className="production-stats"><Col span={6}><Card><Statistic title="筛选结果" value={metrics.total} /></Card></Col><Col span={6}><Card><Statistic title="本页排队/计算" value={metrics.running} valueStyle={{ color: "#1677ff" }} /></Card></Col><Col span={6}><Card><Statistic title="本页已完成" value={metrics.success} valueStyle={{ color: "#3f8600" }} /></Card></Col><Col span={6}><Card><Statistic title="本页失败" value={metrics.failed} valueStyle={{ color: metrics.failed ? "#cf1322" : undefined }} /></Card></Col></Row>
+    <Card title={<Space><CloudServerOutlined />选择受控服务器目录</Space>} className="quick-source-card" extra={<Button type="primary" icon={<PlayCircleOutlined />} disabled={!selectedRoot?.available || !manifest.data} loading={manifest.isFetching || createMutation.isPending} onClick={() => setConfirmOpen(true)}>确认范围并计算 PAT</Button>}>
       {roots.isError ? <Alert type="error" showIcon message="数据源加载失败" description={roots.error.message} /> : !roots.isLoading && !roots.data?.length ? <Empty description="尚未配置快速分析数据源，请管理员设置 TMS_SOURCE_ROOTS_JSON。" /> : <>
         <Space wrap className="quick-source-toolbar">
           <Typography.Text strong>数据源</Typography.Text>
@@ -138,12 +174,88 @@ export function QuickAnalysisWorkbench() {
           <Typography.Text code>{directories.data?.current_relative_path ?? relativePath}</Typography.Text>
         </Space>
         {directories.isError && <Alert type="error" showIcon message="目录读取失败" description={directories.error.message} />}
+        {manifest.isError && <Alert type="error" showIcon message="递归文件范围预览失败" description={manifest.error.message} />}
         <Table rowKey="relative_path" size="small" loading={directories.isLoading} columns={directoryColumns} dataSource={directories.data?.directories ?? []} pagination={false} locale={{ emptyText: "当前目录没有子目录，可直接点击右上角开始计算。" }} />
       </>}
     </Card>
     <Card title="快速分析记录" className="production-table-card quick-session-card">
+      <Space wrap style={{ marginBottom: 12 }}>
+        <Typography.Text strong>状态</Typography.Text>
+        <Select
+          allowClear
+          placeholder="全部状态"
+          value={sessionStatus}
+          style={{ width: 160 }}
+          options={Object.entries(statusName).map(([value, label]) => ({ value, label }))}
+          onChange={(value) => { setSessionStatus(value); setSessionPage(1); }}
+        />
+        <Typography.Text strong>创建时间（上海）</Typography.Text>
+        <Input
+          aria-label="快速分析开始时间"
+          type="datetime-local"
+          value={sessionRange.from}
+          style={{ width: 190 }}
+          onChange={(event) => { setSessionRange((current) => ({ ...current, from: event.target.value })); setSessionPage(1); }}
+        />
+        <Typography.Text>至</Typography.Text>
+        <Input
+          aria-label="快速分析结束时间"
+          type="datetime-local"
+          value={sessionRange.to}
+          style={{ width: 190 }}
+          onChange={(event) => { setSessionRange((current) => ({ ...current, to: event.target.value })); setSessionPage(1); }}
+        />
+        {[7, 30, 90].map((days) => (
+          <Button
+            key={days}
+            size="small"
+            onClick={() => { setSessionRange(recentShanghaiDayRange(days)); setSessionPage(1); }}
+          >
+            近 {days} 天
+          </Button>
+        ))}
+      </Space>
       {sessions.isError && <Alert type="error" showIcon message="快速分析记录加载失败" description={sessions.error.message} />}
-      <Table rowKey="analysis_session_id" columns={sessionColumns} dataSource={sessions.data ?? []} loading={sessions.isLoading} scroll={{ x: 1900 }} pagination={{ pageSize: 20, showSizeChanger: true }} />
+      {downloadError && <Alert type="error" showIcon message="PAT 下载失败" description={`${downloadError}。结果可能已过期或已清理，请刷新记录后重试。`} style={{ marginBottom: 12 }} />}
+      <Table
+        rowKey="analysis_session_id"
+        columns={sessionColumns}
+        dataSource={sessions.data?.items ?? []}
+        loading={sessions.isLoading}
+        scroll={{ x: 1900 }}
+        pagination={{
+          current: sessions.data?.page ?? sessionPage,
+          pageSize: sessions.data?.page_size ?? sessionPageSize,
+          total: sessions.data?.total ?? 0,
+          showSizeChanger: true,
+          pageSizeOptions: [10, 20, 50, 100],
+          showTotal: (total) => `共 ${total} 个会话`,
+        }}
+        onChange={(pagination) => {
+          setSessionPage(pagination.current ?? 1);
+          setSessionPageSize(pagination.pageSize ?? 20);
+        }}
+      />
     </Card>
+    <Modal
+      title="确认快速 PAT 处理范围"
+      open={confirmOpen}
+      okText="确认并创建任务"
+      cancelText="返回选择"
+      confirmLoading={createMutation.isPending}
+      onCancel={() => { if (!createMutation.isPending) setConfirmOpen(false); }}
+      onOk={() => createMutation.mutate()}
+    >
+      {manifest.data ? <>
+        <Alert type="info" showIcon message="系统将递归处理以下范围" description="实际创建任务时会重新构建同一规则的 Manifest；目录内容发生变化时会阻止提交并要求重新确认。" style={{ marginBottom: 16 }} />
+        <Row gutter={[12, 12]}>
+          <Col span={12}><Statistic title="源文件数" value={manifest.data.file_count} /></Col>
+          <Col span={12}><Statistic title="源数据大小" value={size(manifest.data.total_bytes)} /></Col>
+        </Row>
+        <Typography.Paragraph><strong>相对目录：</strong><Typography.Text code>{manifest.data.relative_path}</Typography.Text></Typography.Paragraph>
+        <Typography.Paragraph><strong>文件类型：</strong>{manifest.data.allowed_suffixes.join("、")}</Typography.Paragraph>
+        <Typography.Paragraph><strong>计算工具：</strong>杰群低内存 PAT</Typography.Paragraph>
+      </> : <Alert type="warning" showIcon message="尚未取得文件范围，请关闭后刷新目录" />}
+    </Modal>
   </div>;
 }

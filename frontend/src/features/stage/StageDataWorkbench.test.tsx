@@ -3,6 +3,7 @@
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { downloadStageUploadFile, listFormalSourceDirectories, listFormalSourceRoots, listStageResultsPage, listStageUploadsPage, previewFormalSourceManifest, uploadStageData } from "../../api/stageData";
@@ -117,6 +118,20 @@ function renderWorkbench(props: StageDataWorkbenchProps = { businessDomain: "PRO
   };
 }
 
+function StatefulWorkbench({ initialSearch, onOpenJob }: { initialSearch: string; onOpenJob?: (jobId: number) => void }) {
+  const [params, setParams] = useState(() => new URLSearchParams(initialSearch));
+  return <>
+    <output data-testid="stage-search">{params.toString()}</output>
+    <StageDataWorkbench
+      businessDomain="PRODUCTION"
+      testStage="FT"
+      searchParams={params}
+      onSearchParamsChange={setParams}
+      onOpenJob={onOpenJob}
+    />
+  </>;
+}
+
 describe("StageDataWorkbench Lot input states", () => {
   beforeEach(() => {
     vi.mocked(listFormalSourceRoots).mockResolvedValue([]);
@@ -217,18 +232,82 @@ describe("StageDataWorkbench Lot input states", () => {
 
     fireEvent.change(screen.getByLabelText("产品"), { target: { value: "NCE-IGBT" } });
     fireEvent.change(screen.getByLabelText("Lot"), { target: { value: "LOT-202608" } });
+    fireEvent.change(screen.getByLabelText("开始时间（上海，含）"), { target: { value: "2026-08-01T08:30" } });
+    fireEvent.change(screen.getByLabelText("结束时间（上海，不含）"), { target: { value: "2026-09-01T00:00" } });
     fireEvent.click(screen.getByRole("button", { name: /服务端检索/ }));
 
     await waitFor(() => expect(listStageUploadsPage).toHaveBeenLastCalledWith(
       "PRODUCTION",
       "FT",
-      expect.objectContaining({ page: 1, page_size: 20, product_name: "NCE-IGBT", lot_id: "LOT-202608" }),
+      expect.objectContaining({
+        page: 1,
+        page_size: 20,
+        product_name: "NCE-IGBT",
+        lot_id: "LOT-202608",
+        from_utc: "2026-08-01T00:30:00.000Z",
+        to_utc: "2026-08-31T16:00:00.000Z",
+      }),
     ));
     expect(listStageResultsPage).toHaveBeenLastCalledWith(
       "PRODUCTION",
       "FT",
-      expect.objectContaining({ page: 1, page_size: 20, product_name: "NCE-IGBT", lot_id: "LOT-202608" }),
+      expect.objectContaining({
+        page: 1,
+        page_size: 20,
+        product_name: "NCE-IGBT",
+        lot_id: "LOT-202608",
+        from_utc: "2026-08-01T00:30:00.000Z",
+        to_utc: "2026-08-31T16:00:00.000Z",
+      }),
     );
+  }, 30_000);
+
+  it("hydrates filters, tabs, and independent page state from URL search params", async () => {
+    vi.mocked(listStageUploadsPage).mockResolvedValue({ items: uploadRows, total: 60, page: 2, page_size: 50 });
+    vi.mocked(listStageResultsPage).mockResolvedValue({ items: resultRows, total: 70, page: 3, page_size: 10 });
+    const onSearchParamsChange = vi.fn();
+    renderWorkbench({
+      businessDomain: "PRODUCTION",
+      testStage: "FT",
+      searchParams: new URLSearchParams("tab=result&product_name=NCE-IGBT&lot_id=LOT-URL&upload_page=2&upload_page_size=50&result_page=3&result_page_size=10&job_id=91"),
+      onSearchParamsChange,
+    });
+
+    expect(await screen.findByText("result-1", {}, { timeout: 15_000 })).toBeInTheDocument();
+    expect(screen.getByLabelText("产品")).toHaveValue("NCE-IGBT");
+    expect(screen.getByLabelText("Lot")).toHaveValue("LOT-URL");
+    expect(listStageUploadsPage).toHaveBeenLastCalledWith("PRODUCTION", "FT", expect.objectContaining({ page: 2, page_size: 50, product_name: "NCE-IGBT", lot_id: "LOT-URL" }));
+    expect(listStageResultsPage).toHaveBeenLastCalledWith("PRODUCTION", "FT", expect.objectContaining({ page: 3, page_size: 10, product_name: "NCE-IGBT", lot_id: "LOT-URL" }));
+
+    fireEvent.click(screen.getByRole("tab", { name: "原始文件" }));
+    const next = onSearchParamsChange.mock.calls.at(-1)?.[0] as URLSearchParams;
+    expect(next.get("tab")).toBeNull();
+    expect(next.get("job_id")).toBe("91");
+    expect(next.get("upload_page")).toBe("2");
+  }, 30_000);
+
+  it("writes filters and tabs to URL state while preserving the open Job", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <StatefulWorkbench initialSearch="job_id=88" />
+      </QueryClientProvider>,
+    );
+    await screen.findByText("missing-a.xlsx", {}, { timeout: 15_000 });
+
+    fireEvent.change(screen.getByLabelText("产品"), { target: { value: "NCE-MOS" } });
+    fireEvent.change(screen.getByLabelText("Lot"), { target: { value: "LOT-STATE" } });
+    fireEvent.click(screen.getByRole("button", { name: /服务端检索/ }));
+
+    await waitFor(() => expect(screen.getByTestId("stage-search")).toHaveTextContent("product_name=NCE-MOS"));
+    const filterSearch = new URLSearchParams(screen.getByTestId("stage-search").textContent ?? "");
+    expect(filterSearch.get("job_id")).toBe("88");
+    expect(filterSearch.get("lot_id")).toBe("LOT-STATE");
+    expect(filterSearch.get("upload_page")).toBe("1");
+    expect(filterSearch.get("result_page")).toBe("1");
+
+    fireEvent.click(screen.getByRole("tab", { name: "清洗结果" }));
+    await waitFor(() => expect(screen.getByTestId("stage-search")).toHaveTextContent("tab=result"));
   }, 30_000);
 
   it("keeps upload pagination controlled by the server response", async () => {
@@ -265,7 +344,8 @@ describe("StageDataWorkbench Lot input states", () => {
     const onOpenJob = vi.fn();
     renderWorkbench({ businessDomain: "PRODUCTION", testStage: "FT", onOpenJob });
 
-    fireEvent.click((await screen.findAllByRole("button", { name: /Job #1/ }))[0]);
+    await screen.findByText("missing-a.xlsx", {}, { timeout: 15_000 });
+    fireEvent.click(screen.getAllByRole("button", { name: /Job #1/ })[0]);
     expect(onOpenJob).toHaveBeenCalledWith(1);
 
     fireEvent.click(screen.getByRole("tab", { name: "清洗结果" }));
@@ -274,6 +354,24 @@ describe("StageDataWorkbench Lot input states", () => {
     expect(resultRow).not.toBeNull();
     expect(within(resultRow!).getAllByText("—").length).toBeGreaterThan(0);
     expect(within(resultRow!).queryByText("0.00%")).not.toBeInTheDocument();
+  }, 30_000);
+
+  it("offers result analysis to a read-only DATASET_READ user", async () => {
+    const onOpenAnalytics = vi.fn();
+    vi.mocked(useAuth).mockReturnValue({
+      user: { ...user, permissions: ["DATASET_READ"] },
+      loading: false,
+      login: vi.fn(),
+      logout: vi.fn(),
+      can: (permission: string) => permission === "DATASET_READ",
+    });
+    renderWorkbench({ businessDomain: "PRODUCTION", testStage: "FT", onOpenAnalytics });
+
+    await screen.findByText("missing-a.xlsx", {}, { timeout: 15_000 });
+    fireEvent.click(screen.getByRole("tab", { name: "清洗结果" }));
+    fireEvent.click((await screen.findAllByRole("button", { name: /数据分析/ }))[0]);
+
+    expect(onOpenAnalytics).toHaveBeenCalledWith(20, 1);
   }, 30_000);
 
   it("shows a visible error when an authenticated source download fails", async () => {
@@ -325,7 +423,8 @@ describe("StageDataWorkbench Lot input states", () => {
       cleaner_release: { cleaner_release_id: 1, cleaner_code: "FT_XLSX_SCATTER_V1", cleaner_version: "1.0.0" },
     });
 
-    renderWorkbench();
+    const onOpenJob = vi.fn();
+    renderWorkbench({ businessDomain: "PRODUCTION", testStage: "FT", onOpenJob });
     fireEvent.click(await screen.findByRole("button", { name: /上传数据/ }));
     fireEvent.click(screen.getByRole("radio", { name: /受控服务器目录/ }));
 
@@ -363,6 +462,7 @@ describe("StageDataWorkbench Lot input states", () => {
       "PATH_SIZE_MTIME_V1",
       manifestSha,
     ));
+    expect(onOpenJob).toHaveBeenCalledWith(199);
   }, 30_000);
 
   it("clears catalog confirmation and refreshes the manifest after submit fails", async () => {

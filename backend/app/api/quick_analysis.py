@@ -12,7 +12,11 @@ from app.api.dependencies import require_permission
 from app.core.errors import DomainError
 from app.domain.auth import Principal
 from app.domain.jobs import CreateJobRequest, JobType, TriggerType
-from app.domain.quick_analysis import CreateQuickPatRequest, NewQuickAnalysisSession
+from app.domain.quick_analysis import (
+    CreateQuickPatRequest,
+    NewQuickAnalysisSession,
+    QuickAnalysisStatus,
+)
 
 router = APIRouter(prefix="/quick-analysis")
 
@@ -73,6 +77,34 @@ def list_source_directories(
     }
 
 
+@router.get("/source-roots/{root_code}/manifest-preview")
+def preview_source_manifest(
+    root_code: str,
+    request: Request,
+    relative_path: str = Query(default=".", max_length=1000),
+    _principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
+) -> dict[str, object]:
+    catalog = source_catalog(request)
+    root = catalog.require_scope(
+        root_code,
+        purpose="QUICK_ANALYSIS",
+        test_stage="FT",
+        factory_code="JIEQUN",
+    )
+    manifest = catalog.build_manifest(root.code, relative_path)
+    return {
+        "root_code": root.code,
+        "relative_path": manifest.selected_relative_path,
+        "mode": manifest.mode,
+        "recursive": True,
+        "file_count": manifest.file_count,
+        "total_bytes": manifest.total_bytes,
+        "sha": manifest.sha256,
+        "allowed_suffixes": list(root.allowed_suffixes),
+        "tool_code": "JIEQUN_FT_QUICK_PAT_EXISTING",
+    }
+
+
 @router.post("/pat", status_code=status.HTTP_201_CREATED)
 def create_quick_pat(
     payload: CreateQuickPatRequest,
@@ -87,6 +119,15 @@ def create_quick_pat(
         factory_code="JIEQUN",
     )
     manifest = catalog.build_manifest(root.code, payload.source_relative_path)
+    if not manifest.matches_confirmation(
+        mode=payload.source_manifest_mode,
+        sha256=payload.source_manifest_sha256,
+    ):
+        raise DomainError(
+            "QUICK_SOURCE_CHANGED",
+            "源目录与确认时的文件清单不一致，请重新预览后再提交",
+            409,
+        )
     capacity = capacity_policy(request)
     reserved_bytes = capacity.reservation_for(manifest.total_bytes)
     capacity.ensure_filesystem_capacity(reserved_bytes)
@@ -141,9 +182,28 @@ def create_quick_pat(
 @router.get("/sessions")
 def list_quick_sessions(
     request: Request,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    status_filter: QuickAnalysisStatus | None = Query(  # noqa: B008
+        default=None, alias="status"
+    ),
+    from_utc: datetime | None = Query(default=None),  # noqa: B008
+    to_utc: datetime | None = Query(default=None),  # noqa: B008
     principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
-) -> list[dict]:
-    return [asdict(item) for item in quick_service(request).list_for_principal(principal)]
+) -> dict:
+    if from_utc is not None and to_utc is not None and from_utc >= to_utc:
+        raise DomainError(
+            "QUICK_TIME_RANGE_INVALID", "开始时间必须早于结束时间", 422
+        )
+    result = quick_service(request).list_page_for_principal(
+        principal,
+        page=page,
+        page_size=page_size,
+        status=status_filter,
+        from_utc=from_utc,
+        to_utc=to_utc,
+    )
+    return asdict(result)
 
 
 @router.get("/sessions/{analysis_session_id}")

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time, timedelta
 from typing import Any
 
 from sqlalchemy import Engine, text
@@ -21,7 +21,7 @@ WITH current_scope AS (
     SELECT DISTINCT
         dv.dataset_version_id,dv.dataset_id,dv.version_no,dv.input_batch_id,
         dv.published_at_utc,d.owner_user_id,d.product_id,
-        COALESCE(p.product_name,p.product_code,N'UNKNOWN') AS product_name,
+        COALESCE(product_enrichment.value_text,p.product_name,p.product_code,N'UNKNOWN') AS product_name,
         b.business_domain,b.test_stage,b.factory_code,tr.run_id,tr.lot_id
     FROM dataset.dataset_version dv
     JOIN dataset.dataset d ON d.dataset_id=dv.dataset_id
@@ -30,6 +30,16 @@ WITH current_scope AS (
       ON dvr.dataset_version_id=dv.dataset_version_id
     JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id
     LEFT JOIN mdm.product p ON p.product_id=d.product_id
+    OUTER APPLY(
+        SELECT TOP (1) fe.value_text
+        FROM ingestion.field_enrichment fe
+        WHERE fe.import_batch_id=dv.input_batch_id
+          AND fe.source_file_id IS NULL
+          AND fe.test_stage=d.test_stage
+          AND fe.field_code='PRODUCT_CODE'
+          AND fe.action='FILL' AND fe.is_current=1
+        ORDER BY fe.enrichment_id DESC
+    ) product_enrichment
     WHERE dv.status='PUBLISHED' AND dv.is_current=1
       AND dv.published_at_utc>=:from_utc AND dv.published_at_utc<:to_utc
       {filters}
@@ -48,9 +58,7 @@ def _iso_utc(value: Any) -> str | None:
     if value is None:
         return None
     if not isinstance(value, datetime):
-        raise DomainError(
-            "QUALITY_SNAPSHOT_INVALID", "质量汇总时间字段无效", 503
-        )
+        raise DomainError("QUALITY_SNAPSHOT_INVALID", "质量汇总时间字段无效", 503)
     aware = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
     return aware.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -81,7 +89,7 @@ def _filter_sql(
         "business_domain": "b.business_domain",
         "test_stage": "b.test_stage",
         "factory_code": "b.factory_code",
-        "product_name": "COALESCE(p.product_name,p.product_code,N'UNKNOWN')",
+        "product_name": "COALESCE(product_enrichment.value_text,p.product_name,p.product_code,N'UNKNOWN')",
         "lot_id": "tr.lot_id",
     }
     for key, value in values.items():
@@ -110,7 +118,9 @@ class SqlManagementService:
     ) -> QualityManagementSummary:
         if recent_limit < 1 or recent_limit > 100:
             raise DomainError(
-                "QUALITY_RECENT_LIMIT_INVALID", "最近数据集数量必须在 1 到 100 之间", 422
+                "QUALITY_RECENT_LIMIT_INVALID",
+                "最近数据集数量必须在 1 到 100 之间",
+                422,
             )
         filters, params = _filter_sql(
             business_domain=business_domain,
@@ -133,28 +143,36 @@ class SqlManagementService:
                     text("SELECT CAST(SYSUTCDATETIME() AS datetime2(3))")
                 ).scalar_one()
                 kpi = connection.execute(text(cte + _KPI_SQL), params).mappings().one()
-                trends = connection.execute(
-                    text(cte + _TREND_SQL), params
-                ).mappings().all()
+                trends = (
+                    connection.execute(text(cte + _TREND_SQL), params).mappings().all()
+                )
                 breakdown_rows: list[Mapping[str, Any]] = []
                 for dimension, expression in _BREAKDOWN_DIMENSIONS:
-                    rows = connection.execute(
-                        text(
-                            cte
-                            + _BREAKDOWN_SQL.format(
-                                dimension=dimension,
-                                expression=expression,
-                            )
-                        ),
-                        params,
-                    ).mappings().all()
+                    rows = (
+                        connection.execute(
+                            text(
+                                cte
+                                + _BREAKDOWN_SQL.format(
+                                    dimension=dimension,
+                                    expression=expression,
+                                )
+                            ),
+                            params,
+                        )
+                        .mappings()
+                        .all()
+                    )
                     breakdown_rows.extend(rows)
-                fail_rows = connection.execute(
-                    text(cte + _FAIL_BIN_SQL), params
-                ).mappings().all()
-                recent_rows = connection.execute(
-                    text(cte + _RECENT_DATASET_SQL), params
-                ).mappings().all()
+                fail_rows = (
+                    connection.execute(text(cte + _FAIL_BIN_SQL), params)
+                    .mappings()
+                    .all()
+                )
+                recent_rows = (
+                    connection.execute(text(cte + _RECENT_DATASET_SQL), params)
+                    .mappings()
+                    .all()
+                )
                 failed_jobs = int(
                     connection.execute(
                         text(_FAILED_JOB_SQL.format(filters=_batch_filter_sql(params))),
@@ -201,6 +219,8 @@ class SqlManagementService:
                 "unknown": "UNKNOWN / all Current units; missing PASS/FAIL remains unknown and is never filled with zero.",
                 "product_identity": "Product is the source-observed TMS identity, not an SAP material until an approved crosswalk exists.",
                 "time_range": "from_utc is inclusive and to_utc is exclusive, based on Dataset published_at_utc.",
+                "trend_period": "Trend periods are Asia/Shanghai business dates; period_start_utc is the UTC instant of Shanghai local midnight.",
+                "failed_job_scope": "Failed Job counts use time, business domain, test stage, and factory filters only; Product and Lot filters do not apply.",
             },
             kpis=QualityKpis(
                 dataset_count=int(kpi["dataset_count"] or 0),
@@ -226,7 +246,11 @@ class SqlManagementService:
 
 
 def _naive_utc(value: datetime) -> datetime:
-    return value.replace(tzinfo=None) if value.tzinfo is None else value.astimezone(UTC).replace(tzinfo=None)
+    return (
+        value.replace(tzinfo=None)
+        if value.tzinfo is None
+        else value.astimezone(UTC).replace(tzinfo=None)
+    )
 
 
 def _aware_utc(value: datetime) -> datetime:
@@ -240,8 +264,11 @@ def _trend(row: Mapping[str, Any]) -> QualityTrendPoint:
     unknown = int(row["unknown_units"] or 0)
     period = row["period_start"]
     period_text = period.isoformat() if hasattr(period, "isoformat") else str(period)
+    period_start_utc = datetime.combine(
+        datetime.fromisoformat(period_text).date(), time.min
+    ) - timedelta(hours=8)
     return QualityTrendPoint(
-        period_start_utc=f"{period_text}T00:00:00.000Z",
+        period_start_utc=_iso_utc(period_start_utc) or "",
         dataset_count=int(row["dataset_count"] or 0),
         total_units=total,
         pass_units=passed,
@@ -331,13 +358,13 @@ FROM scoped_units;
 """
 
 _TREND_SQL = """
-SELECT CONVERT(date,published_at_utc) AS period_start,
+SELECT CONVERT(date,DATEADD(hour,8,published_at_utc)) AS period_start,
        COUNT(DISTINCT dataset_version_id) AS dataset_count,
        COUNT_BIG(*) AS total_units,
        SUM(CASE WHEN overall_result='PASS' THEN CONVERT(bigint,1) ELSE 0 END) AS pass_units,
        SUM(CASE WHEN overall_result='FAIL' THEN CONVERT(bigint,1) ELSE 0 END) AS fail_units,
        SUM(CASE WHEN overall_result='UNKNOWN' THEN CONVERT(bigint,1) ELSE 0 END) AS unknown_units
-FROM scoped_units GROUP BY CONVERT(date,published_at_utc)
+FROM scoped_units GROUP BY CONVERT(date,DATEADD(hour,8,published_at_utc))
 ORDER BY period_start;
 """
 
@@ -368,7 +395,7 @@ GROUP BY COALESCE(fail_bin,N'UNCLASSIFIED') ORDER BY fail_units DESC,bin_code;
 _RECENT_DATASET_SQL = """
 SELECT TOP (:recent_limit)
        su.dataset_id,su.version_no,su.input_batch_id,
-       MAX(prs.job_id) AS job_id,MAX(su.product_name) AS product_name,
+       MAX(latest_summary.job_id) AS job_id,MAX(su.product_name) AS product_name,
        MAX(su.lot_id) AS lot_id,MAX(su.factory_code) AS factory_code,
        MAX(su.business_domain) AS business_domain,MAX(su.test_stage) AS test_stage,
        COUNT_BIG(*) AS unit_count,
@@ -379,8 +406,14 @@ SELECT TOP (:recent_limit)
         WHERE ibf.import_batch_id=su.input_batch_id) AS source_file_count,
        MAX(su.published_at_utc) AS published_at_utc
 FROM scoped_units su
-LEFT JOIN ingestion.processing_result_summary prs
-  ON prs.dataset_id=su.dataset_id AND prs.dataset_version_no=su.version_no
+OUTER APPLY(
+    SELECT TOP (1) prs.job_id
+    FROM ingestion.processing_result_summary prs
+    WHERE prs.dataset_id=su.dataset_id
+      AND prs.dataset_version_no=su.version_no
+      AND prs.status='PROCESSED'
+    ORDER BY prs.result_summary_id DESC
+) latest_summary
 GROUP BY su.dataset_id,su.version_no,su.input_batch_id
 ORDER BY published_at_utc DESC,su.dataset_id DESC;
 """

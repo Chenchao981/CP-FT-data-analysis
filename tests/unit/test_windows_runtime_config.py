@@ -11,6 +11,11 @@ ROOT = Path(__file__).resolve().parents[2]
 COMMON_SCRIPT = ROOT / "scripts" / "windows" / "TmsRuntime.Common.ps1"
 LOCAL_COMMON_SCRIPT = ROOT / "scripts" / "windows" / "TmsLocalRuntime.Common.ps1"
 PYTHON = ROOT / ".conda-env" / "python.exe"
+LOCAL_LIFECYCLE_SCRIPTS = (
+    ROOT / "scripts" / "windows" / "start_tms_local_test.ps1",
+    ROOT / "scripts" / "windows" / "get_tms_local_test_status.ps1",
+    ROOT / "scripts" / "windows" / "stop_tms_local_test.ps1",
+)
 
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell runtime contract")
@@ -178,10 +183,99 @@ def test_process_record_upsert_preserves_unprocessed_roles() -> None:
     assert completed.stdout == "api:9,frontend:2,worker:3"
 
 
-def test_local_private_directory_works_in_powershell_core(tmp_path: Path) -> None:
+def test_local_lifecycle_scripts_use_the_shared_utf8_json_reader() -> None:
+    for script_path in LOCAL_LIFECYCLE_SCRIPTS:
+        script = script_path.read_text(encoding="utf-8-sig")
+        assert "Read-TmsLocalJsonFile -Path $statePath" in script
+        assert (
+            "Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json" not in script
+        )
+
+    start_script = LOCAL_LIFECYCLE_SCRIPTS[0].read_text(encoding="utf-8-sig")
+    status_script = LOCAL_LIFECYCLE_SCRIPTS[1].read_text(encoding="utf-8-sig")
+    assert "Read-TmsLocalJsonFile -Path $workerReadyFile" in start_script
+    assert "Read-TmsLocalJsonFile -Path $workerReadyFile" in status_script
+
+
+def test_local_state_cross_reads_between_windows_powershell_and_powershell_core(
+    tmp_path: Path,
+) -> None:
     pwsh = shutil.which("pwsh.exe")
     if pwsh is None:
         pytest.skip("PowerShell Core is unavailable")
+    windows_powershell = shutil.which("powershell.exe")
+    assert windows_powershell is not None
+    state_path = tmp_path / "processes.json"
+    write_command = (
+        f". {_powershell_literal(LOCAL_COMMON_SCRIPT)}; "
+        "$state = [PSCustomObject]@{ workspace='F:\\CP-FT数据分析'; "
+        "status='RUNNING'; processes=@() }; "
+        f"Write-TmsLocalState -StatePath {_powershell_literal(state_path)} -State $state"
+    )
+    read_command = (
+        "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+        f". {_powershell_literal(LOCAL_COMMON_SCRIPT)}; "
+        f"$state = Read-TmsLocalJsonFile -Path {_powershell_literal(state_path)}; "
+        "[Console]::Write($state.workspace + '|' + $state.status)"
+    )
+
+    for writer, reader in (
+        (pwsh, windows_powershell),
+        (windows_powershell, pwsh),
+    ):
+        subprocess.run(
+            [writer, "-NoProfile", "-NonInteractive", "-Command", write_command],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        completed = subprocess.run(
+            [reader, "-NoProfile", "-NonInteractive", "-Command", read_command],
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+        )
+        assert completed.stdout == "F:\\CP-FT数据分析|RUNNING"
+
+
+def test_local_json_reader_rejects_invalid_utf8(tmp_path: Path) -> None:
+    state_path = tmp_path / "invalid.json"
+    state_path.write_bytes(b'{"workspace":"\xff"}')
+    command = (
+        f". {_powershell_literal(LOCAL_COMMON_SCRIPT)}; "
+        f"Read-TmsLocalJsonFile -Path {_powershell_literal(state_path)}"
+    )
+
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    assert completed.returncode != 0
+    assert "Local TMS JSON file must be valid UTF-8" in completed.stderr
+
+
+@pytest.mark.parametrize("shell_name", ["powershell.exe", "pwsh.exe"])
+def test_local_private_directory_works_in_both_powershell_hosts(
+    tmp_path: Path, shell_name: str
+) -> None:
+    shell = shutil.which(shell_name)
+    if shell is None:
+        pytest.skip(f"{shell_name} is unavailable")
     private_directory = tmp_path / "private-state"
     command = (
         f". {_powershell_literal(LOCAL_COMMON_SCRIPT)}; "
@@ -192,7 +286,7 @@ def test_local_private_directory_works_in_powershell_core(tmp_path: Path) -> Non
 
     completed = subprocess.run(
         [
-            pwsh,
+            shell,
             "-NoProfile",
             "-NonInteractive",
             "-Command",

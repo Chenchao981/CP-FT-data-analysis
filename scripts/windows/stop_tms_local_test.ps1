@@ -76,7 +76,7 @@ try {
     if (-not $WhatIfPreference) {
         Set-TmsLocalPrivateDirectory -Path $stateDirectory
     }
-    $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    $state = Read-TmsLocalJsonFile -Path $statePath
     if ([string]$state.workspace -ne $workspace) {
         throw 'The local test state belongs to a different workspace. No process was stopped.'
     }

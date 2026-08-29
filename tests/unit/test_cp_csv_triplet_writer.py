@@ -77,11 +77,13 @@ def test_cp_writer_uses_atomic_draft_stage_without_first_batch_or_current_publis
     assert "PUBLISHED" not in source
     assert "SUPERSEDED" not in source
     assert "SINGLE_LOT_EXPLICIT_SPEC" in module_source
+    assert "MULTI_LOT_SHARED_NORMALIZED_SPEC" in module_source
+    assert "NORMALIZED_SPEC_FINGERPRINT_V1" in module_source
     assert "FIRST_BATCH" not in module_source
     assert "AND ((product_id=:product) OR (product_id IS NULL" in module_source
 
 
-def test_parse_cp_triplet_rejects_multiple_lots_without_explicit_spec_binding(
+def test_parse_cp_triplet_rejects_multiple_lots_when_one_spec_cannot_prove_per_lot_coverage(
     tmp_path: Path,
 ) -> None:
     artifacts = list(_triplet(tmp_path))
@@ -102,14 +104,131 @@ def test_parse_cp_triplet_rejects_multiple_lots_without_explicit_spec_binding(
     )
     artifacts[1] = _artifact("yield", yield_path)
 
-    with pytest.raises(CpMultiLotSpecBindingRequired) as error:
+    with pytest.raises(
+        CpMultiLotSpecBindingRequired,
+        match="normalized Spec evidence is missing for Lots: L2",
+    ) as error:
         parse_cp_csv_triplet(tuple(artifacts))
 
     assert error.value.error_code == CP_MULTI_LOT_SPEC_BINDING_REQUIRED
-    assert str(error.value) == (
-        f"{CP_MULTI_LOT_SPEC_BINDING_REQUIRED}: CP CSV triplet V1 has no "
-        "explicit per-Lot Spec binding; found 2 Lots: L1, L2"
+
+
+def test_parse_cp_triplet_accepts_multiple_lots_when_all_spec_artifacts_have_the_same_normalized_contract(
+    tmp_path: Path,
+) -> None:
+    artifacts = list(_triplet(tmp_path))
+    cleaned_path = Path(artifacts[0].path)
+    cleaned_path.write_text(
+        "Lot_ID,Wafer_ID,Seq,Bin,X,Y,P1,P2\n"
+        "L1,1,1,1,10,20,1E-3,2.5\n"
+        "L2,1,1,1,10,20,1E-3,2.5\n",
+        encoding="utf-8",
     )
+    artifacts[0] = _artifact("cleaned", cleaned_path)
+    yield_path = Path(artifacts[1].path)
+    yield_path.write_text(
+        "Product_Name,Lot_ID,Wafer_ID,Yield,Total,Pass,Bin7\n"
+        "P,L1,1,100%,1,1,0\n"
+        "P,L2,1,100%,1,1,0\n",
+        encoding="utf-8",
+    )
+    artifacts[1] = _artifact("yield", yield_path)
+    second_spec = tmp_path / "L2_spec_20260824.csv"
+    second_spec.write_text(
+        "Parameter,Unit,LimitL,LimitU,Test_Condition\n"
+        "P2,V,2.00,5.0,1A   |   2ms\n"
+        "P1,A,+0.000,1.0000,10V | 1ms\n",
+        encoding="utf-8",
+    )
+    artifacts.append(_artifact("spec", second_spec))
+
+    parsed = parse_cp_csv_triplet(tuple(artifacts))
+
+    assert parsed.lot_ids == ("L1", "L2")
+    assert len(parsed.spec_source_sha256s) == 2
+    assert tuple(row.lot_id for row in parsed.rows) == ("L1", "L2")
+
+
+@pytest.mark.parametrize(
+    "second_spec_text",
+    [
+        (
+            "Parameter,Unit,LimitL,LimitU,Test_Condition\n"
+            "P1,mA,0,1,10V | 1ms\n"
+            "P2,V,2,5,1A | 2ms\n"
+        ),
+        (
+            "Parameter,Unit,LimitL,LimitU,Test_Condition\n"
+            "P1,A,0,1.1,10V | 1ms\n"
+            "P2,V,2,5,1A | 2ms\n"
+        ),
+        (
+            "Parameter,Unit,LimitL,LimitU,Test_Condition\n"
+            "P1,A,0,1,11V | 1ms\n"
+            "P2,V,2,5,1A | 2ms\n"
+        ),
+        (
+            "Parameter,Unit,LimitL,LimitU,Test_Condition\n"
+            "P3,A,0,1,10V | 1ms\n"
+            "P2,V,2,5,1A | 2ms\n"
+        ),
+    ],
+    ids=("unit", "limit", "condition", "parameter"),
+)
+def test_parse_cp_triplet_rejects_multi_lot_incompatible_normalized_specs(
+    tmp_path: Path, second_spec_text: str
+) -> None:
+    artifacts = list(_triplet(tmp_path))
+    cleaned_path = Path(artifacts[0].path)
+    cleaned_path.write_text(
+        "Lot_ID,Wafer_ID,Seq,Bin,X,Y,P1,P2\n"
+        "L1,1,1,1,10,20,1E-3,2.5\n"
+        "L2,1,1,1,10,20,1E-3,2.5\n",
+        encoding="utf-8",
+    )
+    artifacts[0] = _artifact("cleaned", cleaned_path)
+    yield_path = Path(artifacts[1].path)
+    yield_path.write_text(
+        "Product_Name,Lot_ID,Wafer_ID,Yield,Total,Pass,Bin7\n"
+        "P,L1,1,100%,1,1,0\n"
+        "P,L2,1,100%,1,1,0\n",
+        encoding="utf-8",
+    )
+    artifacts[1] = _artifact("yield", yield_path)
+    second_spec = tmp_path / "L2_spec_20260824.csv"
+    second_spec.write_text(second_spec_text, encoding="utf-8")
+    artifacts.append(_artifact("spec", second_spec))
+
+    with pytest.raises(
+        CpMultiLotSpecBindingRequired,
+        match="incompatible normalized Spec fingerprints",
+    ) as error:
+        parse_cp_csv_triplet(tuple(artifacts))
+
+    assert error.value.error_code == CP_MULTI_LOT_SPEC_BINDING_REQUIRED
+
+
+def test_parse_cp_triplet_rejects_ambiguous_normalized_spec_mapping(
+    tmp_path: Path,
+) -> None:
+    artifacts = list(_triplet(tmp_path))
+    ambiguous_spec = tmp_path / "L2_spec_20260824.csv"
+    ambiguous_spec.write_text(
+        "Parameter,Unit,LimitL,LimitU,Test_Condition\n"
+        "P1,A,0,1,10V | 1ms\n"
+        "Ｐ１,A,0,1,10V | 1ms\n"
+        "P2,V,2,5,1A | 2ms\n",
+        encoding="utf-8",
+    )
+    artifacts.append(_artifact("spec", ambiguous_spec))
+
+    with pytest.raises(
+        CpMultiLotSpecBindingRequired,
+        match="cannot prove a shared normalized Spec",
+    ) as error:
+        parse_cp_csv_triplet(tuple(artifacts))
+
+    assert error.value.error_code == CP_MULTI_LOT_SPEC_BINDING_REQUIRED
 
 
 def test_parse_cp_triplet_accepts_multiple_files_for_the_same_single_lot(

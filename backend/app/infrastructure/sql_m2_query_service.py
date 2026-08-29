@@ -120,6 +120,10 @@ def _where(
     lot_column: str | None = None,
     domain_column: str | None = None,
     stage_column: str | None = None,
+    wafer_column: str | None = None,
+    batch_column: str | None = None,
+    cleaner_column: str | None = None,
+    owner_column: str | None = None,
 ) -> tuple[str, dict[str, object]]:
     clauses: list[str] = []
     parameters: dict[str, object] = {
@@ -142,11 +146,23 @@ def _where(
     if filters.lot_id is not None and lot_column is not None:
         clauses.append(f"{lot_column} LIKE :lot_id ESCAPE '\\'")
         parameters["lot_id"] = _like(filters.lot_id)
+    if filters.wafer_id is not None and wafer_column is not None:
+        clauses.append(f"{wafer_column} LIKE :wafer_id ESCAPE '\\'")
+        parameters["wafer_id"] = _like(filters.wafer_id)
+    if filters.import_batch_id is not None and batch_column is not None:
+        clauses.append(f"{batch_column}=:import_batch_id")
+        parameters["import_batch_id"] = filters.import_batch_id
+    if filters.cleaner_version is not None and cleaner_column is not None:
+        clauses.append(f"{cleaner_column} LIKE :cleaner_version ESCAPE '\\'")
+        parameters["cleaner_version"] = _like(filters.cleaner_version)
+    if filters.owner_login is not None and owner_column is not None:
+        clauses.append(f"{owner_column} LIKE :owner_login ESCAPE '\\'")
+        parameters["owner_login"] = _like(filters.owner_login)
     if filters.from_utc is not None:
         clauses.append(f"{date_column}>=:from_utc")
         parameters["from_utc"] = filters.from_utc
     if filters.to_utc is not None:
-        clauses.append(f"{date_column}<=:to_utc")
+        clauses.append(f"{date_column}<:to_utc")
         parameters["to_utc"] = filters.to_utc
     return (" AND " + " AND ".join(clauses) if clauses else ""), parameters
 
@@ -291,12 +307,26 @@ class SqlM2QueryService:
             date_column="dv.published_at_utc",
             factory_column="b.factory_code",
             status_column="dv.status",
-            product_column="COALESCE(p.product_name,summary_row.product_name)",
-            lot_column="summary_row.lot_id",
+            product_column="COALESCE(product_enrichment.value_text,p.product_name,summary_row.product_name)",
             domain_column="b.business_domain",
             stage_column="d.test_stage",
+            wafer_column="wafer_scope.wafer_id",
+            batch_column="dv.input_batch_id",
+            cleaner_column="cr.cleaner_version",
+            owner_column="owner_user.login_name",
         )
+        if filters.lot_id is not None:
+            where += (
+                " AND EXISTS("
+                "SELECT 1 FROM dataset.dataset_version_run lot_filter_dvr "
+                "JOIN test.test_run lot_filter_tr ON "
+                "lot_filter_tr.processing_run_id=lot_filter_dvr.processing_run_id "
+                "WHERE lot_filter_dvr.dataset_version_id=dv.dataset_version_id "
+                "AND lot_filter_tr.lot_id LIKE :lot_id ESCAPE '\\')"
+            )
+            parameters["lot_id"] = _like(filters.lot_id)
         parameters.update(_scope_parameters(principal))
+        parameters.setdefault("wafer_id", None)
         base = _CURRENT_DATASET_FROM + (
             " WHERE dv.status='PUBLISHED' AND dv.is_current=1 "
             "AND (:is_admin=1 OR d.owner_user_id=:user_id OR "
@@ -459,6 +489,7 @@ class SqlM2QueryService:
             processing_run_id=_optional_int(row["processing_run_id"]),
             product_name=(str(row["product_name"]) if row["product_name"] else None),
             lot_id=(str(row["lot_id"]) if row["lot_id"] else None),
+            lot_count=int(row["lot_count"] or 0),
             factory_code=str(row["factory_code"] or ""),
             business_domain=str(row["business_domain"]),
             test_stage=str(row["test_stage"]),
@@ -468,6 +499,14 @@ class SqlM2QueryService:
             yield_rate=(float(row["yield_rate"]) if row["yield_rate"] is not None else None),
             source_file_count=int(row["source_file_count"] or 0),
             processed_at_utc=_iso(row["processed_at_utc"]) or "",
+            owner_login=str(row["owner_login"]),
+            owner_name=str(row["owner_name"]),
+            cleaner_version=(
+                str(row["cleaner_version"])
+                if row.get("cleaner_version") is not None
+                else None
+            ),
+            can_archive=bool(row["can_archive"]),
         )
 
     @staticmethod
@@ -672,20 +711,24 @@ _CURRENT_DATASET_COLUMNS = """
 SELECT d.dataset_id,dv.dataset_version_id,dv.version_no,
        dv.input_batch_id AS import_batch_id,pr.job_id,
        selected_run.processing_run_id,
-       COALESCE(p.product_name,summary_row.product_name) AS product_name,
-       summary_row.lot_id,
+       COALESCE(product_enrichment.value_text,p.product_name,summary_row.product_name) AS product_name,
+       lot_scope.lot_id,lot_scope.lot_count,
        b.factory_code,b.business_domain,d.test_stage,dv.status,
        summary_row.unit_count,summary_row.pass_count,summary_row.yield_rate,
        (SELECT COUNT_BIG(*) FROM ingestion.processing_run_input_file rif
         WHERE rif.processing_run_id=selected_run.processing_run_id)
         AS source_file_count,
-       COALESCE(pr.finished_at_utc,dv.published_at_utc) AS processed_at_utc
+       COALESCE(pr.finished_at_utc,dv.published_at_utc) AS processed_at_utc,
+       owner_user.login_name AS owner_login,owner_user.display_name AS owner_name,
+       cr.cleaner_version,
+       CASE WHEN :is_admin=1 OR d.owner_user_id=:user_id THEN 1 ELSE 0 END AS can_archive
 """
 
 _CURRENT_DATASET_FROM = """
  FROM dataset.dataset d
  JOIN dataset.dataset_version dv ON dv.dataset_id=d.dataset_id
  JOIN ingestion.import_batch b ON b.import_batch_id=dv.input_batch_id
+ JOIN iam.app_user owner_user ON owner_user.user_id=d.owner_user_id
  LEFT JOIN mdm.product p ON p.product_id=d.product_id
  OUTER APPLY(
      SELECT TOP (1) dvr.processing_run_id
@@ -695,8 +738,39 @@ _CURRENT_DATASET_FROM = """
  ) selected_run
  LEFT JOIN ingestion.processing_run pr
    ON pr.processing_run_id=selected_run.processing_run_id
+ LEFT JOIN ingestion.processing_job pj
+   ON pj.job_id=pr.job_id
+ LEFT JOIN ingestion.cleaner_release cr
+   ON cr.cleaner_release_id=pj.cleaner_release_id
  OUTER APPLY(
-     SELECT TOP (1) s.product_name,s.lot_id,s.unit_count,s.pass_count,s.yield_rate
+     SELECT TOP (1) fe.value_text
+     FROM ingestion.field_enrichment fe
+     WHERE fe.import_batch_id=dv.input_batch_id
+       AND fe.source_file_id IS NULL
+       AND fe.test_stage=d.test_stage
+       AND fe.field_code='PRODUCT_CODE'
+       AND fe.action='FILL' AND fe.is_current=1
+     ORDER BY fe.enrichment_id DESC
+ ) product_enrichment
+ OUTER APPLY(
+     SELECT CASE WHEN COUNT(DISTINCT tr.lot_id)=1 THEN MIN(tr.lot_id) END AS lot_id,
+            COUNT(DISTINCT tr.lot_id) AS lot_count
+     FROM dataset.dataset_version_run lot_dvr
+     JOIN test.test_run tr ON tr.processing_run_id=lot_dvr.processing_run_id
+     WHERE lot_dvr.dataset_version_id=dv.dataset_version_id
+       AND tr.lot_id IS NOT NULL
+ ) lot_scope
+ OUTER APPLY(
+     SELECT TOP (1) tr.wafer_id
+     FROM dataset.dataset_version_run dvr
+     JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id
+     WHERE dvr.dataset_version_id=dv.dataset_version_id
+       AND tr.wafer_id IS NOT NULL
+       AND (:wafer_id IS NULL OR tr.wafer_id LIKE :wafer_id ESCAPE '\\')
+     ORDER BY tr.wafer_id
+ ) wafer_scope
+ OUTER APPLY(
+     SELECT TOP (1) s.product_name,s.unit_count,s.pass_count,s.yield_rate
      FROM ingestion.processing_result_summary s
      WHERE s.dataset_id=d.dataset_id
        AND s.dataset_version_no=dv.version_no

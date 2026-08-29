@@ -32,4 +32,25 @@ describe("authenticated request", () => {
     expect(removeItem).toHaveBeenCalledWith("tms_access_token");
     expect(expired).toHaveBeenCalledTimes(1);
   });
+
+  it("preserves structured API error semantics for page recovery actions", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      error: {
+        code: "QUICK_SOURCE_CHANGED",
+        message: "请重新预览",
+        details: [{ path: "body.source_manifest_sha256", message: "manifest 不匹配", type: "value_error" }],
+        retryable: true,
+        recommended_action: "REFRESH_MANIFEST",
+      },
+    }), { status: 409 }));
+
+    await expect(apiRequest("/api/v1/test")).rejects.toMatchObject({
+      name: "ApiError",
+      httpStatus: 409,
+      code: "QUICK_SOURCE_CHANGED",
+      retryable: true,
+      recommendedAction: "REFRESH_MANIFEST",
+      fieldErrors: { "body.source_manifest_sha256": ["manifest 不匹配"] },
+    });
+  });
 });

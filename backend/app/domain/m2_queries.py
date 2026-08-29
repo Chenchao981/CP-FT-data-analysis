@@ -17,6 +17,10 @@ class M2PageFilters:
     status: str | None = None
     product_name: str | None = None
     lot_id: str | None = None
+    wafer_id: str | None = None
+    import_batch_id: int | None = None
+    cleaner_version: str | None = None
+    owner_login: str | None = None
     from_utc: datetime | None = None
     to_utc: datetime | None = None
 
@@ -82,6 +86,7 @@ class CurrentDatasetCatalogItem:
     processing_run_id: int | None
     product_name: str | None
     lot_id: str | None
+    lot_count: int
     factory_code: str
     business_domain: str
     test_stage: str
@@ -91,6 +96,10 @@ class CurrentDatasetCatalogItem:
     yield_rate: float | None
     source_file_count: int
     processed_at_utc: str
+    owner_login: str
+    owner_name: str
+    cleaner_version: str | None
+    can_archive: bool
 
 
 @dataclass(frozen=True, slots=True)

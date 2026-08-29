@@ -65,7 +65,7 @@ $workerSchemaRevision = $null
 $workerDatabaseServer = $null
 
 if ($statePresent) {
-    $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    $state = Read-TmsLocalJsonFile -Path $statePath
     if ([string]$state.workspace -ne $workspace) {
         throw 'The local test state belongs to a different workspace.'
     }
@@ -111,7 +111,7 @@ if ($statePresent) {
     $workerProcessReady = $null -ne $workerRecord -and @($processes | Where-Object { $_.role -eq 'worker' -and $_.running }).Count -eq 1
     if ($workerProcessReady -and -not $workerDraining -and (Test-Path -LiteralPath $workerReadyFile -PathType Leaf)) {
         try {
-            $workerMetadata = Get-Content -LiteralPath $workerReadyFile -Raw | ConvertFrom-Json
+            $workerMetadata = Read-TmsLocalJsonFile -Path $workerReadyFile
             $workerDatabase = [string]$workerMetadata.database
             $workerSchemaRevision = [string]$workerMetadata.schema_revision
             $workerDatabaseServer = [string]$workerMetadata.database_server

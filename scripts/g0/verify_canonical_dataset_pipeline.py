@@ -10,11 +10,11 @@ from uuid import uuid4
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL
 
-
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "backend"))
 
 from app.cleaners.huahong_dcp import HuaHongDcpParser  # noqa: E402
+from app.domain.auth import Principal  # noqa: E402
 from app.domain.datasets import (  # noqa: E402
     CreateDatasetRequest,
     CreateDatasetVersionRequest,
@@ -314,7 +314,16 @@ def main() -> None:
             ),
         )
         ids["dataset_version"] = version.dataset_version_id
-        gate = dataset_service.evaluate_gate(dataset.dataset_id, version.version_no)
+        principal = Principal(
+            user_id=ids["user"],
+            login_name=f"g0_{token}",
+            display_name="G0 integration",
+            roles=("DATA_ENGINEER",),
+            permissions=frozenset({"DATASET_READ"}),
+        )
+        gate = dataset_service.evaluate_gate(
+            dataset.dataset_id, version.version_no, principal
+        )
         if gate.status != "PASS":
             raise RuntimeError(f"unexpected DQ gate result: {gate}")
         published = dataset_service.publish(
@@ -322,7 +331,9 @@ def main() -> None:
             version.version_no,
             PublishDatasetVersionRequest(published_by=ids["user"]),
         )
-        summary = dataset_service.get_summary(dataset.dataset_id, version.version_no)
+        summary = dataset_service.get_summary(
+            dataset.dataset_id, version.version_no, principal
+        )
         charts = dataset_service.get_chart_data(
             dataset.dataset_id,
             version.version_no,

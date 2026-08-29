@@ -9,6 +9,9 @@ import { getQualityManagementSummary, type QualityManagementSummary } from "../.
 import { QualityManagementDashboard } from "./QualityManagementDashboard";
 
 vi.mock("../../api/management", () => ({ getQualityManagementSummary: vi.fn() }));
+vi.mock("../../components/EChart", () => ({
+  EChart: ({ option }: { option: unknown }) => <div data-testid="quality-trend-chart" data-option={JSON.stringify(option)} />,
+}));
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,
@@ -36,11 +39,13 @@ const qualitySummary: QualityManagementSummary = {
   to_utc: "2026-09-01T00:00:00.000Z",
   filters: {},
   methodology: {
-    fact_source: "PUBLISHED Current Dataset（is_current = 1）",
-    yield: "PASS / (PASS + FAIL)，UNKNOWN 与 ABORT 排除在分母外",
-    unknown: "UNKNOWN / 全部单元",
-    product_identity: "使用来源观测产品身份，未审批 Crosswalk 不视为 SAP 物料",
-    time_range: "published_at_utc 的 [from, to) 边界",
+    fact_source: "Only PUBLISHED is_current=1 Dataset Versions and their Canonical test.* rows are counted.",
+    yield: "PASS / (PASS + FAIL); UNKNOWN and ABORT never enter the yield denominator.",
+    unknown: "UNKNOWN / all Current units; missing PASS/FAIL remains unknown and is never filled with zero.",
+    product_identity: "Product is the source-observed TMS identity, not an SAP material until an approved crosswalk exists.",
+    time_range: "from_utc is inclusive and to_utc is exclusive, based on Dataset published_at_utc.",
+    trend_period: "Trend periods are Asia/Shanghai business dates; period_start_utc is the UTC instant of Shanghai local midnight.",
+    failed_job_scope: "Failed Job counts use time, business domain, test stage, and factory filters only; Product and Lot filters do not apply.",
   },
   kpis: {
     dataset_count: 2,
@@ -59,7 +64,7 @@ const qualitySummary: QualityManagementSummary = {
     freshness_seconds: 300,
   },
   trends: [{
-    period_start_utc: "2026-08-29T00:00:00.000Z",
+    period_start_utc: "2026-08-28T16:00:00.000Z",
     dataset_count: 2,
     total_units: 8,
     pass_units: 0,
@@ -95,14 +100,14 @@ const qualitySummary: QualityManagementSummary = {
   }],
 };
 
-const renderDashboard = (searchParams = new URLSearchParams()) => {
+const renderDashboard = (searchParams = new URLSearchParams(), canOpenAnalytics = true) => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const props = {
     searchParams,
     onSearchParamsChange: vi.fn(),
     onOpenAnalytics: vi.fn(),
     onOpenJob: vi.fn(),
-    canOpenAnalytics: true,
+    canOpenAnalytics,
   };
   render(
     <QueryClientProvider client={queryClient}>
@@ -123,13 +128,10 @@ describe("QualityManagementDashboard", () => {
   it("shows the explicit quality methodology, UNKNOWN metrics, and null yield as a dash", async () => {
     renderDashboard();
 
-    expect(await screen.findByText("后端返回的方法说明")).toBeInTheDocument();
-    expect(document.body).toHaveTextContent("PASS / (PASS + FAIL)；UNKNOWN 和 ABORT 不进入良率分母。");
-    expect(document.body).toHaveTextContent("开始含、结束不含");
-    expect(screen.getByText("产品身份口径")).toBeInTheDocument();
-    expect(document.body).toHaveTextContent("未审批 Crosswalk 不视为 SAP 物料");
+    expect(await screen.findByText("质量趋势")).toBeInTheDocument();
+    expect(document.body).toHaveTextContent("已知良率分母 0，ABORT 0 个，均未混入 FAIL");
 
-    const yieldTitle = screen.getByText("PASS / (PASS + FAIL) 良率");
+    const yieldTitle = screen.getByText("已知良率");
     expect(within(yieldTitle.closest(".ant-card") as HTMLElement).getByText("—")).toBeInTheDocument();
     const unknownTitle = screen.getAllByText("UNKNOWN 占比").find((element) => element.classList.contains("ant-statistic-title"))!;
     expect(within(unknownTitle.closest(".ant-card") as HTMLElement).getByText("100.00%")).toBeInTheDocument();
@@ -137,22 +139,49 @@ describe("QualityManagementDashboard", () => {
     expect(screen.getByText("BIN_5")).toBeInTheDocument();
     expect(screen.getByText("最近 Current Dataset")).toBeInTheDocument();
     expect(screen.getByText(/Lot 与 Source 追溯边界/)).toBeInTheDocument();
+    expect(screen.getByTestId("quality-trend-chart").getAttribute("data-option")).toContain('"data":[null]');
+    expect(screen.getByTestId("quality-trend-chart").getAttribute("data-option")).toContain("2026-08-29");
+
+    fireEvent.click(screen.getByRole("button", { name: /统计方法与趋势明细/ }));
+    expect(await screen.findByText("产品身份口径")).toBeInTheDocument();
+    expect(document.body).toHaveTextContent("在 Crosswalk 审批前不视为 SAP 物料");
+    expect(document.body).toHaveTextContent("按 Asia/Shanghai 业务日分组");
+    expect(screen.getAllByText("上海业务日").length).toBeGreaterThan(0);
   }, 15_000);
 
   it("preserves URL filters and drills through real Dataset and Job identities", async () => {
-    const props = renderDashboard(new URLSearchParams({ product_name: "NCE-MOS", test_stage: "FT" }));
+    const props = renderDashboard(new URLSearchParams({ product_name: "NCE-MOS", test_stage: "FT", from_utc: "2026-08-01T00:00:00Z" }));
 
     await waitFor(() => expect(getQualityManagementSummary).toHaveBeenCalledWith(expect.objectContaining({ product_name: "NCE-MOS", test_stage: "FT", recent_limit: 20 })));
     fireEvent.change(screen.getByLabelText("Lot"), { target: { value: "LOT-002" } });
+    fireEvent.change(screen.getByLabelText("开始时间（上海，含）"), { target: { value: "2026-08-02T08:30" } });
+    fireEvent.change(screen.getByLabelText("结束时间（上海，不含）"), { target: { value: "2026-09-01T08:00" } });
     fireEvent.click(screen.getByRole("button", { name: /更新管理口径/ }));
     await waitFor(() => expect(props.onSearchParamsChange).toHaveBeenCalled());
     const next = props.onSearchParamsChange.mock.calls[0][0] as URLSearchParams;
     expect(next.get("product_name")).toBe("NCE-MOS");
     expect(next.get("test_stage")).toBe("FT");
     expect(next.get("lot_id")).toBe("LOT-002");
+    expect(next.get("from_utc")).toBe("2026-08-02T00:30:00.000Z");
+    expect(next.get("to_utc")).toBe("2026-09-01T00:00:00.000Z");
+    expect(screen.getByText("失败 Job KPI 对当前筛选不适用")).toBeInTheDocument();
+    const failedJobTitle = screen.getByText("失败 Job（批次口径）");
+    expect(within(failedJobTitle.closest(".ant-card") as HTMLElement).getByText("不适用")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /分析/ }));
     expect(props.onOpenAnalytics).toHaveBeenCalledWith(20, 3);
+    fireEvent.click(screen.getByRole("button", { name: /Job$/ }));
+    expect(props.onOpenJob).toHaveBeenCalledWith(96);
+  }, 15_000);
+
+  it("keeps analysis disabled without catalog read access while preserving Job drilldown", async () => {
+    const props = renderDashboard(new URLSearchParams(), false);
+
+    const analysis = await screen.findByRole("button", { name: /分析/ });
+    expect(analysis).toBeDisabled();
+    expect(analysis).toHaveAttribute("title", "当前账户无权查看 Dataset 分析");
+    fireEvent.click(analysis);
+    expect(props.onOpenAnalytics).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /Job$/ }));
     expect(props.onOpenJob).toHaveBeenCalledWith(96);
   }, 15_000);

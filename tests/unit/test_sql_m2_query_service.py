@@ -88,7 +88,9 @@ def _service(results: list[_Result]) -> tuple[SqlM2QueryService, _Connection]:
     return SqlM2QueryService(_Engine(connection)), connection  # type: ignore[arg-type]
 
 
-def test_upload_page_uses_owner_scope_offset_fetch_and_ignores_validated_fields() -> None:
+def test_upload_page_uses_owner_scope_offset_fetch_and_ignores_validated_fields() -> (
+    None
+):
     service, connection = _service(
         [
             _Result(scalar=12),
@@ -207,7 +209,9 @@ def test_result_page_returns_job_id_nullable_metrics_and_no_storage_fields() -> 
         assert "scope_g.expires_at_utc>SYSUTCDATETIME()" in scoped_sql
 
 
-def test_current_catalog_only_returns_owner_visible_published_current_versions() -> None:
+def test_current_catalog_only_returns_owner_visible_published_current_versions() -> (
+    None
+):
     service, connection = _service(
         [
             _Result(scalar=1),
@@ -222,6 +226,7 @@ def test_current_catalog_only_returns_owner_visible_published_current_versions()
                         "processing_run_id": 501,
                         "product_name": "NCE-1",
                         "lot_id": "LOT-1",
+                        "lot_count": 1,
                         "factory_code": "RIYUEXIN",
                         "business_domain": "PRODUCTION",
                         "test_stage": "FT",
@@ -231,6 +236,10 @@ def test_current_catalog_only_returns_owner_visible_published_current_versions()
                         "yield_rate": None,
                         "source_file_count": 1,
                         "processed_at_utc": datetime(2026, 8, 29, 1, 10),
+                        "owner_login": "owner",
+                        "owner_name": "Owner",
+                        "cleaner_version": "1.2.3",
+                        "can_archive": 1,
                     }
                 ]
             ),
@@ -245,14 +254,21 @@ def test_current_catalog_only_returns_owner_visible_published_current_versions()
         status="PUBLISHED",
         product_name="NCE-1",
         lot_id="LOT-1",
+        wafer_id="W%_1",
+        import_batch_id=41,
+        cleaner_version="1.2_3",
+        owner_login="own%r",
         to_utc=datetime(2026, 8, 30),
     )
 
     page = service.list_current_datasets(OWNER, filters)
 
     assert page.items[0].dataset_version_id == 301
+    assert page.items[0].lot_id == "LOT-1"
+    assert page.items[0].lot_count == 1
     assert page.items[0].pass_count is None
-    count_sql, _count_parameters = connection.calls[0]
+    assert page.items[0].can_archive is True
+    count_sql, count_parameters = connection.calls[0]
     page_sql, parameters = connection.calls[1]
     for sql in (count_sql, page_sql):
         assert "dv.status='PUBLISHED'" in sql
@@ -264,9 +280,34 @@ def test_current_catalog_only_returns_owner_visible_published_current_versions()
     assert "ingestion.processing_run_input_file" in page_sql
     assert "OFFSET :offset ROWS FETCH NEXT :page_size ROWS ONLY" in page_sql
     assert "COALESCE(pr.finished_at_utc,dv.published_at_utc)" in page_sql
+    assert "pj.job_id=pr.job_id" in page_sql
+    assert "cr.cleaner_release_id=pj.cleaner_release_id" in page_sql
+    assert "pr.cleaner_release_id" not in page_sql
+    assert "field_code='PRODUCT_CODE'" in page_sql
+    assert "lot_scope.lot_id,lot_scope.lot_count" in page_sql
+    assert (
+        "CASE WHEN COUNT(DISTINCT tr.lot_id)=1 THEN MIN(tr.lot_id) END"
+        in page_sql
+    )
+    assert "COUNT(DISTINCT tr.lot_id)" in page_sql
+    assert "lot_filter_dvr.dataset_version_id=dv.dataset_version_id" in page_sql
+    assert "lot_filter_tr.lot_id LIKE :lot_id ESCAPE '\\'" in page_sql
+    assert "summary_row.lot_id" not in page_sql
+    assert "CASE WHEN :is_admin=1 OR d.owner_user_id=:user_id" in page_sql
+    for sql in (count_sql, page_sql):
+        assert "wafer_scope.wafer_id LIKE :wafer_id ESCAPE '\\'" in sql
+        assert "dv.input_batch_id=:import_batch_id" in sql
+        assert "cr.cleaner_version LIKE :cleaner_version ESCAPE '\\'" in sql
+        assert "owner_user.login_name LIKE :owner_login ESCAPE '\\'" in sql
+    for bound in (count_parameters, parameters):
+        assert bound["wafer_id"] == r"%W\%\_1%"
+        assert bound["import_batch_id"] == 41
+        assert bound["cleaner_version"] == r"%1.2\_3%"
+        assert bound["owner_login"] == r"%own\%r%"
+        assert bound["lot_id"] == "%LOT-1%"
+        assert bound["user_id"] == 7
+        assert bound["is_admin"] is False
     assert parameters["offset"] == 20
-    assert parameters["user_id"] == 7
-    assert parameters["is_admin"] is False
 
 
 def test_job_details_returns_safe_trace_chain_timeline_and_actions() -> None:
@@ -476,5 +517,8 @@ def test_m2_read_queries_keep_sql_server_2014_compatible_constructs() -> None:
         "JSON_VALUE(",
         "AT TIME ZONE",
         "DROP TABLE IF EXISTS",
+        "STRING_SPLIT(",
+        "CONCAT_WS(",
+        "FETCH FIRST",
     ):
         assert unsupported not in sql

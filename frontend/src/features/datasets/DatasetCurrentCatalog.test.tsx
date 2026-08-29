@@ -6,6 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { listCurrentDatasets, type CurrentDatasetRow } from "../../api/catalog";
+import { createFieldEnrichment } from "../../api/enrichments";
 import {
   archiveDataset,
   createDatasetReprocess,
@@ -19,6 +20,7 @@ import { useAuth } from "../auth/AuthContext";
 import { DatasetCurrentCatalog } from "./DatasetCurrentCatalog";
 
 vi.mock("../../api/catalog", () => ({ listCurrentDatasets: vi.fn() }));
+vi.mock("../../api/enrichments", () => ({ createFieldEnrichment: vi.fn() }));
 vi.mock("../../api/lifecycle", () => ({
   createLatestExport: vi.fn(),
   createDatasetReprocess: vi.fn(),
@@ -57,6 +59,7 @@ const row: CurrentDatasetRow = {
   processing_run_id: 51,
   product_name: "NCE-IGBT",
   lot_id: "LOT-202608",
+  lot_count: 1,
   factory_code: "riyuexin",
   business_domain: "PRODUCTION",
   test_stage: "FT",
@@ -66,6 +69,10 @@ const row: CurrentDatasetRow = {
   yield_rate: null,
   source_file_count: 2,
   processed_at_utc: "2026-08-28T09:00:00Z",
+  owner_login: "owner",
+  owner_name: "Dataset Owner",
+  cleaner_version: "1.2.3",
+  can_archive: true,
 };
 
 const receipt = (overrides: Partial<LifecycleJobReceipt> = {}): LifecycleJobReceipt => ({
@@ -126,6 +133,7 @@ const renderCatalog = (searchParams = new URLSearchParams()) => {
     searchParams,
     onSearchParamsChange: vi.fn(),
     onOpenAnalytics: vi.fn(),
+    onOpenComparison: vi.fn(),
     onOpenJob: vi.fn(),
   };
   render(
@@ -145,6 +153,17 @@ describe("DatasetCurrentCatalog", () => {
     vi.mocked(archiveDataset).mockResolvedValue(receipt({ job_id: 83, job_type: "DELETE_TASK", action_type: "DELETE_TASK", cleaner_release_id: null }));
     vi.mocked(getLatestExportStatus).mockResolvedValue(exportReady);
     vi.mocked(downloadLatestExportArtifact).mockResolvedValue(undefined);
+    vi.mocked(createFieldEnrichment).mockResolvedValue({
+      enrichment_id: 501,
+      import_batch_id: 14,
+      source_file_id: null,
+      test_stage: "FT",
+      field_code: "PRODUCT_CODE",
+      action: "FILL",
+      value_text: "NCE-IGBT-NEW",
+      reason: "补充正式产品业务信息",
+      is_current: true,
+    });
   });
 
   afterEach(() => {
@@ -190,12 +209,59 @@ describe("DatasetCurrentCatalog", () => {
     expect(props.onOpenJob).toHaveBeenCalledWith(91);
   }, 15_000);
 
+  it("prevents CP and FT datasets from being selected for the same comparison", async () => {
+    vi.mocked(listCurrentDatasets).mockResolvedValue({
+      items: [row, {
+        ...row,
+        dataset_id: 21,
+        dataset_version_id: 204,
+        version_no: 1,
+        product_name: "NCE-MOS-CP",
+        test_stage: "CP",
+      }],
+      total: 2,
+      page: 1,
+      page_size: 20,
+    });
+    renderCatalog();
+
+    const ftRow = (await screen.findByText("NCE-IGBT")).closest("tr")!;
+    const cpRow = screen.getByText("NCE-MOS-CP").closest("tr")!;
+    expect(screen.getByText("同次比较仅支持同一测试阶段（CP 或 FT），最多 8 个")).toBeInTheDocument();
+
+    fireEvent.click(within(ftRow).getByRole("checkbox"));
+    const cpCheckbox = within(cpRow).getByRole("checkbox");
+    expect(cpCheckbox).toBeDisabled();
+
+    fireEvent.click(cpCheckbox);
+    expect(within(cpRow).getByRole("checkbox")).not.toBeChecked();
+    expect(screen.getByRole("button", { name: /分析所选数据/ })).toBeInTheDocument();
+  }, 15_000);
+
+  it("labels a multi-Lot canonical scope without presenting it as one Lot", async () => {
+    vi.mocked(listCurrentDatasets).mockResolvedValue({
+      items: [{ ...row, lot_id: null, lot_count: 3 }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+    });
+    renderCatalog();
+
+    expect(await screen.findByText("多 Lot（3）")).toBeInTheDocument();
+    expect(screen.queryByText("LOT-202608")).not.toBeInTheDocument();
+  });
+
   it("writes filters and pagination back to URL search state", async () => {
     const props = renderCatalog();
     await screen.findByText("NCE-IGBT");
 
     fireEvent.change(screen.getByLabelText("产品"), { target: { value: "NCE-MOS" } });
     fireEvent.change(screen.getByLabelText("Lot"), { target: { value: "LOT-NEW" } });
+    fireEvent.change(screen.getByLabelText("Wafer"), { target: { value: "W01" } });
+    fireEvent.change(screen.getByLabelText("上传任务"), { target: { value: "77" } });
+    fireEvent.change(screen.getByLabelText("Cleaner 版本"), { target: { value: "2.4.1" } });
+    fireEvent.change(screen.getByLabelText("开始时间（上海，含）"), { target: { value: "2026-08-01T08:30" } });
+    fireEvent.change(screen.getByLabelText("结束时间（上海，不含）"), { target: { value: "2026-09-01T08:00" } });
     fireEvent.click(screen.getByRole("button", { name: /检索/ }));
 
     await waitFor(() => expect(props.onSearchParamsChange).toHaveBeenCalled());
@@ -204,12 +270,38 @@ describe("DatasetCurrentCatalog", () => {
     expect(next?.get("page_size")).toBe("20");
     expect(next?.get("product_name")).toBe("NCE-MOS");
     expect(next?.get("lot_id")).toBe("LOT-NEW");
+    expect(next?.get("wafer_id")).toBe("W01");
+    expect(next?.get("import_batch_id")).toBe("77");
+    expect(next?.get("cleaner_version")).toBe("2.4.1");
+    expect(next?.get("from_utc")).toBe("2026-08-01T00:30:00.000Z");
+    expect(next?.get("to_utc")).toBe("2026-09-01T00:00:00.000Z");
 
     fireEvent.click(screen.getByTitle("2"));
     await waitFor(() => expect(props.onSearchParamsChange).toHaveBeenCalledTimes(2));
     next = vi.mocked(props.onSearchParamsChange).mock.calls.at(-1)?.[0];
     expect(next?.get("page")).toBe("2");
     expect(next?.get("page_size")).toBe("20");
+  }, 15_000);
+
+  it("preserves active business filters while changing the server page", async () => {
+    const props = renderCatalog(new URLSearchParams({
+      product_name: "NCE-IGBT",
+      wafer_id: "W01",
+      import_batch_id: "14",
+      cleaner_version: "1.2.3",
+      from_utc: "2026-08-01T00:00:00Z",
+    }));
+    await screen.findByText("NCE-IGBT");
+
+    fireEvent.click(screen.getByTitle("2"));
+    await waitFor(() => expect(props.onSearchParamsChange).toHaveBeenCalled());
+    const next = vi.mocked(props.onSearchParamsChange).mock.calls.at(-1)?.[0];
+    expect(next?.get("page")).toBe("2");
+    expect(next?.get("product_name")).toBe("NCE-IGBT");
+    expect(next?.get("wafer_id")).toBe("W01");
+    expect(next?.get("import_batch_id")).toBe("14");
+    expect(next?.get("cleaner_version")).toBe("1.2.3");
+    expect(next?.get("from_utc")).toBe("2026-08-01T00:00:00.000Z");
   }, 15_000);
 
   it("gates export and reprocess by permission while preserving the backend-enforced Owner archive entry", async () => {
@@ -225,6 +317,48 @@ describe("DatasetCurrentCatalog", () => {
     expect(document.body).toHaveTextContent("不删除 FTP/NAS 原始文件");
   }, 15_000);
 
+  it("hides Owner-only archive and product correction when the row scope denies them", async () => {
+    vi.mocked(listCurrentDatasets).mockResolvedValue({ items: [{ ...row, can_archive: false }], total: 1, page: 1, page_size: 20 });
+    renderCatalog();
+
+    const product = await screen.findByText("NCE-IGBT");
+    const dataRow = product.closest("tr")!;
+    expect(within(dataRow).queryByRole("button", { name: /逻辑归档/ })).not.toBeInTheDocument();
+    expect(within(dataRow).queryByRole("button", { name: /修正产品/ })).not.toBeInTheDocument();
+  });
+
+  it("shows the uploader-account filter only to SYSTEM_ADMIN", async () => {
+    renderCatalog();
+    await screen.findByText("NCE-IGBT");
+    expect(screen.queryByLabelText("上传账号")).not.toBeInTheDocument();
+    cleanup();
+
+    vi.mocked(useAuth).mockReturnValue(authFor(["DATASET_READ", "EXPORT_DATA", "TASK_CREATE"], ["SYSTEM_ADMIN"]));
+    renderCatalog();
+    expect(await screen.findByLabelText("上传账号")).toBeInTheDocument();
+  });
+
+  it("creates a traceable Product enrichment only for an editable Owner row", async () => {
+    vi.mocked(listCurrentDatasets).mockResolvedValue({ items: [{ ...row, product_name: null }], total: 1, page: 1, page_size: 20 });
+    renderCatalog();
+
+    const missingProduct = await screen.findByText("待补录");
+    fireEvent.click(within(missingProduct.closest("tr")!).getByRole("button", { name: /补录产品/ }));
+    fireEvent.change(await screen.findByLabelText("产品型号"), { target: { value: "NCE-IGBT-NEW" } });
+    fireEvent.change(screen.getByLabelText("补录或修正原因"), { target: { value: "补充正式产品业务信息" } });
+    fireEvent.click(screen.getByRole("button", { name: /保存业务信息/ }));
+
+    await waitFor(() => expect(createFieldEnrichment).toHaveBeenCalledWith({
+      import_batch_id: 14,
+      test_stage: "FT",
+      field_code: "PRODUCT_CODE",
+      action: "FILL",
+      value_text: "NCE-IGBT-NEW",
+      reason: "补充正式产品业务信息",
+    }));
+    expect(document.body).toHaveTextContent("Cleaner 原始解析值未被改写");
+  }, 15_000);
+
   it("requires explicit acknowledgement before creating a non-mutating latest export", async () => {
     const props = renderCatalog();
     const product = await screen.findByText("NCE-IGBT", {}, { timeout: 10_000 });
@@ -236,7 +370,7 @@ describe("DatasetCurrentCatalog", () => {
     expect(await screen.findByText("请确认导出为非变异临时任务")).toBeInTheDocument();
     expect(createLatestExport).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("checkbox", { name: /我确认本操作不会更改 Current Dataset/ }));
     fireEvent.click(screen.getByRole("button", { name: /创建导出 Job/ }));
     await waitFor(() => expect(createLatestExport).toHaveBeenCalledWith(20, expect.stringMatching(/^export-20-/)));
     await waitFor(() => expect(props.onSearchParamsChange).toHaveBeenCalled());

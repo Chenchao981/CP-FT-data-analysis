@@ -67,7 +67,11 @@ function Set-TmsLocalPrivateDirectory {
         )
         [void]$acl.AddAccessRule($rule)
     }
-    [IO.FileSystemAclExtensions]::SetAccessControl($directory, $acl)
+    if ($null -ne $directory.PSObject.Methods['SetAccessControl']) {
+        $directory.SetAccessControl($acl)
+    } else {
+        [IO.FileSystemAclExtensions]::SetAccessControl($directory, $acl)
+    }
 }
 
 function Write-TmsLocalState {
@@ -87,6 +91,31 @@ function Write-TmsLocalState {
         if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
             Remove-Item -LiteralPath $temporaryPath -Force
         }
+    }
+}
+
+function Read-TmsLocalJsonFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "Local TMS JSON file does not exist: $Path"
+    }
+    try {
+        # PowerShell 5.1 writes UTF-8 with a BOM while PowerShell 7 writes it
+        # without a BOM.  Read through .NET with strict UTF-8 decoding so the
+        # same state/ready file is portable between both hosts.
+        $utf8 = [Text.UTF8Encoding]::new($false, $true)
+        $content = [IO.File]::ReadAllText($Path, $utf8)
+    } catch [Text.DecoderFallbackException] {
+        throw "Local TMS JSON file must be valid UTF-8: $Path"
+    }
+    try {
+        return $content | ConvertFrom-Json
+    } catch {
+        throw "Local TMS JSON file is invalid: $Path"
     }
 }
 

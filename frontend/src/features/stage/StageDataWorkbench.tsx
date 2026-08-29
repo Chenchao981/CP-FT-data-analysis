@@ -5,7 +5,11 @@ import type { UploadFile } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BusinessDomain, FormalSourceDirectory, TestStage, downloadStageUploadFile, listFormalSourceDirectories, listFormalSourceRoots, listStageResultsPage, listStageUploadsPage, previewFormalSourceManifest, reprocessStageBatch, StageResultRow, StageUploadRow, uploadStageData } from "../../api/stageData";
-import { formatUtcDateTime } from "../../utils/dateTime";
+import {
+  formatUtcDateTime,
+  shanghaiLocalInputToUtc,
+  utcToShanghaiLocalInput,
+} from "../../utils/dateTime";
 import { useAuth } from "../auth/AuthContext";
 import { factoryInputs, factoryNames, formalFactoryOptions, isFormalFactory } from "../capabilities/capabilityCatalog";
 import { LotEnrichmentModal } from "./LotEnrichmentModal";
@@ -24,6 +28,8 @@ const needsLotInput = (row: StageUploadRow) => row.status === "NEEDS_INPUT" || r
 export interface StageDataWorkbenchProps {
   businessDomain: BusinessDomain;
   testStage: TestStage;
+  searchParams?: URLSearchParams;
+  onSearchParamsChange?: (params: URLSearchParams) => void;
   onOpenAnalytics?: (datasetId: number, versionNo: number) => void;
   onOpenJob?: (jobId: number) => void;
 }
@@ -38,7 +44,33 @@ interface StageFilterValues {
   to_utc?: string;
 }
 
-export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics, onOpenJob }: StageDataWorkbenchProps) {
+interface StageFilterFormValues {
+  factory_code?: string;
+  upload_status?: string;
+  result_status?: string;
+  product_name?: string;
+  lot_id?: string;
+  from_local?: string;
+  to_local?: string;
+}
+
+const stageFilterKeys = ["factory_code", "upload_status", "result_status", "product_name", "lot_id", "from_utc", "to_utc"] as const;
+const stageBusinessFilterKeys = ["factory_code", "upload_status", "result_status", "product_name", "lot_id"] as const;
+
+const positiveQueryInt = (params: URLSearchParams, key: string, fallback: number, maximum?: number) => {
+  const parsed = Number(params.get(key));
+  if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
+  return maximum == null ? parsed : Math.min(parsed, maximum);
+};
+
+const stageFiltersFromSearch = (params: URLSearchParams): StageFilterValues => Object.fromEntries(
+  stageFilterKeys.flatMap((key) => {
+    const value = params.get(key)?.trim();
+    return value ? [[key, value]] : [];
+  }),
+) as StageFilterValues;
+
+export function StageDataWorkbench({ businessDomain, testStage, searchParams, onSearchParamsChange, onOpenAnalytics, onOpenJob }: StageDataWorkbenchProps) {
   const { user, can } = useAuth();
   const [open, setOpen] = useState(false);
   const [lotBatchId, setLotBatchId] = useState<number>();
@@ -49,11 +81,27 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics,
   const [sourceRelativePath, setSourceRelativePath] = useState(".");
   const [confirmedManifestSha, setConfirmedManifestSha] = useState<string>();
   const [downloadError, setDownloadError] = useState<string>();
-  const [filters, setFilters] = useState<StageFilterValues>({});
-  const [uploadPage, setUploadPage] = useState({ page: 1, pageSize: 20 });
-  const [resultPage, setResultPage] = useState({ page: 1, pageSize: 20 });
+  const [localSearchParams, setLocalSearchParams] = useState(() => new URLSearchParams());
+  const searchKey = (searchParams ?? localSearchParams).toString();
+  const currentSearchParams = useMemo(() => new URLSearchParams(searchKey), [searchKey]);
+  const filters = useMemo(() => stageFiltersFromSearch(currentSearchParams), [currentSearchParams]);
+  const uploadPage = useMemo(() => ({
+    page: positiveQueryInt(currentSearchParams, "upload_page", 1),
+    pageSize: positiveQueryInt(currentSearchParams, "upload_page_size", 20, 100),
+  }), [currentSearchParams]);
+  const resultPage = useMemo(() => ({
+    page: positiveQueryInt(currentSearchParams, "result_page", 1),
+    pageSize: positiveQueryInt(currentSearchParams, "result_page_size", 20, 100),
+  }), [currentSearchParams]);
+  const activeTab = currentSearchParams.get("tab") === "result" ? "result" : "source";
+  const updateSearchParams = (mutate: (next: URLSearchParams) => void) => {
+    const next = new URLSearchParams(currentSearchParams);
+    mutate(next);
+    if (onSearchParamsChange) onSearchParamsChange(next);
+    else setLocalSearchParams(next);
+  };
   const [form] = Form.useForm<{ factory_code: string; remark?: string }>();
-  const [filterForm] = Form.useForm<StageFilterValues>();
+  const [filterForm] = Form.useForm<StageFilterFormValues>();
   const defaultFactory = formalFactoryOptions[testStage][0].value;
   const watchedFactory = Form.useWatch("factory_code", form);
   const selectedFactory = watchedFactory && isFormalFactory(testStage, watchedFactory) ? watchedFactory : defaultFactory;
@@ -73,13 +121,22 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics,
     setSourceRelativePath(".");
     setConfirmedManifestSha(undefined);
     setDownloadError(undefined);
-    setFilters({});
-    setUploadPage({ page: 1, pageSize: 20 });
-    setResultPage({ page: 1, pageSize: 20 });
-    filterForm.resetFields();
+    if (!searchParams) setLocalSearchParams(new URLSearchParams());
     form.resetFields();
     form.setFieldsValue({ factory_code: defaultFactory, remark: undefined });
-  }, [businessDomain, defaultFactory, filterForm, form, testStage]);
+  }, [businessDomain, defaultFactory, form, searchParams, testStage]);
+  useEffect(() => {
+    filterForm.resetFields();
+    filterForm.setFieldsValue({
+      factory_code: filters.factory_code,
+      upload_status: filters.upload_status,
+      result_status: filters.result_status,
+      product_name: filters.product_name,
+      lot_id: filters.lot_id,
+      from_local: utcToShanghaiLocalInput(filters.from_utc),
+      to_local: utcToShanghaiLocalInput(filters.to_utc),
+    });
+  }, [filterForm, filters]);
   const uploads = useQuery({
     queryKey: [...scopeKey, "uploads-page", uploadPage, filters],
     queryFn: () => listStageUploadsPage(businessDomain, testStage, {
@@ -185,7 +242,7 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics,
         inputMode === "CATALOG" ? sourceManifest.data?.sha : undefined,
       );
     },
-    onSuccess: async (data) => { messageApi.success(`批次 ${data.import_batch_id} 已进入后台清洗队列（任务 ${data.job_id}）`); setOpen(false); setFiles([]); setInputMode("UPLOAD"); setSourceRootCode(undefined); setSourceRelativePath("."); setConfirmedManifestSha(undefined); form.resetFields(); await queryClient.invalidateQueries({ queryKey: scopeKey }); },
+    onSuccess: async (data) => { messageApi.success(`批次 ${data.import_batch_id} 已进入后台清洗队列（任务 ${data.job_id}）`); setOpen(false); setFiles([]); setInputMode("UPLOAD"); setSourceRootCode(undefined); setSourceRelativePath("."); setConfirmedManifestSha(undefined); form.resetFields(); onOpenJob?.(data.job_id); await queryClient.invalidateQueries({ queryKey: scopeKey }); },
     onError: async (error) => {
       messageApi.error(error.message);
       if (inputMode === "CATALOG") {
@@ -279,7 +336,7 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics,
     { title: "Data Type", dataIndex: "data_type", width: 105 },
     { title: "处理时间", dataIndex: "created_at_utc", width: 175, render: formatUtcDateTime },
     { title: "操作", key: "actions", width: 270, fixed: "right", render: (_, row) => <Space size={0}>
-      {row.dataset_id && row.dataset_version_no && can("ANALYSIS_RUN") && <Button type="link" size="small" icon={<BarChartOutlined />} onClick={() => onOpenAnalytics?.(row.dataset_id!, row.dataset_version_no!)}>数据分析</Button>}
+      {row.dataset_id && row.dataset_version_no && can("DATASET_READ") && <Button type="link" size="small" icon={<BarChartOutlined />} onClick={() => onOpenAnalytics?.(row.dataset_id!, row.dataset_version_no!)}>数据分析</Button>}
       {row.job_id && <Button type="link" size="small" icon={<UnorderedListOutlined />} onClick={() => onOpenJob?.(row.job_id!)}>Job详情</Button>}
       {can("TASK_CREATE") && isFormalFactory(testStage, row.factory_code) && <Popconfirm title="重新处理该批次？" description="将重跑现有清洗程序并归档旧结果。" onConfirm={() => reprocessMutation.mutate(row.import_batch_id)}><Button type="link" size="small" icon={<RedoOutlined />} loading={reprocessMutation.isPending && reprocessMutation.variables === row.import_batch_id}>重新处理</Button></Popconfirm>}
     </Space> },
@@ -303,25 +360,37 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics,
     <div className="page-heading"><div><Typography.Text type="secondary">{domainName[businessDomain]}数据 / {testStage}数据</Typography.Text><Typography.Title level={2}>{testStage}数据</Typography.Title><Typography.Text type="secondary">{stageDescription[testStage]}</Typography.Text></div><Space><Button icon={<ReloadOutlined />} onClick={() => void refresh()}>刷新</Button>{can("TASK_CREATE") && <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => { setFiles([]); setInputMode("UPLOAD"); setSourceRootCode(undefined); setSourceRelativePath("."); setOpen(true); }}>上传数据</Button>}</Space></div>
     <Row gutter={[16, 16]} className="production-stats"><Col flex="1 1 170px"><Card><Statistic title="查询上传记录" value={metrics.total} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="当前页处理中" value={metrics.processing} valueStyle={{ color: "#1677ff" }} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="查询清洗结果" value={metrics.processed} valueStyle={{ color: "#3f8600" }} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="当前页待补录" value={metrics.needsInput} valueStyle={{ color: metrics.needsInput ? "#d46b08" : undefined }} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="当前页失败" value={metrics.failed} valueStyle={{ color: metrics.failed ? "#cf1322" : undefined }} /></Card></Col></Row>
     <Card className="review-filter-card">
-      <Form<StageFilterValues> form={filterForm} layout="vertical" onFinish={(values) => { setFilters(values); setUploadPage((current) => ({ ...current, page: 1 })); setResultPage((current) => ({ ...current, page: 1 })); }}>
+      <Form<StageFilterFormValues> form={filterForm} layout="vertical" onFinish={(values) => updateSearchParams((next) => {
+        for (const key of stageFilterKeys) next.delete(key);
+        for (const key of stageBusinessFilterKeys) {
+          const value = values[key]?.trim();
+          if (value) next.set(key, value);
+        }
+        const fromUtc = shanghaiLocalInputToUtc(values.from_local);
+        const toUtc = shanghaiLocalInputToUtc(values.to_local);
+        if (fromUtc) next.set("from_utc", fromUtc);
+        if (toUtc) next.set("to_utc", toUtc);
+        next.set("upload_page", "1");
+        next.set("result_page", "1");
+      })}>
         <Row gutter={[12, 0]}>
           <Col xs={24} sm={12} lg={4}><Form.Item label={testStage === "CP" ? "晶圆厂" : "封测厂"} name="factory_code"><Select allowClear options={formalFactoryOptions[testStage]} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={4}><Form.Item label="上传状态" name="upload_status"><Select allowClear options={["RECEIVED", "QUEUED", "PROCESSING", "NEEDS_INPUT", "PROCESSED", "FAILED", "CANCELLED"].map((value) => ({ value, label: statusName[value] }))} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={4}><Form.Item label="结果状态" name="result_status"><Select allowClear options={["PROCESSED", "FAILED", "ARCHIVED"].map((value) => ({ value, label: statusName[value] }))} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={4}><Form.Item label="产品" name="product_name"><Input allowClear /></Form.Item></Col>
           <Col xs={24} sm={12} lg={4}><Form.Item label="Lot" name="lot_id"><Input allowClear /></Form.Item></Col>
-          <Col xs={24} sm={12} lg={4}><Form.Item label="开始时间（UTC）" name="from_utc"><Input allowClear placeholder="2026-08-01T00:00:00Z" /></Form.Item></Col>
-          <Col xs={24} sm={12} lg={4}><Form.Item label="结束时间（UTC）" name="to_utc"><Input allowClear placeholder="2026-08-31T23:59:59Z" /></Form.Item></Col>
-          <Col span={24}><Space><Button type="primary" htmlType="submit" icon={<FilterOutlined />}>服务端检索</Button><Button onClick={() => { filterForm.resetFields(); setFilters({}); setUploadPage((current) => ({ ...current, page: 1 })); setResultPage((current) => ({ ...current, page: 1 })); }}>清空</Button><Typography.Text type="secondary">结果由服务端按权限、筛选和页码返回，页面不加载全表。</Typography.Text></Space></Col>
+          <Col xs={24} sm={12} lg={4}><Form.Item label="开始时间（上海，含）" name="from_local"><Input type="datetime-local" allowClear /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={4}><Form.Item label="结束时间（上海，不含）" name="to_local"><Input type="datetime-local" allowClear /></Form.Item></Col>
+          <Col span={24}><Space><Button type="primary" htmlType="submit" icon={<FilterOutlined />}>服务端检索</Button><Button onClick={() => { filterForm.resetFields(); updateSearchParams((next) => { for (const key of stageFilterKeys) next.delete(key); next.set("upload_page", "1"); next.set("result_page", "1"); }); }}>清空</Button><Typography.Text type="secondary">结果由服务端按权限、筛选和页码返回，页面不加载全表。</Typography.Text></Space></Col>
         </Row>
       </Form>
     </Card>
     {oldestQueueAge != null && <Alert type="info" showIcon message="队列等待观测（当前页）" description={`当前页最长已等待 ${oldestQueueAge} 秒。该值不代表 Worker 在线或离线；请由具备 AUDIT_READ 权限的人员在“运行一致性”查看后端运维观测。`} className="review-alert" />}
     {(uploads.isError || results.isError) && <Alert type="error" showIcon message={`${testStage}数据加载失败`} description={(uploads.error ?? results.error)?.message} />}
     {downloadError && <Alert type="error" showIcon closable message="源文件下载失败" description={downloadError} onClose={() => setDownloadError(undefined)} style={{ marginBottom: 16 }} />}
-    <Card className="production-table-card"><Tabs items={[
-      { key: "source", label: "原始文件", children: <Table rowKey={(r) => `${r.import_batch_id}-${r.sequence_no}`} columns={uploadColumns} dataSource={uploads.data?.items ?? []} loading={uploads.isLoading} scroll={{ x: 1820 }} pagination={{ current: uploads.data?.page ?? uploadPage.page, pageSize: uploads.data?.page_size ?? uploadPage.pageSize, total: uploads.data?.total ?? 0, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (total) => `共 ${total} 条` }} onChange={(pagination) => setUploadPage({ page: pagination.current ?? 1, pageSize: pagination.pageSize ?? 20 })} /> },
-      { key: "result", label: "清洗结果", children: <Table rowKey="result_summary_id" columns={resultColumns} dataSource={results.data?.items ?? []} loading={results.isLoading} scroll={{ x: 1600 }} pagination={{ current: results.data?.page ?? resultPage.page, pageSize: results.data?.page_size ?? resultPage.pageSize, total: results.data?.total ?? 0, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (total) => `共 ${total} 条` }} onChange={(pagination) => setResultPage({ page: pagination.current ?? 1, pageSize: pagination.pageSize ?? 20 })} /> },
+    <Card className="production-table-card"><Tabs activeKey={activeTab} onChange={(tab) => updateSearchParams((next) => { if (tab === "result") next.set("tab", "result"); else next.delete("tab"); })} items={[
+      { key: "source", label: "原始文件", children: <Table rowKey={(r) => `${r.import_batch_id}-${r.sequence_no}`} columns={uploadColumns} dataSource={uploads.data?.items ?? []} loading={uploads.isLoading} scroll={{ x: 1820 }} pagination={{ current: uploads.data?.page ?? uploadPage.page, pageSize: uploads.data?.page_size ?? uploadPage.pageSize, total: uploads.data?.total ?? 0, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (total) => `共 ${total} 条` }} onChange={(pagination) => updateSearchParams((next) => { next.set("upload_page", String(pagination.current ?? 1)); next.set("upload_page_size", String(pagination.pageSize ?? 20)); })} /> },
+      { key: "result", label: "清洗结果", children: <Table rowKey="result_summary_id" columns={resultColumns} dataSource={results.data?.items ?? []} loading={results.isLoading} scroll={{ x: 1600 }} pagination={{ current: results.data?.page ?? resultPage.page, pageSize: results.data?.page_size ?? resultPage.pageSize, total: results.data?.total ?? 0, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (total) => `共 ${total} 条` }} onChange={(pagination) => updateSearchParams((next) => { next.set("result_page", String(pagination.current ?? 1)); next.set("result_page_size", String(pagination.pageSize ?? 20)); })} /> },
     ]} /></Card>
     <Modal title={`提交${domainName[businessDomain]}${testStage}数据`} open={open} width={820} onCancel={() => !mutation.isPending && setOpen(false)} onOk={() => form.submit()} okText="提交后台清洗" confirmLoading={mutation.isPending} okButtonProps={{ disabled: inputMode === "CATALOG" && (!sourceManifest.data || confirmedManifestSha !== sourceManifest.data.sha) }} destroyOnHidden>
       <Alert showIcon type="info" message={`上传身份：${user?.display_name}（${user?.login_name}）`} description="系统从当前登录账号自动记录上传人，无需填写。" />

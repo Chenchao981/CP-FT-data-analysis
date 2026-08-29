@@ -24,24 +24,16 @@ body { margin: 0; min-width: 320px; }
 .workbench { padding: 28px; max-width: 1460px; margin: 0 auto; }
 .page-heading { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 22px; gap: 16px; }
 .page-heading h2 { margin: 0 0 4px !important; color: #12344d; }
-.panel-card { min-height: 520px; box-shadow: 0 4px 18px rgba(16, 52, 77, 0.06); border-color: #e3e9ef; }
 .full-width { width: 100%; }
 .page-loading { min-height: 420px; display: grid; place-items: center; }
-.empty-state { min-height: 390px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
-.empty-state > span:first-child { font-size: 38px; color: #94aabd; }
-.job-title { display: flex; justify-content: space-between; align-items: center; }
-.job-title h4 { margin: 0 !important; }
-.tag-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.inspector-upload-card .ant-upload-wrapper { width: 100%; }
 .review-filter-card { margin-bottom: 20px; }
 .review-filter-card .ant-form { row-gap: 12px; }
 .review-alert { margin-bottom: 20px; }
-.review-results { margin-top: 0; }
-.review-panel { min-height: 330px; }
 .analytics-filter-card { margin-bottom: 20px; }
 .analytics-filter-card .ant-form { row-gap: 12px; }
+.analytics-filter-card .ant-col > .ant-typography { display: block; margin-bottom: 6px; }
+.analytics-workbench .production-table-card { margin-bottom: 20px; }
 .chart-filter-row { margin-top: 16px; padding-top: 16px; border-top: 1px solid #edf0f3; width: 100%; }
-.chart-select { min-width: 210px; }
 .analytics-stats { margin-bottom: 18px; }
 .chart-card { min-height: 440px; box-shadow: 0 4px 18px rgba(16, 52, 77, 0.06); }
 .chart-canvas { width: 100%; height: 350px; }
@@ -53,12 +45,6 @@ body { margin: 0; min-width: 320px; }
 .bin-tile span { color: #587083; }
 .bin-tile strong { font-size: 24px; color: #12344d; margin: 8px 0 3px; }
 .bin-tile em { color: #7890a1; font-style: normal; }
-.intake-workbench > .ant-alert { margin-bottom: 20px; }
-.intake-grid { margin-bottom: 20px; }
-.intake-card { min-height: 390px; box-shadow: 0 4px 18px rgba(16, 52, 77, 0.05); }
-.intake-hint { margin: 18px 0 0 !important; }
-.field-description { margin-bottom: 18px; }
-.intake-record-card { box-shadow: 0 4px 18px rgba(16, 52, 77, 0.05); }
 .production-workbench { max-width: none; }
 .production-workbench .page-heading h2 { margin-top: 4px !important; }
 .production-stats { margin-bottom: 18px; }
@@ -76,5 +62,4 @@ body { margin: 0; min-width: 320px; }
   .workbench { padding: 18px 14px; }
   .topbar { padding: 0 16px; }
   .page-heading { flex-direction: column; }
-  .panel-card { min-height: auto; }
 }

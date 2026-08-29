@@ -28,6 +28,8 @@ class CreateQuickPatRequest(BaseModel):
 
     source_root_code: str = Field(min_length=2, max_length=128)
     source_relative_path: str = Field(default=".", max_length=1000)
+    source_manifest_mode: str = Field(min_length=1, max_length=64)
+    source_manifest_sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +83,14 @@ class QuickAnalysisSession:
     finished_at_utc: datetime | None = None
     reserved_bytes: int = 0
     cleanup_status: str = "RETAINED"
+
+
+@dataclass(frozen=True, slots=True)
+class QuickAnalysisPage:
+    items: tuple[QuickAnalysisSession, ...]
+    total: int
+    page: int
+    page_size: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +213,32 @@ class InMemoryQuickAnalysisService:
             for item in sorted(
                 items, key=lambda item: item.analysis_session_id, reverse=True
             )
+        )
+
+    def list_page_for_principal(
+        self,
+        principal: Principal,
+        *,
+        page: int,
+        page_size: int,
+        status: QuickAnalysisStatus | None = None,
+        from_utc: datetime | None = None,
+        to_utc: datetime | None = None,
+    ) -> QuickAnalysisPage:
+        items = self.list_for_principal(principal)
+        filtered = tuple(
+            item
+            for item in items
+            if (status is None or item.status == status)
+            and (from_utc is None or item.created_at_utc >= from_utc)
+            and (to_utc is None or item.created_at_utc < to_utc)
+        )
+        offset = (page - 1) * page_size
+        return QuickAnalysisPage(
+            items=filtered[offset : offset + page_size],
+            total=len(filtered),
+            page=page,
+            page_size=page_size,
         )
 
     def get_for_principal(
@@ -342,6 +378,17 @@ class QuickAnalysisService(Protocol):
     def list_for_principal(
         self, principal: Principal
     ) -> tuple[QuickAnalysisSession, ...]: ...
+
+    def list_page_for_principal(
+        self,
+        principal: Principal,
+        *,
+        page: int,
+        page_size: int,
+        status: QuickAnalysisStatus | None = None,
+        from_utc: datetime | None = None,
+        to_utc: datetime | None = None,
+    ) -> QuickAnalysisPage: ...
 
     def get_for_principal(
         self, analysis_session_id: int, principal: Principal

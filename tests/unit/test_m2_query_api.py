@@ -32,7 +32,9 @@ class StubM2QueryService:
     def list_uploads_page(
         self, principal, business_domain, test_stage, filters
     ) -> M2Page:
-        self.calls.append((f"uploads:{business_domain}:{test_stage}", principal, filters))
+        self.calls.append(
+            (f"uploads:{business_domain}:{test_stage}", principal, filters)
+        )
         return M2Page(
             items=(
                 StageUploadPageItem(
@@ -64,7 +66,9 @@ class StubM2QueryService:
     def list_results_page(
         self, principal, business_domain, test_stage, filters
     ) -> M2Page:
-        self.calls.append((f"results:{business_domain}:{test_stage}", principal, filters))
+        self.calls.append(
+            (f"results:{business_domain}:{test_stage}", principal, filters)
+        )
         return M2Page(
             items=(
                 StageResultPageItem(
@@ -105,6 +109,7 @@ class StubM2QueryService:
                     processing_run_id=501,
                     product_name="NCE-1",
                     lot_id="LOT-1",
+                    lot_count=1,
                     factory_code="RIYUEXIN",
                     business_domain="PRODUCTION",
                     test_stage="FT",
@@ -114,6 +119,10 @@ class StubM2QueryService:
                     yield_rate=None,
                     source_file_count=1,
                     processed_at_utc="2026-08-29T01:10:00.000Z",
+                    owner_login="owner",
+                    owner_name="Owner",
+                    cleaner_version="1.2.3",
+                    can_archive=True,
                 ),
             ),
             total=1,
@@ -186,9 +195,7 @@ class StubM2QueryService:
             ),
             dataset=DatasetSummary(201, 301, 1, "PUBLISHED", True),
             timeline=(
-                JobTimelineEvent(
-                    "JOB_QUEUED", "QUEUED", "2026-08-29T01:00:00.000Z"
-                ),
+                JobTimelineEvent("JOB_QUEUED", "QUEUED", "2026-08-29T01:00:00.000Z"),
             ),
             actions=(AvailableAction("VIEW_RESULT", "查看结果", True, None),),
             sources=(
@@ -287,6 +294,11 @@ def test_current_catalog_applies_catalog_filters() -> None:
             "test_stage": "ft",
             "status": "published",
             "product_name": "NCE-1",
+            "lot_id": "LOT-1",
+            "wafer_id": "W01",
+            "import_batch_id": 41,
+            "cleaner_version": "1.2.3",
+            "owner_login": "owner",
             "to_utc": "2026-08-29T02:00:00Z",
         },
     )
@@ -295,10 +307,20 @@ def test_current_catalog_applies_catalog_filters() -> None:
     item = response.json()["items"][0]
     assert item["dataset_id"] == 201
     assert item["source_file_count"] == 1
+    assert item["owner_login"] == "owner"
+    assert item["lot_id"] == "LOT-1"
+    assert item["lot_count"] == 1
+    assert item["cleaner_version"] == "1.2.3"
+    assert item["can_archive"] is True
     filters = stub.calls[0][2]
     assert filters.business_domain == "PRODUCTION"
     assert filters.test_stage == "FT"
     assert filters.status == "PUBLISHED"
+    assert filters.lot_id == "LOT-1"
+    assert filters.wafer_id == "W01"
+    assert filters.import_batch_id == 41
+    assert filters.cleaner_version == "1.2.3"
+    assert filters.owner_login == "owner"
 
 
 def test_job_details_matches_frontend_safe_contract() -> None:
@@ -340,6 +362,9 @@ def test_page_filters_fail_closed() -> None:
     page_size_response = client.get(
         "/api/v1/production/ft/results/page", params={"page_size": 101}
     )
+    batch_response = client.get(
+        "/api/v1/catalog/datasets/current", params={"import_batch_id": 0}
+    )
 
     assert timezone_response.status_code == 422
     assert timezone_response.json()["error"]["code"] == "FILTER_TIMEZONE_REQUIRED"
@@ -349,6 +374,8 @@ def test_page_filters_fail_closed() -> None:
     assert factory_response.json()["error"]["code"] == "FILTER_VALUE_INVALID"
     assert page_size_response.status_code == 422
     assert page_size_response.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert batch_response.status_code == 422
+    assert batch_response.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
 def test_m2_query_endpoints_fail_closed_without_database_service() -> None:

@@ -26,7 +26,9 @@ class StubManagementService:
             to_utc="2026-09-01T00:00:00.000Z",
             filters={"factory_code": kwargs["factory_code"]},
             methodology={
-                "yield": "PASS / (PASS + FAIL); UNKNOWN is excluded."
+                "yield": "PASS / (PASS + FAIL); UNKNOWN is excluded.",
+                "trend_period": "Trend periods are Asia/Shanghai business dates.",
+                "failed_job_scope": "Product and Lot filters do not apply to failed jobs.",
             },
             kpis=QualityKpis(
                 dataset_count=2,
@@ -51,7 +53,17 @@ class StubManagementService:
             ),
             breakdowns=(
                 QualityBreakdown(
-                    "FACTORY", "RIYUEXIN", "RIYUEXIN", 2, 2, 100, 80, 10, 10, 80 / 90, 0.1
+                    "FACTORY",
+                    "RIYUEXIN",
+                    "RIYUEXIN",
+                    2,
+                    2,
+                    100,
+                    80,
+                    10,
+                    10,
+                    80 / 90,
+                    0.1,
                 ),
             ),
             fail_bins=(FailBinSummary("BIN2", 10, 1.0),),
@@ -108,12 +120,12 @@ def test_quality_summary_keeps_unknown_out_of_yield_denominator() -> None:
     assert payload["kpis"]["unknown_rate"] == 0.1
     assert payload["filters"]["factory_code"] == "RIYUEXIN"
     assert payload["recent_datasets"][0]["job_id"] == 96
+    assert "Asia/Shanghai" in payload["methodology"]["trend_period"]
+    assert "Product and Lot" in payload["methodology"]["failed_job_scope"]
 
 
 def test_quality_summary_requires_management_read() -> None:
-    response = _client("DATASET_READ").get(
-        "/api/v1/management/quality-summary"
-    )
+    response = _client("DATASET_READ").get("/api/v1/management/quality-summary")
 
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "PERMISSION_DENIED"
