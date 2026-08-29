@@ -3,15 +3,15 @@
 - 报告日期：2026-08-29
 - 被测版本：TMS v1.0 Core 候选、Alembic `sql2014_0018`
 - 开发数据库：`TMS_G0_DEV`，SQL Server 2014 SP2 Enterprise 12.0.5000.0
-- 最终提交：`FINAL_VERIFICATION_PENDING`
-- 最终发布包 SHA-256：`FINAL_VERIFICATION_PENDING`
-- 最终测试结论：`FINAL_VERIFICATION_PENDING`
+- 验证基线提交：`0dca74a`（报告回填为后续 docs-only 提交）
+- 最终发布包 SHA-256：`D84E7BCC1CDADDAE19C6ADEFD694EB32AD605FAA6C79CF2BDE7E500A54D9D9DC`
+- 最终测试结论：**仓库与开发库 G0-G2 PASS；G3/G4 未执行**
 
 ## 1. 结论
 
 后端、前端、SQL Server Migration、Worker、真实 CP/FT、Quick PAT、A5 Lifecycle、RBAC、运维脚本和发布包均已建立自动化或真实开发库验证。已取得的专项证据没有发现 Canonical 行数漂移、错误 Current、未知良率补零、跨 Owner 放行或越出受管根删除。
 
-最后一批一致性修复合并后必须重新执行本报告第 6 节的完整命令矩阵。当前文档有意不沿用修改前的测试总数作为最终结论；最终总数、耗时、提交号和发布包 SHA 均以 `FINAL_VERIFICATION_PENDING` 标记，未替换前不得签发仓库交付 PASS。
+最后一批一致性修复合并后，主线已重新执行第 6 节的完整命令矩阵、真实 SQL A5/Schema 复核和认证浏览器 UAT。最终结果没有失败，Canonical 与 Current 事实未漂移，因此签发仓库与开发库 G0-G2 PASS；该结论不包含目标服务器或生产上线。
 
 ## 2. 做了什么
 
@@ -59,6 +59,7 @@
 | 场景 | 核心断言 | 结果 |
 |---|---|---|
 | Export Job 148 | Dataset 46、Release 11、Parent 98、3 Artifact、`SUCCESS/READY` | PASS |
+| 浏览器 Export Job 157 | Dataset 46、Release 11、3 Artifact、`SUCCESS/READY/PRESENT`，下载按钮成功触发 | PASS |
 | Export 非变异 | `139 / 291,127 / 5,578,114 / Current 10` 不变 | PASS |
 | Archive rollback | Current View `(1,1,2581,56782) -> 0`，Facts 不变，Operations `HEALTHY`，回滚恢复 | PASS |
 | Reprocess rollback | Parent/Batch/Release/Profile 血缘正确，幂等不重复建 Job，排队不改 Facts，回滚恢复 | PASS |
@@ -69,16 +70,15 @@
 1. `TMS_G0_DEV` 已从 0015 顺序升级到 0018；升级前后正式事实计数不变。
 2. 随机临时库严格使用 `NCE_TMS_M4_<32HEX>_MIGRATION_TEST` 形式，从空库执行 0001～0018。
 3. 空库验证输出 `EMPTY_MIGRATION:PASS` 和 `EMPTY_MIGRATION_CLEANUP:VERIFIED_ABSENT`；只对经过正则和不存在预检的精确随机库做删除。
-4. 发布构建器已证明相同源码/版本两次 ZIP 字节可复现、manifest size/SHA、CRC、路径和禁止文件检查通过；最终交付 ZIP 的 SHA 仍待回填。
+4. 发布构建器已证明相同源码/版本两次 ZIP 字节可复现、manifest size/SHA、CRC、路径和禁止文件检查通过；最终 ZIP 为 `NCE-TMS-v1.0-core.zip`，481,749 bytes、220 个 Manifest 文件，SHA-256 为 `D84E7BCC1CDADDAE19C6ADEFD694EB32AD605FAA6C79CF2BDE7E500A54D9D9DC`。
 5. 生产数据库备份/恢复没有在本机冒充执行；当前只完成脚本 DryRun 合同和本机随机空库 Migration。目标环境 restore drill 是外部门。
 
 ## 4. 不确定的和未执行的事项
 
-1. 最终全量数字：`FINAL_VERIFICATION_PENDING`。最近一次中间 M4 记录是后端 `369 passed, 1 skipped`，但其后仍有一致性修复，因此不能作为最终签字数字。
-2. 最终前端测试数、生产 build 产物和浏览器端 A5 复跑：`FINAL_VERIFICATION_PENDING`。
-3. 最终发布提交、ZIP 文件名、字节数和 SHA-256：`FINAL_VERIFICATION_PENDING`。
-4. SQL Server 2014 SP3、目标服务账号 ACL、目标机计划任务、HTTPS、正式备份/恢复和连续运行未执行。
-5. SAP-B1/MES/QMS 没有生产接口；crosswalk PENDING 不代表企业主数据已经批准。
+1. SQL Server 2014 SP3、目标服务账号 ACL、目标机计划任务、HTTPS、正式备份/恢复和连续运行未执行。
+2. SAP-B1/MES/QMS 没有生产接口；crosswalk PENDING 不代表企业主数据已经批准。
+3. Vite 生产构建仍提示两个主 chunk 大于 500 kB；质量驾驶舱在 5,578,114 条 Measurement 的首次全窗口读取约 10～13 秒（含浏览器轮询粒度）。两项均应在 G3 建立 SLO、索引/聚合与拆包优化证据。
+4. 全仓仍有 25 个本次变更范围外的历史 Ruff `I001`；本次新增/修改 Python 文件 `F/I` 为零，全仓 `F/E9` 为零。
 
 ## 5. 验证证据
 
@@ -86,19 +86,20 @@
 
 | 测试组 | 最终结果 | 最终耗时/备注 |
 |---|---|---|
-| 后端全量 pytest | `FINAL_VERIFICATION_PENDING` | 应为 0 failed；skip/warning 必须说明 |
-| 后端 Ruff `F,I` | `FINAL_VERIFICATION_PENDING` | 新增/修改文件必须 0 error |
-| 前端 Vitest | `FINAL_VERIFICATION_PENDING` | 应为 0 failed |
-| 前端 TypeScript + Vite build | `FINAL_VERIFICATION_PENDING` | 应为 PASS |
-| PowerShell AST / ValidateOnly | `FINAL_VERIFICATION_PENDING` | API、Worker、QuickCleanup、FormalCleanup |
-| 发布 ZIP 双构建/inspection/smoke | `FINAL_VERIFICATION_PENDING` | 回填 SHA-256 |
-| 认证浏览器 UAT | `FINAL_VERIFICATION_PENDING` | 回填角色、关键页面、console |
+| 后端全量 pytest | PASS：`393 passed, 1 skipped, 4 warnings` | 34.82 s；4 warning 均为 openpyxl `utcnow()` 弃用提示 |
+| 后端 Ruff | PASS | 全仓 `F/E9` 0；本次新增/修改 Python `F/I` 0；历史范围外 `I001` 25 |
+| 前端 Vitest | PASS：25 files / 91 tests | 100.64 s；仅 jsdom 不实现伪元素 `getComputedStyle` 的已知提示 |
+| 前端 TypeScript + Vite build | PASS：13,055 modules | 24.03 s；保留大 chunk P2 warning |
+| PowerShell AST / ValidateOnly | PASS | 14 个脚本 AST；API、Worker、QuickCleanup、FormalCleanup 4 项 ValidateOnly |
+| 发布 ZIP 双构建/inspection/smoke | PASS | 481,749 bytes；220 files；双构建一致；SHA-256 见报告头 |
+| 认证浏览器 UAT | PASS | 4 角色；质量/crosswalk/Operations/A5/Unauthorized；console 0 warning/error |
 
 ### 5.2 已通过的专项入口
 
 - `scripts/g0/verify_sql2014_schema.py`
 - `scripts/g0/verify_atomic_finalize_sql_e2e.py`
 - `scripts/g0/verify_a5_archive_sql_e2e.py`
+- `scripts/g0/verify_a5_lifecycle_concurrency_sql_e2e.py`
 - `scripts/g0/verify_a5_reprocess_sql_e2e.py`
 - `scripts/g0/verify_quick_pat_e2e.py`
 - `scripts/g0/verify_quick_pat_sql_e2e.py`
@@ -115,7 +116,7 @@ $env:PYTHONPATH = "$PWD\backend"
 & .\.conda-env\python.exe -m ruff check backend scripts tests --select F,I
 
 Push-Location .\frontend
-npm test
+npm test -- --run
 npm run build
 Pop-Location
 
@@ -130,7 +131,6 @@ Pop-Location
 
 ## 7. 下一步
 
-1. 主线完成最后 P1 后运行第 6 节全量矩阵，回填最终数字、耗时、warning 解释、提交号和发布包 SHA。
-2. 执行一次最终认证浏览器 UAT，覆盖管理员、管理/质量、CP/FT 工程师、深链、A5 和 Unauthorized。
-3. 最终敏感信息/大文件/暂存清单检查通过后才提交和推送；不纳入原始数据、Artifact、日志、缓存、账号、`.env.runtime.ps1` 或 `.remember/`。
-4. 在 G3 目标环境另行形成 UAT、备份恢复和运行观察报告；本报告不签发生产上线。
+1. 保持发布 ZIP、源码基线和本报告的 SHA/提交关联；docs-only 回填不改变已测试程序内容。
+2. 在 G3 目标环境另行形成 UAT、性能 SLO、备份恢复和运行观察报告；本报告不签发生产上线。
+3. G3 前优先评估质量驾驶舱聚合/索引与前端 chunk 拆分，再用真实并发和时间窗口验证。

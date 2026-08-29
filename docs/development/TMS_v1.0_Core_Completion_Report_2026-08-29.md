@@ -2,16 +2,16 @@
 
 - 报告日期：2026-08-29
 - 目标版本：TMS v1.0 Core
-- 仓库分支/提交：`FINAL_VERIFICATION_PENDING`
+- 仓库分支/验证基线提交：`codex/auth-rbac-frontend` / `0dca74a`
 - 数据库 Revision：`sql2014_0018`
-- 仓库交付结论：`FINAL_VERIFICATION_PENDING`
+- 仓库交付结论：**PASS（源码、开发库 G0-G2 与可复现发布包）**
 - 生产上线结论：**未上线；G3/G4 未执行**
 
 ## 1. 结论
 
 TMS v1.0 Core 的计划范围已经形成完整候选交付：四个固定 CP/FT 正式入口、受控来源、异步 Cleaner/Worker、唯一 Canonical、Dataset Current、工程师检索与 Job 追踪、质量/领导视图、主数据 crosswalk、A5 导出/重清洗/归档、Quick PAT、Worker 运维、清理、发布与备份恢复工具均已落地，并取得真实开发库证据。
 
-仓库交付的最终 PASS 仍取决于最后一次全量回归、认证浏览器 UAT、发布包 SHA 和提交推送，这些动态结果暂记为 `FINAL_VERIFICATION_PENDING`。即使仓库交付最终 PASS，也只表示代码与开发库 G0-G2 完成；没有 G3/G4、正式基础设施和业务签字，不能写成“整个系统已生产上线”。
+最后一次全量回归、认证浏览器 UAT、真实 SQL 复核、秘密/禁止路径扫描和可复现发布包均已通过，因此仓库与开发库 G0-G2 交付判定为 PASS。该 PASS 只表示代码和开发库阶段完成；没有 G3/G4、正式基础设施和业务签字，不能写成“整个系统已生产上线”。
 
 ## 2. 做了什么
 
@@ -57,14 +57,14 @@ TMS v1.0 Core 的计划范围已经形成完整候选交付：四个固定 CP/FT
 | M2 | Dataset Current、分页筛选、Job 详情、深链和工程师闭环 | 实现与专项验证完成 |
 | M3 | 领导/质量 KPI、未知口径、下钻、crosswalk、接口合同 | 实现与专项验证完成 |
 | M4 | A5 生命周期、Worker 运维、清理、发布、备份恢复工具 | 实现与专项验证完成；目标机外部门未执行 |
-| M5-M7 | 全量回归、G0-G2、报告和安全交付 | `FINAL_VERIFICATION_PENDING` |
+| M5-M7 | 全量回归、G0-G2、报告和安全交付 | 完成，G0-G2 PASS；G3/G4 未执行 |
 
 ### 3.2 开发库事实
 
 - `TMS_G0_DEV` 当前为 `sql2014_0018`；正式事实为 139 Test Run、291,127 Unit Result、5,578,114 Measurement、10 个 Published Current Dataset Version。
 - 华虹 CP Dataset 43、日月新 FT Dataset 44、Jetech CP Dataset 46 已真实发布并具备 1/1、6/6、1/1 Writer-verified 来源血缘。
 - 日月新 Dataset 44 的 35,350 Unit 没有 PASS/FAIL；系统和管理视图保持良率 NULL，而不是 0%。
-- Export Job 148 对 Dataset 46 生成 3 个临时 Artifact，正式事实和 Current 不变。
+- Export Job 148 对 Dataset 46 生成 3 个临时 Artifact；最终浏览器 UAT 的 Job 157 再次得到 `SUCCESS/READY/PRESENT` 并触发下载，正式事实和 Current 不变。
 - Archive 和 Reprocess 真实 SQL 演练均在外层事务中完成验证并恢复，未替业务用户做永久决策。
 - 随机空库已从 0001 升级到 0018，并精确清理；目标生产备份/恢复仍未执行。
 
@@ -80,8 +80,11 @@ TMS v1.0 Core 的计划范围已经形成完整候选交付：四个固定 CP/FT
 
 ### 4.1 最终仓库门
 
-- 最终后端/前端测试数、构建结果、Ruff、浏览器 UAT、提交号、发布 ZIP SHA：`FINAL_VERIFICATION_PENDING`。
-- 最终暂存清单和秘密扫描必须证明没有 `.env.runtime.ps1`、原始数据、Artifact、日志、账号、缓存或 `.remember/`。
+- 后端：`393 passed, 1 skipped, 4 warnings in 34.82s`；前端：25 files / 91 tests PASS；TypeScript + Vite 生产构建 13,055 modules、24.03s PASS。
+- Ruff：全仓 `F/E9` 为零，本次新增/修改 Python `F/I` 为零；25 个范围外历史 `I001` 作为 P2 保留。
+- 认证浏览器：SYSTEM_ADMIN、MANAGER_VIEWER、QUALITY_ENGINEER、CP_ENGINEER 四角色 PASS；直接 URL 越权、A5、质量、crosswalk、Operations 与 Worker 均已覆盖，console 无 warning/error。
+- 发布包：`NCE-TMS-v1.0-core.zip`，481,749 bytes、220 个 Manifest 文件、Schema `sql2014_0018`；双构建字节一致，SHA-256 `D84E7BCC1CDADDAE19C6ADEFD694EB32AD605FAA6C79CF2BDE7E500A54D9D9DC`。
+- 暂存清单与秘密扫描为 165 files / 0 issue；没有 `.env.runtime.ps1`、原始数据、Artifact、日志、账号、缓存或 `.remember/`。最终 docs-only 回填不改变已测试程序内容。
 
 ### 4.2 G3/G4 外部门
 
@@ -107,8 +110,7 @@ TMS v1.0 Core 的计划范围已经形成完整候选交付：四个固定 CP/FT
 
 ## 6. 下一步
 
-1. 主线执行最后一次干净回归和认证浏览器 UAT，回填所有 `FINAL_VERIFICATION_PENDING`，再决定仓库交付 PASS/FAIL。
-2. 生成可复现发布 ZIP、记录 SHA-256，检查暂存内容后提交并推送批准分支。
-3. 由新洁能批准 G3 的服务器、账号、产品/Lot 范围、人员和回退阈值；完成 SP3、备份恢复、HTTPS、ACL 和 Task Scheduler。
-4. G3 连续观察和业务 UAT 通过后再申请 G4；G4 必须分厂家/阶段扩围并保留回滚能力。
-5. 后续优先做正式主数据和 SAP-B1/MES/QMS 合同评审，不先扩展未经 Golden 验证的新厂家。
+1. 由新洁能批准 G3 的服务器、账号、产品/Lot 范围、人员和回退阈值；完成 SP3、备份恢复、HTTPS、ACL 和 Task Scheduler。
+2. G3 建立质量驾驶舱响应时间与前端包体 SLO，关闭已记录的性能 P2 后再做并发/连续运行观察。
+3. G3 连续观察和业务 UAT 通过后再申请 G4；G4 必须分厂家/阶段扩围并保留回滚能力。
+4. 后续优先做正式主数据和 SAP-B1/MES/QMS 合同评审，不先扩展未经 Golden 验证的新厂家。

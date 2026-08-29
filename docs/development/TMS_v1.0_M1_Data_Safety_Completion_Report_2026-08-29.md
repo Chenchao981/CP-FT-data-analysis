@@ -4,13 +4,13 @@
 - 验证范围：M1 数据正确性、安全边界、原子发布与可恢复性
 - 验证环境：Windows 11 开发机、SQL Server 2014 SP2 Enterprise（12.0.5000.0）、`TMS_G0_DEV`
 - Schema Revision：`sql2014_0018`
-- 最终全量回归：`FINAL_VERIFICATION_PENDING`
+- 最终全量回归：后端 `393 passed, 1 skipped`；前端 `91 passed`；生产构建 PASS
 
 ## 1. 结论
 
 M1 计划内的数据安全能力已经实现，并在隔离开发库完成真实数据和故障恢复验证。正式明细唯一事实链仍为 `test.test_run -> test.unit_result -> test.measurement`；开发库在 Migration、原子发布、A5 导出/归档回滚验证前后保持 `139 / 291,127 / 5,578,114` 行，Current Dataset 数为 `10`，没有因安全验证删除或覆盖 Canonical 明细。
 
-本报告只证明仓库实现和 `TMS_G0_DEV` 开发库验证，不代表目标生产环境已经升级、部署或上线。最终交付前仍须将本轮最后一次全量回归结果回填到本报告。
+本报告只证明仓库实现和 `TMS_G0_DEV` 开发库验证，不代表目标生产环境已经升级、部署或上线。最终自动化、真实 SQL、认证浏览器和发布包验证均已回填；目标环境门禁仍按第 4、6 节执行。
 
 ## 2. 做了什么
 
@@ -74,13 +74,13 @@ M1 计划内的数据安全能力已经实现，并在隔离开发库完成真�
 
 ### 3.3 A5 非变异和恢复验证
 
-- Export Job 148：Dataset 46、Cleaner Release 11、Parent Job 98；Job `SUCCESS`、Artifact `READY`，生成 3 个临时 Artifact，总字节和 SHA 由最终回归报告记录；导出前后 Canonical 与 Current 计数不变。
+- Export Job 148：Dataset 46、Cleaner Release 11、Parent Job 98；Job `SUCCESS`、Artifact `READY`，生成 3 个临时 Artifact。最终认证浏览器 UAT 又创建 Job 157，得到相同 3 个 SHA-256/TTL Artifact，并成功触发下载；导出前后 Canonical 与 Current 计数不变。
 - Archive 回滚 E2E：Dataset 46、Dataset Version ID 62；Current View 计数由 `(1, 1, 2,581, 56,782)` 变为 `(0, 0, 0, 0)`，`test.*` 计数不变，Operations 为 `HEALTHY`；外层事务回滚后原状态恢复。
-- Reprocess 回滚 E2E：事务内创建 Job 149，Parent 98、Batch 79、Release 11、Profile 11、动作 `REPROCESS_UPDATE`；排队和幂等重放未改变正式事实，事务回滚后 Job 不存在且 Batch/Current 恢复。
+- Reprocess 回滚 E2E：最终复跑事务内创建 Job 156，Parent 98、Batch 79、Release 11、Profile 11、动作 `REPROCESS_UPDATE`；排队和幂等重放未改变正式事实，事务回滚后 Job 不存在且 Batch/Current 恢复。
 
 ## 4. 不确定的和未执行的事项
 
-1. 最终全量后端、前端、构建、静态检查和发布包 SHA 仍须以最后一次干净工作树验证为准：`FINAL_VERIFICATION_PENDING`。
+1. 最终回归已通过，但生产构建仍有大于 500 kB 的 chunk 警告；全仓另有 25 个本次范围外的历史 `I001` 导入排序项，均作为 P2 技术债，不影响本次 `F/E9` 和新增/修改 Python 文件 `F/I` 为零的结论。
 2. 当前实例是 SQL Server 2014 SP2；目标生产环境必须升级到 SP3 和适用安全更新后重新验证。
 3. 本轮未在目标 Windows Server 使用正式服务账号执行 ACL、Task Scheduler、HTTPS、反向代理和重启恢复。
 4. 本轮 Archive/Reprocess 使用外层事务回滚验证安全语义；生产变更窗口的实际归档和正式重清洗必须由有权业务用户选择批准数据执行。
@@ -96,14 +96,13 @@ M1 计划内的数据安全能力已经实现，并在隔离开发库完成真�
 | 逻辑归档 | `scripts/g0/verify_a5_archive_sql_e2e.py` | Current 隐藏、事实不删、事务恢复 |
 | 显式重清洗 | `scripts/g0/verify_a5_reprocess_sql_e2e.py` | 合同/幂等/血缘 PASS，事务恢复 |
 | 最新 Cleaner 导出 | Job 148 / Dataset 46 | 3 Artifact，Canonical 不变 |
-| 受控来源和路径攻击 | `tests/unit/test_source_catalog.py` 等 | 专项测试 PASS；最终合计待回填 |
-| 最终全量 | 后端、前端、build、Ruff | `FINAL_VERIFICATION_PENDING` |
+| 受控来源和路径攻击 | `tests/unit/test_source_catalog.py` 等 | 专项测试与全量回归 PASS |
+| 最终全量 | 后端、前端、build、Ruff | 后端 393/1 skip；前端 91；build PASS；变更 Python `F/I` 0 |
 
 运行配置通过 `.env.runtime.ps1` 和进程环境注入；报告和命令输出不记录密码、Token、连接串或存储 URI。
 
 ## 6. 下一步
 
-1. 主线合并最后修复后执行最终全量回归，替换全部 `FINAL_VERIFICATION_PENDING`。
-2. 由 DBA 在目标 SP3 实例执行 pre-check、备份、空库迁移、现有库升级和独立 restore drill。
-3. 由 CP/FT、质量和 SAP-B1 主数据 Owner 对 Golden、Spec/Bin/Retest 口径和企业 crosswalk 签字。
-4. 只有 G3 测试服务器灰度通过后，才能申请 G4 生产分批；本报告不能作为生产上线证明。
+1. 由 DBA 在目标 SP3 实例执行 pre-check、备份、空库迁移、现有库升级和独立 restore drill。
+2. 由 CP/FT、质量和 SAP-B1 主数据 Owner 对 Golden、Spec/Bin/Retest 口径和企业 crosswalk 签字。
+3. 只有 G3 测试服务器灰度通过后，才能申请 G4 生产分批；本报告不能作为生产上线证明。

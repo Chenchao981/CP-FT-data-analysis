@@ -4,11 +4,11 @@
 - 灰度范围：G0 本机开发、G1 本机认证角色、G2 `TMS_G0_DEV`
 - 未执行范围：G3 测试服务器小组试用、G4 生产分批
 - Schema Revision：`sql2014_0018`
-- 最终 Gate 状态：`FINAL_VERIFICATION_PENDING`
+- 最终 Gate 状态：**G0-G2 PASS；G3/G4 未执行**
 
 ## 1. 结论
 
-本轮已经完成 G0-G2 所需的主要功能验证：受控 Source Catalog、四个固定 CP/FT 入口、普通角色权限、真实 CP/FT Cleaner/Worker/Canonical/Dataset Current、管理质量视图、Worker 运维、最新 Cleaner 导出、逻辑归档、显式重清洗和 Quick PAT 均取得开发环境证据。最后一次合并后全量自动化、最终认证浏览器回归和发布包 SHA 尚待统一收口，因此 Gate 总状态暂记为 `FINAL_VERIFICATION_PENDING`。
+本轮已经完成 G0-G2 所需的功能验证：受控 Source Catalog、四个固定 CP/FT 入口、普通角色权限、真实 CP/FT Cleaner/Worker/Canonical/Dataset Current、管理质量视图、Worker 运维、最新 Cleaner 导出、逻辑归档、显式重清洗和 Quick PAT 均取得开发环境证据。最终全量自动化、认证浏览器回归、真实 SQL 复核和可复现发布包均已通过，因此 G0-G2 Gate 判定为 PASS。
 
 G3 和 G4 没有执行。没有目标服务器、正式服务账号、HTTPS、生产数据库备份恢复、业务 UAT 和发布签字时，严禁将本报告表述为“已生产上线”。
 
@@ -27,8 +27,9 @@ G3 和 G4 没有执行。没有目标服务器、正式服务账号、HTTPS、�
 - 管理员可看四个正式入口、Source Catalog Manifest 预览、提交指纹、Operations 与 Worker 状态。
 - 管理/质量角色可读取授权的 Current Dataset 和质量 KPI；crosswalk 读取与批准权限分离，未替业务 Owner 批准真实 SAP 映射。
 - CP 工程师看不到运维/管理入口，直接访问无权页面得到 Unauthorized；Dataset API 和页面均执行相同服务端数据范围。
-- 日月新 FT 无 PASS/FAIL 时页面显示“—”，没有显示 0%；浏览器控制台检查未发现错误。测试账号在验收后禁用或清理。
-- A5 和最后一轮主线合并后的完整浏览器复跑结果仍待回填：`FINAL_VERIFICATION_PENDING`。
+- 日月新 FT 无 PASS/FAIL 时页面显示“—”，没有显示 0%；浏览器控制台只有 Vite/React 开发提示，没有 warning/error。
+- 最终认证浏览器覆盖 SYSTEM_ADMIN、MANAGER_VIEWER、QUALITY_ENGINEER、CP_ENGINEER：角色菜单、直接 URL Unauthorized、管理质量视图、crosswalk 读/写分离、Operations/Worker 和 A5 均通过。4 个临时账号已禁用、撤权并吊销会话，审计身份保留。
+- 管理员从页面创建 Export Job 157；Worker 将其处理为 `SUCCESS/READY`，3 个 Artifact 均为 `PRESENT`，页面成功触发下载。Reprocess/Archive 只验证确认文本和双重输入门，没有永久改变 Dataset。
 
 ### 2.3 G2：开发库真实样本与回滚演练
 
@@ -43,9 +44,9 @@ G3 和 G4 没有执行。没有目标服务器、正式服务账号、HTTPS、�
 
 | 级别 | 环境 | 已有证据 | 当前状态 |
 |---|---|---|---|
-| G0 | 本机开发 | 自动化、构建、空库 Migration、故障注入、发布合同 | 主要证据 PASS；最终全量 `FINAL_VERIFICATION_PENDING` |
-| G1 | 本机认证模式 | Token、角色菜单、服务端越权拒绝、四入口、FT NULL Yield | 已执行；A5 最终浏览器复跑 `FINAL_VERIFICATION_PENDING` |
-| G2 | `TMS_G0_DEV` | 三组真实 Current、A5 E2E、Quick PAT、回滚恢复 | 主要证据 PASS；最终 Gate `FINAL_VERIFICATION_PENDING` |
+| G0 | 本机开发 | 自动化、构建、空库 Migration、故障注入、发布合同 | **PASS** |
+| G1 | 本机认证模式 | Token、四角色菜单、直接 URL 越权拒绝、A5、FT NULL Yield | **PASS** |
+| G2 | `TMS_G0_DEV` | 三组真实 Current、A5 E2E、Quick PAT、回滚恢复 | **PASS** |
 | G3 | 测试服务器 | 需要正式测试机、账号、HTTPS、UAT | **未执行** |
 | G4 | 生产分批 | 需要变更窗口、监控、回滚阈值和签字 | **未执行** |
 
@@ -76,7 +77,8 @@ G3 和 G4 没有执行。没有目标服务器、正式服务账号、HTTPS、�
 |---|---|---|
 | 最新 Cleaner 导出 | Job 148，Dataset 46，Release 11，Parent 98，`SUCCESS/READY` | `139 / 291,127 / 5,578,114 / Current 10` 不变 |
 | 逻辑归档 | Dataset 46，Version ID 62，Current View `(1,1,2581,56782) -> (0,0,0,0)` | `test.*` 不变；Operations `HEALTHY`；外层事务回滚恢复 |
-| 显式重清洗 | 事务内 Job 149，Parent 98，Batch 79，Release/Profile 11，`REPROCESS_UPDATE` | 排队不改事实；幂等重放不重复建 Job；外层事务回滚恢复 |
+| 显式重清洗 | 最终复跑事务内 Job 156，Parent 98，Batch 79，Release/Profile 11，`REPROCESS_UPDATE` | 排队不改事实；幂等重放不重复建 Job；外层事务回滚恢复 |
+| 浏览器导出 | Job 157，Dataset 46，3 Artifact，`SUCCESS/READY/PRESENT` | 页面下载触发成功；`139 / 291,127 / 5,578,114 / Current 10` 不变 |
 
 Export Job 148 的 3 个临时 Artifact：
 
@@ -96,7 +98,7 @@ Export Job 148 的 3 个临时 Artifact：
 
 ## 4. 不确定的和未执行的事项
 
-1. 最后一次全量自动化、前端 build、浏览器 A5 回归和 release SHA：`FINAL_VERIFICATION_PENDING`。
+1. 最终生产 build 通过，但仍有大于 500 kB 的 chunk 警告；需要在后续性能迭代继续拆包，不作为本次 G0-G2 阻断项。
 2. G1 使用的是本机临时测试账号，不是企业 AD/OIDC 或正式组织角色。
 3. G2 是开发库，SQL Server 仍为 SP2；不能替代目标 SP3 环境并发、容量、备份和恢复表现。
 4. 本轮没有让业务用户永久归档或永久重清洗真实 Dataset；这是有意保留的业务授权边界。
@@ -113,7 +115,6 @@ Export Job 148 的 3 个临时 Artifact：
 
 ## 6. 下一步
 
-1. 关闭最后 P1、执行统一全量和认证浏览器回归，将最终 Gate 从占位状态改为明确 PASS/FAIL。
-2. G3 只选择一个业务小组、有限厂家/产品/Lot；先验证 SP3、HTTPS、账号、ACL、备份恢复和回退阈值。
-3. G3 稳定且业务签字后再提交 G4 申请；G4 先单厂家/单阶段，不一次性开放全部范围。
-4. 任何错误 Current、越权、源文件变化、不可恢复 Job 或备份恢复失败都应停止扩围并回退。
+1. G3 只选择一个业务小组、有限厂家/产品/Lot；先验证 SP3、HTTPS、账号、ACL、备份恢复和回退阈值。
+2. G3 稳定且业务签字后再提交 G4 申请；G4 先单厂家/单阶段，不一次性开放全部范围。
+3. 任何错误 Current、越权、源文件变化、不可恢复 Job 或备份恢复失败都应停止扩围并回退。
