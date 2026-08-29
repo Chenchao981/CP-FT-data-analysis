@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from app.domain.cleaner_registry import CleanerRelease
+from app.infrastructure.child_process_environment import isolated_child_environment
 
 ProcessRunner = Callable[..., subprocess.CompletedProcess[str]]
 INPUT_REQUIRED_PREFIX = "TMS_INPUT_REQUIRED_JSON="
@@ -292,8 +293,7 @@ class ExistingCleanerRunner:
             if not required.is_file():
                 raise FileNotFoundError(f"cleaner runtime is unavailable: {required}")
 
-        env = os.environ.copy()
-        env.update(
+        env = isolated_child_environment(
             {
                 "TMS_EXISTING_CLEANER_PACKAGE": str(package),
                 "TMS_EXISTING_CLEANER_INPUTS": json.dumps(

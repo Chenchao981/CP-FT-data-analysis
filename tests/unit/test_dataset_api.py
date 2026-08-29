@@ -59,7 +59,7 @@ class StubDatasetService:
     def publish(
         self, dataset_id: int, version_no: int, request: PublishDatasetVersionRequest
     ) -> DatasetVersionRecord:
-        assert request.published_by == 9
+        assert request.published_by == 1
         return DatasetVersionRecord(2, dataset_id, version_no, 3, "1.0", "PUBLISHED", True, 1)
 
     def get_summary(self, dataset_id: int, version_no: int) -> DatasetResultSummary:

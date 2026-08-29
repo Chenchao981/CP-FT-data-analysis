@@ -15,6 +15,7 @@ from app.infrastructure.existing_cleaner_runner import (
     CleanerArtifact,
     ExistingCleanerRunResult,
 )
+from app.infrastructure.source_catalog import SourceCatalog, SourceRoot
 from app.main import create_app
 from fastapi.testclient import TestClient
 
@@ -217,10 +218,14 @@ def _stub_ft_cleaner(monkeypatch, tmp_path: Path) -> None:
     return seen
 
 
-def _client(service: StubStageService) -> TestClient:
+def _client(
+    service: StubStageService, catalog: SourceCatalog | None = None
+) -> TestClient:
     app = create_app()
     app.state.stage_data_service = service
     app.state.cleaner_registry = StubCleanerRegistry()
+    if catalog is not None:
+        app.state.source_catalog = catalog
     return TestClient(app)
 
 
@@ -419,50 +424,185 @@ def test_general_cp_upload_rejects_custom_guoyu_tool(monkeypatch, tmp_path: Path
     assert response.json()["error"]["code"] == "FACTORY_UNSUPPORTED"
 
 
-def test_cp_upload_accepts_server_directory_and_preserves_source_paths(
+def test_cp_upload_snapshots_an_authorized_catalog_directory(
     monkeypatch, tmp_path: Path
 ) -> None:
     _stub_cp_cleaner(monkeypatch, tmp_path)
-    source = tmp_path / "C146808.02"
-    source.mkdir()
+    source_root = tmp_path / "source"
+    source = source_root / "C146808.02"
+    source.mkdir(parents=True)
     first = source / "C146808-01.xls"
     second = source / "C146808-02.xls"
     first.write_bytes(b"one")
     second.write_bytes(b"two")
+    catalog = SourceCatalog(
+        (
+            SourceRoot(
+                "JETECH_ENGINEERING",
+                "Jetech engineering source",
+                source_root,
+                "CP",
+                "JETECH",
+                (".xls",),
+                "FORMAL_IMPORT",
+                ("ENGINEERING",),
+            ),
+        )
+    )
     service = StubStageService()
-    response = _client(service).post(
+    response = _client(service, catalog).post(
         "/api/v1/engineering/cp/uploads",
-        data={"factory_code": "jetech", "source_path": str(source)},
+        data={
+            "factory_code": "jetech",
+            "source_root_code": "JETECH_ENGINEERING",
+            "source_relative_path": "C146808.02",
+        },
     )
 
     assert response.status_code == 201
+    assert response.json()["input_mode"] == "SOURCE_CATALOG"
     assert service.calls == [("ENGINEERING", "CP")]
-    assert tuple(item.path.parent for item in service.registered_files) == (
-        source,
-        source,
+    assert [item.original_name for item in service.registered_files] == [
+        "C146808-01.xls",
+        "C146808-02.xls",
+    ]
+    assert all(source not in item.path.parents for item in service.registered_files)
+    assert all((tmp_path / "raw") in item.path.parents for item in service.registered_files)
+    assert all(
+        item.source_metadata["source_root_code"] == "JETECH_ENGINEERING"
+        and item.source_metadata["snapshot_copy"] is True
+        for item in service.registered_files
     )
+    assert first.read_bytes() == b"one"
+    assert second.read_bytes() == b"two"
 
 
-def test_ft_upload_accepts_direct_server_directory(
+def test_ft_catalog_snapshot_accepts_only_direct_dc_files(
     monkeypatch, tmp_path: Path
 ) -> None:
     _stub_cp_cleaner(monkeypatch, tmp_path)
-    source = tmp_path / "ft"
-    source.mkdir()
+    source_root = tmp_path / "source"
+    source = source_root / "ft"
+    source.mkdir(parents=True)
     (source / "sample.xlsx").write_bytes(b"sample")
     nested = source / "DVDS"
     nested.mkdir()
     (nested / "not-dc.xlsx").write_bytes(b"sample")
+    catalog = SourceCatalog(
+        (
+            SourceRoot(
+                "RIYUEXIN_PRODUCTION",
+                "Riyuexin production source",
+                source_root,
+                "FT",
+                "RIYUEXIN",
+                (".xlsx",),
+                "FORMAL_IMPORT",
+                ("PRODUCTION",),
+            ),
+        )
+    )
     service = StubStageService()
-    response = _client(service).post(
+    response = _client(service, catalog).post(
         "/api/v1/production/ft/uploads",
-        data={"factory_code": "riyuexin", "source_path": str(source)},
+        data={
+            "factory_code": "riyuexin",
+            "source_root_code": "RIYUEXIN_PRODUCTION",
+            "source_relative_path": "ft",
+        },
     )
 
     assert response.status_code == 201
     assert [item.original_name for item in service.registered_files] == [
         "sample.xlsx"
     ]
+
+
+def test_formal_upload_rejects_legacy_absolute_source_path(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+    response = _client(StubStageService()).post(
+        "/api/v1/engineering/cp/uploads",
+        data={"factory_code": "jetech", "source_path": str(tmp_path)},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "SOURCE_PATH_UNSUPPORTED"
+
+
+def test_formal_source_catalog_hides_physical_paths_and_enforces_scope(
+    tmp_path: Path,
+) -> None:
+    catalog = SourceCatalog(
+        (
+            SourceRoot(
+                "RIYUEXIN_PRODUCTION",
+                "日月新量产 FT",
+                tmp_path,
+                "FT",
+                "RIYUEXIN",
+                (".xlsx",),
+                "FORMAL_IMPORT",
+                ("PRODUCTION",),
+            ),
+        )
+    )
+    client = _client(StubStageService(), catalog)
+
+    roots = client.get(
+        "/api/v1/production/ft/source-roots",
+        params={"factory_code": "riyuexin"},
+    )
+    assert roots.status_code == 200
+    assert roots.json()[0]["code"] == "RIYUEXIN_PRODUCTION"
+    assert str(tmp_path) not in roots.text
+    assert client.get(
+        "/api/v1/engineering/ft/source-roots",
+        params={"factory_code": "riyuexin"},
+    ).json() == []
+    forbidden = client.get(
+        "/api/v1/engineering/ft/source-roots/RIYUEXIN_PRODUCTION/directories",
+        params={"factory_code": "riyuexin", "relative_path": "."},
+    )
+    assert forbidden.status_code == 403
+    assert forbidden.json()["error"]["code"] == "SOURCE_ROOT_SCOPE_MISMATCH"
+
+
+def test_formal_catalog_enforces_file_count_quota(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+    monkeypatch.setenv("TMS_FORMAL_MAX_SOURCE_FILES", "1")
+    source = tmp_path / "batch"
+    source.mkdir()
+    (source / "one.xls").write_bytes(b"one")
+    (source / "two.xls").write_bytes(b"two")
+    catalog = SourceCatalog(
+        (
+            SourceRoot(
+                "JT_ROOT",
+                "JT root",
+                tmp_path,
+                "CP",
+                "JETECH",
+                (".xls",),
+                "FORMAL_IMPORT",
+                ("ENGINEERING",),
+            ),
+        )
+    )
+
+    response = _client(StubStageService(), catalog).post(
+        "/api/v1/engineering/cp/uploads",
+        data={
+            "factory_code": "jetech",
+            "source_root_code": "JT_ROOT",
+            "source_relative_path": "batch",
+        },
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "FORMAL_SOURCE_FILE_LIMIT_EXCEEDED"
 
 
 def test_production_ft_upload_keeps_riyueguang_separate(monkeypatch, tmp_path: Path) -> None:
@@ -530,6 +670,7 @@ def test_download_returns_stored_source_file(monkeypatch, tmp_path: Path) -> Non
     stored = tmp_path / "stored" / "sample.zip"
     stored.parent.mkdir()
     stored.write_bytes(b"original-zip-bytes")
+    monkeypatch.setenv("TMS_UPLOAD_ROOT", str(tmp_path))
     service = StubStageService()
     service.stored_path = stored
     response = _client(service).get(
@@ -538,6 +679,40 @@ def test_download_returns_stored_source_file(monkeypatch, tmp_path: Path) -> Non
     assert response.status_code == 200
     assert response.content == b"original-zip-bytes"
     assert "sample.zip" in response.headers.get("content-disposition", "")
+
+
+def test_download_rejects_legacy_unmanaged_source_path(
+    monkeypatch, tmp_path: Path
+) -> None:
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    outside = tmp_path / "outside.zip"
+    outside.write_bytes(b"outside")
+    monkeypatch.setenv("TMS_UPLOAD_ROOT", str(managed))
+    service = StubStageService()
+    service.stored_path = outside
+
+    response = _client(service).get(
+        "/api/v1/engineering/cp/uploads/41/files/9001/download"
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "UPLOAD_FILE_STORAGE_UNMANAGED"
+
+
+@pytest.mark.parametrize("configured_root", ["", ".", "relative\\raw"])
+def test_download_fails_closed_for_empty_or_relative_managed_root(
+    monkeypatch, tmp_path: Path, configured_root: str
+) -> None:
+    stored = tmp_path / "sample.zip"
+    stored.write_bytes(b"sample")
+    monkeypatch.setenv("TMS_UPLOAD_ROOT", configured_root)
+    service = StubStageService()
+    service.stored_path = stored
+
+    with pytest.raises(RuntimeError, match="TMS_UPLOAD_ROOT"):
+        _client(service).get(
+            "/api/v1/engineering/cp/uploads/41/files/9001/download"
+        )
 
 
 def test_download_rejects_unknown_receipt(monkeypatch, tmp_path: Path) -> None:

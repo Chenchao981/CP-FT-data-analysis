@@ -34,7 +34,7 @@ def _release(package: Path, runtime: Path) -> CleanerRelease:
 
 
 def test_runner_invokes_released_package_and_builds_auditable_artifacts(
-    tmp_path: Path,
+    monkeypatch, tmp_path: Path,
 ) -> None:
     package = tmp_path / "ft_data_cleaner.pyz"
     runtime = tmp_path / "python.exe"
@@ -52,11 +52,15 @@ def test_runner_invokes_released_package_and_builds_auditable_artifacts(
     )
     manifest = catalog.build_manifest("ROOT", "product")
     output = tmp_path / "output"
+    monkeypatch.setenv("TMS_DATABASE_URL", "must-not-reach-cleaner")
+    monkeypatch.setenv("TMS_JWT_SECRET", "must-not-reach-cleaner")
 
     def fake_run(command, **kwargs):
         assert command[:2] == [str(runtime), "-c"]
         assert "generate_raw_pat" in command[2]
         assert kwargs["env"]["TMS_QUICK_PAT_INPUT"] == str(source.resolve())
+        assert "TMS_DATABASE_URL" not in kwargs["env"]
+        assert "TMS_JWT_SECRET" not in kwargs["env"]
         report = output / "PAT_001" / "PAT_001.xlsx"
         report.parent.mkdir(parents=True)
         workbook = Workbook()

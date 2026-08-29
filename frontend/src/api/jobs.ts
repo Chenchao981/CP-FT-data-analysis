@@ -1,3 +1,5 @@
+import { apiRequest } from "./auth";
+
 export type JobStatus = "QUEUED" | "RUNNING" | "SUCCESS" | "FAILED" | "CANCELLED";
 
 export interface Job {
@@ -24,35 +26,19 @@ export interface CreateJobPayload {
   reason?: string;
 }
 
-interface ErrorEnvelope {
-  error?: { code?: string; message?: string };
-}
-
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
-  });
-  if (!response.ok) {
-    const body = (await response.json().catch(() => ({}))) as ErrorEnvelope;
-    throw new Error(body.error?.message ?? `请求失败（${response.status}）`);
-  }
-  return response.json() as Promise<T>;
-}
-
 export function createJob(payload: CreateJobPayload): Promise<Job> {
-  return request<Job>("/api/v1/jobs", {
+  return apiRequest<Job>("/api/v1/jobs", {
     method: "POST",
     body: JSON.stringify({ ...payload, job_type: "PARSE", trigger_type: "MANUAL" }),
   });
 }
 
 export function getJob(jobId: number): Promise<Job> {
-  return request<Job>(`/api/v1/jobs/${jobId}`);
+  return apiRequest<Job>(`/api/v1/jobs/${jobId}`);
 }
 
 export function transitionJob(jobId: number, targetStatus: JobStatus): Promise<Job> {
-  return request<Job>(`/api/v1/jobs/${jobId}/transitions`, {
+  return apiRequest<Job>(`/api/v1/jobs/${jobId}/transitions`, {
     method: "POST",
     body: JSON.stringify({ target_status: targetStatus }),
   });

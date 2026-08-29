@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import re
 import subprocess
 import time
@@ -15,6 +14,7 @@ from openpyxl import load_workbook
 
 from app.domain.cleaner_registry import CleanerRelease
 from app.domain.quick_analysis import QuickAnalysisArtifact
+from app.infrastructure.child_process_environment import isolated_child_environment
 
 ProcessRunner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -72,8 +72,7 @@ class QuickPatRunner:
         manifest = json.loads(source_manifest_json)
         target.mkdir(parents=True, exist_ok=True)
 
-        env = os.environ.copy()
-        env.update(
+        env = isolated_child_environment(
             {
                 "TMS_QUICK_PAT_PACKAGE": str(package),
                 "TMS_QUICK_PAT_INPUT": str(source),

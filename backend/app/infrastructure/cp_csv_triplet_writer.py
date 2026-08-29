@@ -14,9 +14,15 @@ from sqlalchemy.engine import Connection
 
 from app.infrastructure.existing_cleaner_runner import CleanerArtifact
 
+CP_MULTI_LOT_SPEC_BINDING_REQUIRED = "CP_MULTI_LOT_SPEC_BINDING_REQUIRED"
+
 
 class CpCsvTripletError(ValueError):
     pass
+
+
+class CpMultiLotSpecBindingRequired(CpCsvTripletError):
+    error_code = CP_MULTI_LOT_SPEC_BINDING_REQUIRED
 
 
 @dataclass(frozen=True, slots=True)
@@ -298,6 +304,23 @@ def parse_cp_csv_triplet(
                 key = (lot_id, wafer_id)
                 expected_counts[key] += int(float(row[total_name]))
                 expected_passes[key] += int(float(row[pass_name]))
+    lot_ids = sorted(
+        {row.lot_id for row in cleaned_rows}
+        | {
+            lot_id
+            for lot_id, _wafer_id_value in expected_counts
+            if lot_id
+        },
+        key=lambda value: (value.casefold(), value),
+    )
+    if len(lot_ids) > 1:
+        lot_preview = ", ".join(lot_ids[:10])
+        if len(lot_ids) > 10:
+            lot_preview = f"{lot_preview}, ..."
+        raise CpMultiLotSpecBindingRequired(
+            f"{CP_MULTI_LOT_SPEC_BINDING_REQUIRED}: CP CSV triplet V1 has no "
+            f"explicit per-Lot Spec binding; found {len(lot_ids)} Lots: {lot_preview}"
+        )
     if len(products) > 1:
         raise CpCsvTripletError(
             "CP Route A requires at most one explicit Product per upload task"

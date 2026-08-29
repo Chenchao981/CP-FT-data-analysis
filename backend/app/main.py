@@ -14,7 +14,7 @@ from app.api.health import router as health_router
 from app.api.input_requests import router as input_requests_router
 from app.api.jobs import router as jobs_router
 from app.api.quick_analysis import router as quick_analysis_router
-from app.api.stage_data import router as stage_data_router
+from app.api.stage_data import _upload_root, router as stage_data_router
 from app.core.config import get_settings
 from app.core.errors import DomainError
 from app.core.exception_handlers import domain_error_handler, validation_error_handler
@@ -84,7 +84,9 @@ def create_app() -> FastAPI:
         else InMemoryQuickAnalysisService(capacity=quick_capacity)
     )
     application.state.quick_capacity_policy = quick_capacity
-    application.state.source_catalog = SourceCatalog.from_environment()
+    source_catalog = SourceCatalog.from_environment()
+    source_catalog.assert_storage_separate(_upload_root())
+    application.state.source_catalog = source_catalog
     application.include_router(health_router, prefix="/api/v1/health", tags=["health"])
     application.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
     application.include_router(

@@ -8,6 +8,10 @@ import pytest
 from app.domain.cleaner_registry import CleanerRelease
 from app.domain.jobs import Job, JobStatus, JobType, TriggerType
 from app.domain.stage_data import BatchFileInfo, WorkerBatchInfo
+from app.infrastructure.cp_csv_triplet_writer import (
+    CP_MULTI_LOT_SPEC_BINDING_REQUIRED,
+    CpMultiLotSpecBindingRequired,
+)
 from app.infrastructure.existing_cleaner_runner import CleanerInputRequired
 from app.workers.route_a_worker import DatabaseJobWorker, RouteAInitialImportHandler
 
@@ -123,6 +127,29 @@ def test_worker_records_handler_failure_as_terminal_job() -> None:
     result = worker.run_once()
     assert result is not None and result.status == JobStatus.FAILED
     assert queue.finished == (JobStatus.FAILED, "WORKER_EXECUTION_FAILED")
+
+
+def test_worker_preserves_multi_lot_spec_binding_error_code() -> None:
+    queue = FakeQueue(_claimed_job())
+
+    def fail_closed(_job):
+        raise CpMultiLotSpecBindingRequired(
+            f"{CP_MULTI_LOT_SPEC_BINDING_REQUIRED}: Lots L1, L2"
+        )
+
+    worker = DatabaseJobWorker(
+        queue,
+        {JobType.INITIAL_IMPORT: fail_closed},
+        worker_id="worker-1",
+        lease_for=timedelta(seconds=2),
+        heartbeat_every=timedelta(seconds=1),
+    )
+    result = worker.run_once()
+    assert result is not None and result.status == JobStatus.FAILED
+    assert queue.finished == (
+        JobStatus.FAILED,
+        CP_MULTI_LOT_SPEC_BINDING_REQUIRED,
+    )
 
 
 def test_worker_pauses_for_typed_lot_input_without_marking_failed() -> None:

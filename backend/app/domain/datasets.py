@@ -123,9 +123,9 @@ class DatasetResultSummary:
     lot_count: int
     wafer_count: int
     unit_count: int
-    pass_count: int
-    fail_count: int
-    yield_rate: float
+    pass_count: int | None
+    fail_count: int | None
+    yield_rate: float | None
     measurement_count: int
     bin_counts: dict[str, int]
 

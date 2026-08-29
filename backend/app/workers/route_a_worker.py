@@ -10,7 +10,11 @@ from pathlib import Path
 from app.domain.cleaner_registry import CleanerRegistry
 from app.domain.jobs import Job, JobStatus, JobType, WorkerJobQueue
 from app.domain.quick_analysis import QuickAnalysisService
-from app.infrastructure.cp_csv_triplet_writer import CpCsvTripletWriter
+from app.infrastructure.cp_csv_triplet_writer import (
+    CP_MULTI_LOT_SPEC_BINDING_REQUIRED,
+    CpCsvTripletWriter,
+    CpMultiLotSpecBindingRequired,
+)
 from app.infrastructure.existing_cleaner_results import (
     summarize_existing_cleaner_result,
 )
@@ -75,6 +79,12 @@ class QuickPatHandler:
                     f"{release.test_stage}/{release.factory_code} != "
                     f"{session.test_stage}/{session.factory_code}"
                 )
+            self._source_catalog.require_scope(
+                session.source_root_code,
+                purpose="QUICK_ANALYSIS",
+                test_stage=session.test_stage,
+                factory_code=session.factory_code,
+            )
             source = self._source_catalog.resolve_directory(
                 session.source_root_code, session.source_relative_path
             )
@@ -321,6 +331,18 @@ class DatabaseJobWorker:
                 field_code=exc.field_code,
                 files=exc.files,
                 message=exc.message,
+            )
+        except CpMultiLotSpecBindingRequired as exc:
+            logger.warning(
+                "Route A CP job rejected because per-Lot Spec binding is absent",
+                extra={"job_id": job.job_id},
+            )
+            return self._queue.finish_leased(
+                job.job_id,
+                job.lease_token,
+                JobStatus.FAILED,
+                error_code=CP_MULTI_LOT_SPEC_BINDING_REQUIRED,
+                error_message=str(exc)[-2000:],
             )
         except Exception as exc:
             logger.exception("Route A job failed", extra={"job_id": job.job_id})

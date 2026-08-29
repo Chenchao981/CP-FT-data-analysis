@@ -1,4 +1,4 @@
-import { apiRequest, storedToken } from "./auth";
+import { apiRequest, downloadAuthenticatedFile } from "./auth";
 
 export type BusinessDomain = "ENGINEERING" | "PRODUCTION";
 export type TestStage = "CP" | "FT";
@@ -69,6 +69,31 @@ export interface StageResultRow {
   created_at_utc: string;
 }
 
+export interface FormalSourceRoot {
+  code: string;
+  name: string;
+  test_stage: TestStage;
+  factory_code: string;
+  allowed_suffixes: string[];
+  purpose: "FORMAL_IMPORT";
+  business_domains: BusinessDomain[];
+  available: boolean;
+}
+
+export interface FormalSourceDirectory {
+  name: string;
+  relative_path: string;
+  direct_file_count: number;
+  direct_total_bytes: number;
+}
+
+export interface FormalDirectoryListing {
+  root_code: string;
+  current_relative_path: string;
+  parent_relative_path: string | null;
+  directories: FormalSourceDirectory[];
+}
+
 const stageBase = (businessDomain: BusinessDomain, testStage: TestStage) =>
   `/api/v1/${businessDomain.toLowerCase()}/${testStage.toLowerCase()}`;
 
@@ -78,16 +103,55 @@ export const listStageUploads = (businessDomain: BusinessDomain, testStage: Test
 export const listStageResults = (businessDomain: BusinessDomain, testStage: TestStage) =>
   apiRequest<StageResultRow[]>(`${stageBase(businessDomain, testStage)}/results`);
 
-export function uploadStageData(businessDomain: BusinessDomain, testStage: TestStage, files: File[], factoryCode: string, remark?: string, sourcePath?: string) {
+export const listFormalSourceRoots = (
+  businessDomain: BusinessDomain,
+  testStage: TestStage,
+  factoryCode: string,
+) => {
+  const query = new URLSearchParams({ factory_code: factoryCode });
+  return apiRequest<FormalSourceRoot[]>(
+    `${stageBase(businessDomain, testStage)}/source-roots?${query}`,
+  );
+};
+
+export const listFormalSourceDirectories = (
+  businessDomain: BusinessDomain,
+  testStage: TestStage,
+  factoryCode: string,
+  rootCode: string,
+  relativePath = ".",
+) => {
+  const query = new URLSearchParams({
+    factory_code: factoryCode,
+    relative_path: relativePath,
+  });
+  return apiRequest<FormalDirectoryListing>(
+    `${stageBase(businessDomain, testStage)}/source-roots/${encodeURIComponent(rootCode)}/directories?${query}`,
+  );
+};
+
+export function uploadStageData(
+  businessDomain: BusinessDomain,
+  testStage: TestStage,
+  files: File[],
+  factoryCode: string,
+  remark?: string,
+  sourceRootCode?: string,
+  sourceRelativePath?: string,
+) {
   const body = new FormData();
   files.forEach((file) => body.append("files", file));
   body.append("factory_code", factoryCode);
-  if (sourcePath?.trim()) body.append("source_path", sourcePath.trim());
+  if (sourceRootCode?.trim()) {
+    body.append("source_root_code", sourceRootCode.trim());
+    body.append("source_relative_path", sourceRelativePath?.trim() || ".");
+  }
   if (remark) body.append("remark", remark);
   return apiRequest<{
     import_batch_id: number;
     job_id: number;
     status: "QUEUED";
+    input_mode: "WEB_UPLOAD" | "SOURCE_CATALOG";
     business_domain: BusinessDomain;
     test_stage: TestStage;
     cleaner_release: {
@@ -115,19 +179,8 @@ export const resolveStageInputRequests = (
 );
 
 export async function downloadStageUploadFile(businessDomain: BusinessDomain, testStage: TestStage, importBatchId: number, receiptId: number, fileName: string) {
-  const headers = new Headers();
-  const token = storedToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  const response = await fetch(`${stageBase(businessDomain, testStage)}/uploads/${importBatchId}/files/${receiptId}/download`, { headers });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null);
-    throw new Error(payload?.error?.message ?? `下载失败（${response.status}）`);
-  }
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
-  anchor.click();
-  URL.revokeObjectURL(url);
+  return downloadAuthenticatedFile(
+    `${stageBase(businessDomain, testStage)}/uploads/${importBatchId}/files/${receiptId}/download`,
+    fileName,
+  );
 }

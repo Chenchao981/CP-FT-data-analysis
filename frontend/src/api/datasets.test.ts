@@ -1,6 +1,14 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { getDatasetChartData, getDatasetGate, publishDatasetVersion } from "./datasets";
+
+beforeAll(() => {
+  vi.stubGlobal("localStorage", {
+    getItem: vi.fn((key: string) => key === "tms_access_token" ? "mock-token" : null),
+    setItem: vi.fn(),
+    removeItem: vi.fn(),
+  });
+});
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -11,14 +19,15 @@ describe("datasets api", () => {
     );
     await getDatasetGate(12, 3);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/datasets/12/versions/3/gate");
+    expect((fetchMock.mock.calls[0][1]?.headers as Headers).get("Authorization")).toBe("Bearer mock-token");
   });
 
-  it("publishes with an explicit application user identity", async () => {
+  it("publishes without accepting a browser-supplied user identity", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ status: "PUBLISHED" }), { status: 200 }),
     );
-    await publishDatasetVersion(12, 3, 9);
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ published_by: 9 });
+    await publishDatasetVersion(12, 3);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({});
   });
 
   it("encodes exact Lot and Wafer chart filters", async () => {

@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pytest
 from app.infrastructure.cp_csv_triplet_writer import (
+    CP_MULTI_LOT_SPEC_BINDING_REQUIRED,
     CpCsvTripletError,
+    CpMultiLotSpecBindingRequired,
     parse_cp_csv_triplet,
 )
 from app.infrastructure.existing_cleaner_runner import CleanerArtifact
@@ -48,7 +50,9 @@ def _triplet(tmp_path: Path) -> tuple[CleanerArtifact, ...]:
     )
 
 
-def test_parse_cp_triplet_reconciles_cleaned_yield_and_first_spec(tmp_path: Path) -> None:
+def test_parse_cp_triplet_reconciles_single_lot_cleaned_yield_and_spec(
+    tmp_path: Path,
+) -> None:
     parsed = parse_cp_csv_triplet(_triplet(tmp_path))
 
     assert parsed.product_name == "P"
@@ -57,6 +61,70 @@ def test_parse_cp_triplet_reconciles_cleaned_yield_and_first_spec(tmp_path: Path
     assert parsed.rows[0].logical_key == "CP:L1:1:10:20:1"
     assert parsed.rows[1].values[0] == ""
     assert parsed.pass_count == 1
+
+
+def test_parse_cp_triplet_rejects_multiple_lots_without_explicit_spec_binding(
+    tmp_path: Path,
+) -> None:
+    artifacts = list(_triplet(tmp_path))
+    cleaned_path = Path(artifacts[0].path)
+    cleaned_path.write_text(
+        "Lot_ID,Wafer_ID,Seq,Bin,X,Y,P1,P2\n"
+        "L2,1,1,1,10,20,1E-3,2.5\n"
+        "L1,1,1,1,10,20,1E-3,2.5\n",
+        encoding="utf-8",
+    )
+    artifacts[0] = _artifact("cleaned", cleaned_path)
+    yield_path = Path(artifacts[1].path)
+    yield_path.write_text(
+        "Product_Name,Lot_ID,Wafer_ID,Yield,Total,Pass,Bin7\n"
+        "P,L2,1,100%,1,1,0\n"
+        "P,L1,1,100%,1,1,0\n",
+        encoding="utf-8",
+    )
+    artifacts[1] = _artifact("yield", yield_path)
+
+    with pytest.raises(CpMultiLotSpecBindingRequired) as error:
+        parse_cp_csv_triplet(tuple(artifacts))
+
+    assert error.value.error_code == CP_MULTI_LOT_SPEC_BINDING_REQUIRED
+    assert str(error.value) == (
+        f"{CP_MULTI_LOT_SPEC_BINDING_REQUIRED}: CP CSV triplet V1 has no "
+        "explicit per-Lot Spec binding; found 2 Lots: L1, L2"
+    )
+
+
+def test_parse_cp_triplet_accepts_multiple_files_for_the_same_single_lot(
+    tmp_path: Path,
+) -> None:
+    artifacts = list(_triplet(tmp_path))
+    cleaned = tmp_path / "L1_second_cleaned_20260824.csv"
+    cleaned.write_text(
+        "Lot_ID,Wafer_ID,Seq,Bin,X,Y,P1,P2\n"
+        "L1,2,1,1,10,20,1E-3,2.5\n",
+        encoding="utf-8",
+    )
+    yield_file = tmp_path / "L1_second_yield_20260824.csv"
+    yield_file.write_text(
+        "Product_Name,Lot_ID,Wafer_ID,Yield,Total,Pass,Bin7\n"
+        "P,L1,2,100%,1,1,0\n",
+        encoding="utf-8",
+    )
+    second_spec = tmp_path / "L1_second_spec_20260824.csv"
+    second_spec.write_bytes(Path(artifacts[2].path).read_bytes())
+    artifacts.extend(
+        (
+            _artifact("cleaned", cleaned),
+            _artifact("yield", yield_file),
+            _artifact("spec", second_spec),
+        )
+    )
+
+    parsed = parse_cp_csv_triplet(tuple(artifacts))
+
+    assert {row.lot_id for row in parsed.rows} == {"L1"}
+    assert len(parsed.rows) == 3
+    assert parsed.pass_count == 2
 
 
 def test_parse_cp_triplet_excludes_cont_count_symbol(

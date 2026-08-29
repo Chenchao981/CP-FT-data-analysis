@@ -1,6 +1,10 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { inspectHuaHongFile } from "./cleaners";
+
+beforeAll(() => {
+  vi.stubGlobal("localStorage", { getItem: vi.fn(() => "mock-token"), setItem: vi.fn(), removeItem: vi.fn() });
+});
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -15,5 +19,6 @@ describe("HuaHong cleaner api", () => {
     expect(url).toBe("/api/v1/cleaners/huahong/inspect");
     expect(init?.body).toBeInstanceOf(FormData);
     expect((init?.body as FormData).get("file")).toBe(file);
+    expect((init?.headers as Headers).get("Authorization")).toBe("Bearer mock-token");
   });
 });

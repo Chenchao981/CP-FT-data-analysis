@@ -5,12 +5,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { listStageResults, listStageUploads } from "../../api/stageData";
+import { listFormalSourceDirectories, listFormalSourceRoots, listStageResults, listStageUploads, uploadStageData } from "../../api/stageData";
 import { useAuth } from "../auth/AuthContext";
 import { StageDataWorkbench, type StageDataWorkbenchProps } from "./StageDataWorkbench";
 
 vi.mock("../../api/stageData", () => ({
   downloadStageUploadFile: vi.fn(),
+  listFormalSourceDirectories: vi.fn(),
+  listFormalSourceRoots: vi.fn(),
   listStageResults: vi.fn(),
   listStageUploads: vi.fn(),
   reprocessStageBatch: vi.fn(),
@@ -116,6 +118,8 @@ function renderWorkbench(props: StageDataWorkbenchProps = { businessDomain: "PRO
 
 describe("StageDataWorkbench Lot input states", () => {
   beforeEach(() => {
+    vi.mocked(listFormalSourceRoots).mockResolvedValue([]);
+    vi.mocked(listFormalSourceDirectories).mockResolvedValue({ root_code: "ROOT", current_relative_path: ".", parent_relative_path: null, directories: [] });
     vi.mocked(listStageUploads).mockResolvedValue(uploadRows);
     vi.mocked(listStageResults).mockResolvedValue(resultRows);
     vi.mocked(useAuth).mockReturnValue({
@@ -192,5 +196,57 @@ describe("StageDataWorkbench Lot input states", () => {
 
     await waitFor(() => expect(listStageUploads).toHaveBeenCalledTimes(2), { timeout: 5_000 });
     await waitFor(() => expect(listStageResults).toHaveBeenCalledTimes(2), { timeout: 5_000 });
+  }, 15_000);
+
+  it("submits a formal catalog directory without sending browser-local files", async () => {
+    vi.mocked(listFormalSourceRoots).mockResolvedValue([{
+      code: "RIYUEXIN_PRODUCTION_G2",
+      name: "日月新量产灰度目录",
+      test_stage: "FT",
+      factory_code: "RIYUEXIN",
+      allowed_suffixes: [".xlsx"],
+      purpose: "FORMAL_IMPORT",
+      business_domains: ["PRODUCTION"],
+      available: true,
+    }]);
+    vi.mocked(listFormalSourceDirectories).mockResolvedValue({
+      root_code: "RIYUEXIN_PRODUCTION_G2",
+      current_relative_path: "accepted-lot",
+      parent_relative_path: ".",
+      directories: [],
+    });
+    vi.mocked(uploadStageData).mockResolvedValue({
+      import_batch_id: 99,
+      job_id: 199,
+      status: "QUEUED",
+      input_mode: "SOURCE_CATALOG",
+      business_domain: "PRODUCTION",
+      test_stage: "FT",
+      cleaner_release: { cleaner_release_id: 1, cleaner_code: "FT_XLSX_SCATTER_V1", cleaner_version: "1.0.0" },
+    });
+
+    renderWorkbench();
+    fireEvent.click(await screen.findByRole("button", { name: /上传数据/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /受控服务器目录/ }));
+
+    expect(await screen.findByText("日月新量产灰度目录")).toBeInTheDocument();
+    await waitFor(() => expect(listFormalSourceDirectories).toHaveBeenCalledWith(
+      "PRODUCTION",
+      "FT",
+      "riyuexin",
+      "RIYUEXIN_PRODUCTION_G2",
+      ".",
+    ));
+    fireEvent.click(screen.getByRole("button", { name: "提交后台清洗" }));
+
+    await waitFor(() => expect(uploadStageData).toHaveBeenCalledWith(
+      "PRODUCTION",
+      "FT",
+      [],
+      "riyuexin",
+      undefined,
+      "RIYUEXIN_PRODUCTION_G2",
+      "accepted-lot",
+    ));
   }, 15_000);
 });

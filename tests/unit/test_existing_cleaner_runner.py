@@ -29,12 +29,14 @@ def _runtime(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 
 def test_cp_adapter_invokes_release_package_and_reports_three_artifacts(
-    tmp_path: Path,
+    monkeypatch, tmp_path: Path,
 ) -> None:
     python, cp_release, ft_release = _runtime(tmp_path)
     source = tmp_path / "input.zip"
     source.touch()
     output = tmp_path / "output"
+    monkeypatch.setenv("TMS_DATABASE_URL", "must-not-reach-cleaner")
+    monkeypatch.setenv("TMS_JWT_SECRET", "must-not-reach-cleaner")
 
     def fake_run(command, **kwargs):
         assert command[:2] == [str(python), "-c"]
@@ -42,6 +44,8 @@ def test_cp_adapter_invokes_release_package_and_reports_three_artifacts(
         assert kwargs["env"]["TMS_EXISTING_CLEANER_PACKAGE"].endswith("app.pyz")
         assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
         assert kwargs["env"]["PYTHONUTF8"] == "1"
+        assert "TMS_DATABASE_URL" not in kwargs["env"]
+        assert "TMS_JWT_SECRET" not in kwargs["env"]
         output.mkdir(exist_ok=True)
         (output / "LOT_cleaned_1.csv").write_text("Lot_ID\nLOT\n", encoding="utf-8")
         (output / "LOT_yield_1.csv").write_text("Yield\n100%\n", encoding="utf-8")

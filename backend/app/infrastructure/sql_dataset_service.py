@@ -942,6 +942,7 @@ class SqlDatasetService:
                         "JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
                         "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
                         "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
+                        "AND ur.soft_bin IS NOT NULL "
                         "GROUP BY ur.soft_bin ORDER BY ur.soft_bin"
                     ),
                     {"dataset_id": dataset_id, "version_no": version_no},
@@ -950,7 +951,11 @@ class SqlDatasetService:
                 .all()
             )
         unit_count = int(base["unit_count"] or 0)
-        pass_count = int(base["pass_count"] or 0)
+        classified_pass_count = int(base["pass_count"] or 0)
+        classified_fail_count = int(base["fail_count"] or 0)
+        classified_count = classified_pass_count + classified_fail_count
+        pass_count = classified_pass_count if classified_count else None
+        fail_count = classified_fail_count if classified_count else None
         return DatasetResultSummary(
             dataset_id=dataset_id,
             dataset_code=str(base["dataset_code"]),
@@ -963,8 +968,8 @@ class SqlDatasetService:
             wafer_count=int(base["wafer_count"] or 0),
             unit_count=unit_count,
             pass_count=pass_count,
-            fail_count=int(base["fail_count"] or 0),
-            yield_rate=pass_count / unit_count if unit_count else 0.0,
+            fail_count=fail_count,
+            yield_rate=(classified_pass_count / classified_count if classified_count else None),
             measurement_count=measurement_count,
             bin_counts={
                 str(row["soft_bin"]): int(row["unit_count"]) for row in bin_rows

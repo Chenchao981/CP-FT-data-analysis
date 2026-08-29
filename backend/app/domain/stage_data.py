@@ -14,6 +14,7 @@ class StoredUpload:
     path: Path
     size_bytes: int
     sha256: str
+    source_metadata: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)

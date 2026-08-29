@@ -1,3 +1,5 @@
+import { apiRequest } from "./auth";
+
 export interface GateReason {
   code: string;
   count: number;
@@ -25,9 +27,9 @@ export interface DatasetResultSummary {
   lot_count: number;
   wafer_count: number;
   unit_count: number;
-  pass_count: number;
-  fail_count: number;
-  yield_rate: number;
+  pass_count: number | null;
+  fail_count: number | null;
+  yield_rate: number | null;
   measurement_count: number;
   bin_counts: Record<string, number>;
 }
@@ -86,28 +88,12 @@ interface DatasetVersion {
   is_current: boolean;
 }
 
-interface ErrorEnvelope {
-  error?: { message?: string };
-}
-
-async function request<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, {
-    ...init,
-    headers: { "Content-Type": "application/json", ...init?.headers },
-  });
-  if (!response.ok) {
-    const payload = (await response.json().catch(() => ({}))) as ErrorEnvelope;
-    throw new Error(payload.error?.message ?? `请求失败（${response.status}）`);
-  }
-  return response.json() as Promise<T>;
-}
-
 export function getDatasetGate(datasetId: number, versionNo: number): Promise<DqGateResult> {
-  return request(`/api/v1/datasets/${datasetId}/versions/${versionNo}/gate`);
+  return apiRequest(`/api/v1/datasets/${datasetId}/versions/${versionNo}/gate`);
 }
 
 export function getDatasetSummary(datasetId: number, versionNo: number): Promise<DatasetResultSummary> {
-  return request(`/api/v1/datasets/${datasetId}/versions/${versionNo}/summary`);
+  return apiRequest(`/api/v1/datasets/${datasetId}/versions/${versionNo}/summary`);
 }
 
 export function getDatasetChartData(
@@ -124,16 +110,15 @@ export function getDatasetChartData(
   if (sourceId) query.set("source_id", sourceId);
   if (parameter) query.set("parameter", parameter);
   const suffix = query.size ? `?${query.toString()}` : "";
-  return request(`/api/v1/datasets/${datasetId}/versions/${versionNo}/charts${suffix}`);
+  return apiRequest(`/api/v1/datasets/${datasetId}/versions/${versionNo}/charts${suffix}`);
 }
 
 export function publishDatasetVersion(
   datasetId: number,
   versionNo: number,
-  publishedBy: number,
 ): Promise<DatasetVersion> {
-  return request(`/api/v1/datasets/${datasetId}/versions/${versionNo}/publish`, {
+  return apiRequest(`/api/v1/datasets/${datasetId}/versions/${versionNo}/publish`, {
     method: "POST",
-    body: JSON.stringify({ published_by: publishedBy }),
+    body: JSON.stringify({}),
   });
 }

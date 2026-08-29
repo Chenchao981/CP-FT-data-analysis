@@ -92,7 +92,7 @@ def test_auth_disabled_uses_real_database_principal_when_service_exists(
 
 @pytest.mark.parametrize(
     "environment",
-    ["production", "staging", "local", "dev", "testing", "ci", ""],
+    ["local", "dev", "testing", "ci", ""],
 )
 def test_auth_cannot_be_disabled_outside_development_or_test(
     monkeypatch, environment: str
@@ -117,6 +117,50 @@ def test_auth_cannot_be_disabled_outside_development_or_test(
 
         assert response.status_code == 503
         assert response.json()["error"]["code"] == "AUTH_CONFIGURATION_INVALID"
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("environment", ["production", "staging"])
+def test_protected_environments_fail_at_startup_with_unsafe_authentication(
+    monkeypatch, environment: str
+) -> None:
+    from app.core.config import get_settings
+    from app.main import create_app
+
+    monkeypatch.setenv("TMS_ENV", environment)
+    monkeypatch.setenv("TMS_AUTH_REQUIRED", "false")
+    monkeypatch.setenv("TMS_JOB_REPOSITORY", "sql")
+    monkeypatch.setenv("TMS_JWT_SECRET", "x" * 40)
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="TMS_AUTH_REQUIRED must be true"):
+            create_app()
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("secret", "repository", "expected"),
+    [
+        ("tms-local-development-only", "sql", "TMS_JWT_SECRET"),
+        ("short", "sql", "TMS_JWT_SECRET"),
+        ("x" * 40, "memory", "TMS_JOB_REPOSITORY"),
+    ],
+)
+def test_production_rejects_weak_secret_or_memory_queue(
+    monkeypatch, secret: str, repository: str, expected: str
+) -> None:
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("TMS_ENV", "production")
+    monkeypatch.setenv("TMS_AUTH_REQUIRED", "true")
+    monkeypatch.setenv("TMS_JOB_REPOSITORY", repository)
+    monkeypatch.setenv("TMS_JWT_SECRET", secret)
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match=expected):
+            get_settings()
     finally:
         get_settings.cache_clear()
 

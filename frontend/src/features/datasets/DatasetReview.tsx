@@ -6,11 +6,10 @@ import { useState } from "react";
 import { getDatasetGate, getDatasetSummary, publishDatasetVersion } from "../../api/datasets";
 
 interface Selection { datasetId: number; versionNo: number }
-interface ReviewForm { dataset_id: number; version_no: number; published_by: number }
+interface ReviewForm { dataset_id: number; version_no: number }
 
 export function DatasetReview() {
   const [selection, setSelection] = useState<Selection>();
-  const [publisherId, setPublisherId] = useState<number>();
   const [messageApi, contextHolder] = message.useMessage();
   const queryClient = useQueryClient();
   const gateQuery = useQuery({
@@ -24,7 +23,7 @@ export function DatasetReview() {
     enabled: Boolean(selection),
   });
   const publishMutation = useMutation({
-    mutationFn: () => publishDatasetVersion(selection!.datasetId, selection!.versionNo, publisherId!),
+    mutationFn: () => publishDatasetVersion(selection!.datasetId, selection!.versionNo),
     onSuccess: async () => {
       messageApi.success("Dataset版本已发布");
       await queryClient.invalidateQueries({ queryKey: ["dataset-gate", selection] });
@@ -53,16 +52,12 @@ export function DatasetReview() {
           layout="inline"
           onFinish={(values) => {
             setSelection({ datasetId: values.dataset_id, versionNo: values.version_no });
-            setPublisherId(values.published_by);
           }}
         >
           <Form.Item label="Dataset编号" name="dataset_id" rules={[{ required: true }]}>
             <InputNumber min={1} precision={0} />
           </Form.Item>
           <Form.Item label="版本" name="version_no" rules={[{ required: true }]}>
-            <InputNumber min={1} precision={0} />
-          </Form.Item>
-          <Form.Item label="审核用户编号" name="published_by" rules={[{ required: true }]}>
             <InputNumber min={1} precision={0} />
           </Form.Item>
           <Button type="primary" htmlType="submit" loading={gateQuery.isFetching || summaryQuery.isFetching}>加载复核结果</Button>
@@ -88,9 +83,9 @@ export function DatasetReview() {
             <Col xs={12} lg={4}><Card><Statistic title="Lot" value={summary.lot_count} /></Card></Col>
             <Col xs={12} lg={4}><Card><Statistic title="Wafer" value={summary.wafer_count} /></Card></Col>
             <Col xs={12} lg={4}><Card><Statistic title="Die" value={summary.unit_count} /></Card></Col>
-            <Col xs={12} lg={4}><Card><Statistic title="Pass Die" value={summary.pass_count} /></Card></Col>
-            <Col xs={12} lg={4}><Card><Statistic title="Fail Die" value={summary.fail_count} /></Card></Col>
-            <Col xs={12} lg={4}><Card><Statistic title="Yield" value={summary.yield_rate * 100} precision={3} suffix="%" /></Card></Col>
+            <Col xs={12} lg={4}><Card><Statistic title="Pass Die" value={summary.pass_count ?? "—"} /></Card></Col>
+            <Col xs={12} lg={4}><Card><Statistic title="Fail Die" value={summary.fail_count ?? "—"} /></Card></Col>
+            <Col xs={12} lg={4}><Card><Statistic title="Yield" value={summary.yield_rate == null ? "—" : summary.yield_rate * 100} precision={summary.yield_rate == null ? undefined : 3} suffix={summary.yield_rate == null ? undefined : "%"} /></Card></Col>
           </Row>
           <Row gutter={[20, 20]}>
             <Col xs={24} xl={14}>
@@ -115,7 +110,7 @@ export function DatasetReview() {
                     type="primary"
                     block
                     icon={<CheckCircleOutlined />}
-                    disabled={gate.status !== "PASS" || summary.version_status === "PUBLISHED" || !publisherId}
+                    disabled={gate.status !== "PASS" || summary.version_status === "PUBLISHED"}
                     loading={publishMutation.isPending}
                     onClick={() => publishMutation.mutate()}
                   >

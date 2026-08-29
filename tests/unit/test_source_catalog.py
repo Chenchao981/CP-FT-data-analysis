@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -87,3 +88,136 @@ def test_environment_contract_accepts_only_p0_jiequn_csv(monkeypatch, tmp_path: 
     )
     root = SourceCatalog.from_environment().get_root("JIEQUN_SHARED")
     assert root.allowed_suffixes == (".csv",)
+    assert root.purpose == "QUICK_ANALYSIS"
+
+
+def test_environment_contract_supports_scoped_formal_import_roots(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv(
+        "TMS_SOURCE_ROOTS_JSON",
+        json.dumps(
+            [
+                {
+                    "code": "RIYUEXIN_PRODUCTION",
+                    "name": "日月新量产 FT",
+                    "path": str(tmp_path),
+                    "purpose": "FORMAL_IMPORT",
+                    "business_domains": ["PRODUCTION"],
+                    "test_stage": "FT",
+                    "factory_code": "RIYUEXIN",
+                    "allowed_suffixes": [".xlsx"],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+
+    catalog = SourceCatalog.from_environment()
+    roots = catalog.list_roots(
+        purpose="FORMAL_IMPORT",
+        business_domain="PRODUCTION",
+        test_stage="FT",
+        factory_code="RIYUEXIN",
+    )
+    assert [item["code"] for item in roots] == ["RIYUEXIN_PRODUCTION"]
+    assert catalog.list_roots(purpose="QUICK_ANALYSIS") == ()
+    catalog.require_scope(
+        "RIYUEXIN_PRODUCTION",
+        purpose="FORMAL_IMPORT",
+        business_domain="PRODUCTION",
+        test_stage="FT",
+        factory_code="RIYUEXIN",
+    )
+    with pytest.raises(DomainError) as captured:
+        catalog.require_scope(
+            "RIYUEXIN_PRODUCTION",
+            purpose="FORMAL_IMPORT",
+            business_domain="ENGINEERING",
+            test_stage="FT",
+            factory_code="RIYUEXIN",
+        )
+    assert captured.value.code == "SOURCE_ROOT_SCOPE_MISMATCH"
+
+
+@pytest.mark.parametrize("configured_path", ["", ".", "relative\\source"])
+def test_environment_contract_rejects_empty_or_relative_source_roots(
+    monkeypatch, configured_path: str
+) -> None:
+    monkeypatch.setenv(
+        "TMS_SOURCE_ROOTS_JSON",
+        json.dumps(
+            [
+                {
+                    "code": "UNSAFE_ROOT",
+                    "name": "不安全目录",
+                    "path": configured_path,
+                    "test_stage": "FT",
+                    "factory_code": "JIEQUN",
+                    "allowed_suffixes": [".csv"],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="path (is required|must be absolute)"):
+        SourceCatalog.from_environment()
+
+
+def test_non_recursive_manifest_ignores_nested_ft_files(tmp_path: Path) -> None:
+    (tmp_path / "direct.xlsx").write_bytes(b"direct")
+    nested = tmp_path / "DVDS"
+    nested.mkdir()
+    (nested / "nested.xlsx").write_bytes(b"nested")
+    catalog = SourceCatalog(
+        (
+            SourceRoot(
+                "FT_ROOT",
+                "FT root",
+                tmp_path,
+                "FT",
+                "RIYUEXIN",
+                (".xlsx",),
+                "FORMAL_IMPORT",
+                ("PRODUCTION",),
+            ),
+        )
+    )
+
+    manifest = catalog.build_manifest("FT_ROOT", ".", recursive=False)
+    assert [item.relative_path for item in manifest.files] == ["direct.xlsx"]
+
+
+def test_catalog_rejects_linked_descendants(tmp_path: Path) -> None:
+    outside = tmp_path / "real"
+    outside.mkdir()
+    linked = tmp_path / "linked"
+    try:
+        os.symlink(outside, linked, target_is_directory=True)
+    except OSError:
+        pytest.skip("current Windows account cannot create directory symbolic links")
+
+    with pytest.raises(DomainError) as captured:
+        _catalog(tmp_path).resolve_directory("JIEQUN_TEST", "linked")
+    assert captured.value.code in {
+        "SOURCE_PATH_ESCAPE",
+        "SOURCE_PATH_LINK_UNSUPPORTED",
+    }
+
+
+@pytest.mark.parametrize("storage_relative", [".", "managed", "managed/nested"])
+def test_catalog_rejects_managed_storage_that_overlaps_a_source_root(
+    tmp_path: Path, storage_relative: str
+) -> None:
+    storage = tmp_path / storage_relative
+    with pytest.raises(RuntimeError, match="must not overlap TMS_UPLOAD_ROOT"):
+        _catalog(tmp_path).assert_storage_separate(storage)
+
+
+def test_catalog_accepts_managed_storage_outside_source_roots(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    managed = tmp_path / "managed"
+
+    _catalog(source).assert_storage_separate(managed)

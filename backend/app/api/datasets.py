@@ -72,12 +72,12 @@ def evaluate_gate(
 def publish_version(
     dataset_id: int,
     version_no: int,
-    payload: PublishDatasetVersionRequest,
     request: Request,
     principal: Principal = Depends(require_permission("DATASET_PUBLISH")),
 ) -> dict:
     service(request).assert_dataset_access(dataset_id, principal, "WRITE")
-    return asdict(service(request).publish(dataset_id, version_no, payload))
+    attributed = PublishDatasetVersionRequest(published_by=principal.user_id)
+    return asdict(service(request).publish(dataset_id, version_no, attributed))
 
 
 @router.get("/{dataset_id}/versions/{version_no}/summary")

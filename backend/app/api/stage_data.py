@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import hashlib
 import os
+import shutil
 from dataclasses import asdict
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
 from fastapi.responses import FileResponse
 
 from app.api.dependencies import require_permission
@@ -40,6 +41,23 @@ STAGE_FACTORIES = {
     "FT": {"riyuexin", "riyueguang"},
 }
 CP_FACTORIES = STAGE_FACTORIES["CP"]
+FACTORY_ALIASES = {
+    "华虹": "huahong",
+    "hh": "huahong",
+    "jt": "jetech",
+    "捷特": "jetech",
+    "立昂微": "lion",
+    "日月新": "riyuexin",
+    "日月光": "riyueguang",
+    "ase": "riyueguang",
+}
+REGISTRY_FACTORY_CODES = {
+    "huahong": "HUAHONG",
+    "jetech": "JETECH",
+    "lion": "LION",
+    "riyuexin": "RIYUEXIN",
+    "riyueguang": "RIYUEGUANG",
+}
 
 
 def service(request: Request):
@@ -60,6 +78,10 @@ def cleaner_registry(request: Request):
 
 def job_service(request: Request):
     return request.app.state.job_service
+
+
+def source_catalog(request: Request):
+    return request.app.state.source_catalog
 
 
 def _queue_initial_import(
@@ -98,6 +120,18 @@ def _normalize_list_stage(value: str) -> str:
     return stage
 
 
+def _normalize_factory(value: str, stage: str) -> str:
+    normalized = value.strip().lower()
+    factory = FACTORY_ALIASES.get(normalized, normalized)
+    if factory not in STAGE_FACTORIES[stage]:
+        raise DomainError(
+            "FACTORY_UNSUPPORTED",
+            f"当前{stage}不支持该厂家源数据",
+            422,
+        )
+    return factory
+
+
 def _save_uploads(
     business_domain: str,
     test_stage: str,
@@ -128,7 +162,7 @@ def _save_uploads(
         validated.append((uploaded, original))
 
     target = (
-        Path(os.getenv("TMS_UPLOAD_ROOT", r"F:\CP-FT数据分析\data\raw"))
+        _upload_root()
         / business_domain.lower()
         / test_stage.lower()
         / uuid4().hex
@@ -150,39 +184,215 @@ def _save_uploads(
     return tuple(stored)
 
 
-def _register_server_path(
-    source_path: str, allowed_suffixes: set[str], *, recursive: bool = True
-) -> tuple[StoredUpload, ...]:
-    source = Path(source_path.strip().strip('"')).resolve()
-    if not source.exists():
-        raise DomainError("SOURCE_PATH_NOT_FOUND", f"服务器数据路径不存在：{source}", 422)
-    iterator = source.rglob("*") if recursive else source.glob("*")
-    candidates = [source] if source.is_file() else sorted(
-        (
-            path
-            for path in iterator
-            if path.is_file() and path.suffix.lower() in allowed_suffixes
-        ),
-        key=lambda path: str(path).casefold(),
-    )
-    if not candidates:
-        raise DomainError("SOURCE_PATH_EMPTY", "服务器路径中没有该厂家支持的源文件", 422)
-    unsupported = [path for path in candidates if path.suffix.lower() not in allowed_suffixes]
-    if unsupported:
+def _positive_limit(name: str, default: int) -> int:
+    value = int(os.getenv(name, str(default)))
+    if value < 1:
+        raise RuntimeError(f"{name} must be positive")
+    return value
+
+
+def _upload_root() -> Path:
+    raw = os.getenv(
+        "TMS_UPLOAD_ROOT", r"F:\CP-FT数据分析\data\raw"
+    ).strip()
+    if not raw:
+        raise RuntimeError("TMS_UPLOAD_ROOT must be a non-empty absolute path")
+    unresolved = Path(raw).expanduser()
+    if not unresolved.is_absolute():
+        raise RuntimeError("TMS_UPLOAD_ROOT must be a non-empty absolute path")
+    return unresolved.resolve()
+
+
+def _managed_upload_path(value: str) -> Path:
+    path = Path(value).resolve()
+    upload_root = _upload_root()
+    try:
+        contained = os.path.commonpath(
+            (os.path.normcase(str(upload_root)), os.path.normcase(str(path)))
+        ) == os.path.normcase(str(upload_root))
+    except ValueError:
+        contained = False
+    if not contained:
         raise DomainError(
-            "FILE_TYPE_UNSUPPORTED", f"不支持的源文件：{unsupported[0].name}", 422
+            "UPLOAD_FILE_STORAGE_UNMANAGED",
+            "该历史源文件不在 TMS 受管原始区，已禁止通过页面下载",
+            409,
         )
-    stored = []
-    for path in candidates:
-        digest = hashlib.sha256()
-        with path.open("rb") as stream:
-            while chunk := stream.read(1024 * 1024):
-                digest.update(chunk)
-        original = path.name if source.is_file() else str(path.relative_to(source))
-        stored.append(
-            StoredUpload(original, path.resolve(), path.stat().st_size, digest.hexdigest())
+    return path
+
+
+def _snapshot_catalog_directory(
+    request: Request,
+    *,
+    business_domain: str,
+    test_stage: str,
+    factory: str,
+    root_code: str,
+    relative_path: str,
+) -> tuple[StoredUpload, ...]:
+    catalog = source_catalog(request)
+    registry_factory = REGISTRY_FACTORY_CODES[factory]
+    root = catalog.require_scope(
+        root_code,
+        purpose="FORMAL_IMPORT",
+        business_domain=business_domain,
+        test_stage=test_stage,
+        factory_code=registry_factory,
+    )
+    allowed_suffixes = FACTORY_ALLOWED_SUFFIXES[factory]
+    if not set(root.allowed_suffixes).issubset(allowed_suffixes):
+        raise DomainError(
+            "SOURCE_ROOT_CONTRACT_INVALID",
+            "受控数据源配置包含当前厂家不允许的文件类型",
+            503,
         )
+    recursive = test_stage == "CP"
+    manifest = catalog.build_manifest(root.code, relative_path, recursive=recursive)
+    max_files = _positive_limit("TMS_FORMAL_MAX_SOURCE_FILES", 10_000)
+    max_bytes = _positive_limit("TMS_FORMAL_MAX_SOURCE_BYTES", 50 * 1024**3)
+    if manifest.file_count > max_files:
+        raise DomainError(
+            "FORMAL_SOURCE_FILE_LIMIT_EXCEEDED",
+            f"正式入库源文件数超过上限 {max_files}",
+            422,
+        )
+    if manifest.total_bytes > max_bytes:
+        raise DomainError(
+            "FORMAL_SOURCE_SIZE_LIMIT_EXCEEDED",
+            f"正式入库源数据大小超过上限 {max_bytes} 字节",
+            422,
+        )
+
+    selected = catalog.resolve_directory(root.code, manifest.selected_relative_path)
+    upload_root = _upload_root()
+    catalog.assert_storage_separate(upload_root)
+    upload_root.mkdir(parents=True, exist_ok=True)
+    available = shutil.disk_usage(upload_root).free
+    reserve = _positive_limit("TMS_FORMAL_MIN_FREE_BYTES", 1024**3)
+    if available - manifest.total_bytes < reserve:
+        raise DomainError(
+            "FORMAL_SOURCE_DISK_CAPACITY_INSUFFICIENT",
+            "正式入库快照空间不足，请联系管理员清理或扩容",
+            507,
+        )
+    target = (
+        upload_root
+        / business_domain.lower()
+        / test_stage.lower()
+        / uuid4().hex
+    )
+    target.mkdir(parents=True, exist_ok=False)
+    stored: list[StoredUpload] = []
+    try:
+        for entry in manifest.files:
+            source = selected / Path(entry.relative_path)
+            destination = target / Path(entry.relative_path)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.sha256()
+            copied_bytes = 0
+            with source.open("rb") as input_stream, destination.open("xb") as output:
+                while chunk := input_stream.read(1024 * 1024):
+                    copied_bytes += len(chunk)
+                    digest.update(chunk)
+                    output.write(chunk)
+            if copied_bytes != entry.size_bytes:
+                raise DomainError(
+                    "FORMAL_SOURCE_CHANGED",
+                    f"源文件在建立快照时发生变化：{entry.relative_path}",
+                    409,
+                )
+            metadata: dict[str, object] = {
+                "purpose": "FORMAL_IMPORT",
+                "source_root_code": root.code,
+                "source_relative_path": manifest.selected_relative_path,
+                "source_file_relative_path": entry.relative_path,
+                "source_manifest_mode": manifest.mode,
+                "source_manifest_sha256": manifest.sha256,
+                "source_file_count": manifest.file_count,
+                "source_total_bytes": manifest.total_bytes,
+                "snapshot_copy": True,
+            }
+            stored.append(
+                StoredUpload(
+                    entry.relative_path,
+                    destination.resolve(),
+                    copied_bytes,
+                    digest.hexdigest(),
+                    metadata,
+                )
+            )
+        completed = catalog.build_manifest(root.code, relative_path, recursive=recursive)
+        if completed.sha256 != manifest.sha256 or completed.as_json() != manifest.as_json():
+            raise DomainError(
+                "FORMAL_SOURCE_CHANGED",
+                "源目录在建立正式入库快照期间发生变化，请重新选择后再提交",
+                409,
+            )
+    except Exception:
+        shutil.rmtree(target, ignore_errors=True)
+        raise
     return tuple(stored)
+
+
+@router.get("/{business_domain}/{test_stage}/source-roots")
+def list_formal_source_roots(
+    request: Request,
+    business_domain: str,
+    test_stage: str,
+    factory_code: str = Query(min_length=1, max_length=128),
+    _principal: Principal = Depends(require_permission("TASK_CREATE")),
+) -> tuple[dict[str, object], ...]:
+    domain = _normalize_business_domain(business_domain)
+    stage = UPLOAD_TEST_STAGES.get(test_stage.strip().lower())
+    if stage is None:
+        raise DomainError(
+            "STAGE_UPLOAD_UNSUPPORTED",
+            f"{test_stage.upper()}暂不支持受控数据源正式入库",
+            422,
+        )
+    factory = _normalize_factory(factory_code, stage)
+    return source_catalog(request).list_roots(
+        purpose="FORMAL_IMPORT",
+        business_domain=domain,
+        test_stage=stage,
+        factory_code=REGISTRY_FACTORY_CODES[factory],
+    )
+
+
+@router.get("/{business_domain}/{test_stage}/source-roots/{root_code}/directories")
+def list_formal_source_directories(
+    root_code: str,
+    request: Request,
+    business_domain: str,
+    test_stage: str,
+    factory_code: str = Query(min_length=1, max_length=128),
+    relative_path: str = Query(default=".", max_length=1000),
+    _principal: Principal = Depends(require_permission("TASK_CREATE")),
+) -> dict[str, object]:
+    domain = _normalize_business_domain(business_domain)
+    stage = UPLOAD_TEST_STAGES.get(test_stage.strip().lower())
+    if stage is None:
+        raise DomainError(
+            "STAGE_UPLOAD_UNSUPPORTED",
+            f"{test_stage.upper()}暂不支持受控数据源正式入库",
+            422,
+        )
+    factory = _normalize_factory(factory_code, stage)
+    catalog = source_catalog(request)
+    catalog.require_scope(
+        root_code,
+        purpose="FORMAL_IMPORT",
+        business_domain=domain,
+        test_stage=stage,
+        factory_code=REGISTRY_FACTORY_CODES[factory],
+    )
+    current, parent, directories = catalog.browse(root_code, relative_path)
+    return {
+        "root_code": root_code.strip().upper(),
+        "current_relative_path": current,
+        "parent_relative_path": parent,
+        "directories": [asdict(item) for item in directories],
+    }
 
 
 @router.post(
@@ -194,6 +404,8 @@ def upload_stage_data(
     test_stage: str,
     files: list[UploadFile] | None = File(None),
     factory_code: str = Form(""),
+    source_root_code: str | None = Form(None),
+    source_relative_path: str | None = Form(None),
     source_path: str | None = Form(None),
     remark: str | None = Form(None),
     principal: Principal = Depends(require_permission("TASK_CREATE")),
@@ -206,49 +418,42 @@ def upload_stage_data(
             f"{test_stage.upper()}数据上传将在后续版本开放，当前支持CP/FT数据",
             422,
         )
-    factory_aliases = {
-        "华虹": "huahong",
-        "hh": "huahong",
-        "jt": "jetech",
-        "捷特": "jetech",
-        "立昂微": "lion",
-        "日月新": "riyuexin",
-        "日月光": "riyueguang",
-        "ase": "riyueguang",
-    }
-    factory = factory_aliases.get(
-        factory_code.strip().lower(), factory_code.strip().lower()
-    )
-    if factory not in STAGE_FACTORIES[stage]:
+    factory = _normalize_factory(factory_code, stage)
+    if source_path and source_path.strip():
         raise DomainError(
-            "FACTORY_UNSUPPORTED",
-            f"当前{stage}不支持该厂家源数据",
+            "SOURCE_PATH_UNSUPPORTED",
+            "任意服务器绝对路径已关闭，请选择管理员授权的数据源和相对目录",
             422,
         )
-    if source_path and source_path.strip():
+    selected_root = (source_root_code or "").strip()
+    selected_relative = (source_relative_path or ".").strip() or "."
+    if selected_root:
         if files:
             raise DomainError(
-                "SOURCE_INPUT_CONFLICT", "源文件上传和服务器数据路径只能选择一种", 422
+                "SOURCE_INPUT_CONFLICT", "源文件上传和受控数据源只能选择一种", 422
             )
-        stored = _register_server_path(
-            source_path,
-            FACTORY_ALLOWED_SUFFIXES[factory],
-            recursive=stage == "CP",
+        stored = _snapshot_catalog_directory(
+            request,
+            business_domain=domain,
+            test_stage=stage,
+            factory=factory,
+            root_code=selected_root,
+            relative_path=selected_relative,
         )
     else:
+        if source_relative_path and source_relative_path.strip() not in {"", "."}:
+            raise DomainError(
+                "SOURCE_ROOT_REQUIRED",
+                "选择受控目录时必须同时选择数据源",
+                422,
+            )
         stored = _save_uploads(
             domain, stage, files or [], FACTORY_ALLOWED_SUFFIXES[factory]
         )
     batch_id = service(request).register_upload(
         principal, domain, stage, factory, stored, remark.strip() if remark else None
     )
-    registry_factory = {
-        "huahong": "HUAHONG",
-        "jetech": "JETECH",
-        "lion": "LION",
-        "riyuexin": "RIYUEXIN",
-        "riyueguang": "RIYUEGUANG",
-    }[factory]
+    registry_factory = REGISTRY_FACTORY_CODES[factory]
     release = cleaner_registry(request).latest_released(stage, registry_factory)
     job = _queue_initial_import(
         request,
@@ -269,6 +474,7 @@ def upload_stage_data(
         "import_batch_id": batch_id,
         "job_id": job.job_id,
         "status": "QUEUED",
+        "input_mode": "SOURCE_CATALOG" if selected_root else "WEB_UPLOAD",
         "business_domain": domain,
         "test_stage": stage,
         "cleaner_release": {
@@ -331,7 +537,7 @@ def download_upload_file(
     match = [item for item in info.files if item.receipt_id == receipt_id]
     if not match:
         raise DomainError("UPLOAD_FILE_NOT_FOUND", "源文件不存在或无权访问", 404)
-    path = Path(match[0].storage_uri)
+    path = _managed_upload_path(match[0].storage_uri)
     if not path.is_file():
         raise DomainError("UPLOAD_FILE_MISSING", "源文件已不在存储位置", 404)
     return FileResponse(path, filename=match[0].original_file_name)

@@ -1,4 +1,4 @@
-import { apiRequest, storedToken } from "./auth";
+import { apiRequest, downloadAuthenticatedFile } from "./auth";
 
 export interface QuickSourceRoot {
   code: string;
@@ -80,19 +80,5 @@ export const listQuickAnalysisSessions = () =>
   apiRequest<QuickAnalysisSession[]>(`${base}/sessions`);
 
 export async function downloadQuickPat(sessionId: number, fileName: string) {
-  const headers = new Headers();
-  const token = storedToken();
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  const response = await fetch(`${base}/sessions/${sessionId}/download`, { headers });
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null);
-    throw new Error(payload?.error?.message ?? `下载失败（${response.status}）`);
-  }
-  const blob = await response.blob();
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = fileName;
-  anchor.click();
-  URL.revokeObjectURL(url);
+  return downloadAuthenticatedFile(`${base}/sessions/${sessionId}/download`, fileName);
 }

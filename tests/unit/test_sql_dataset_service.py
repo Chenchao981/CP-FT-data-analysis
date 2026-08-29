@@ -205,6 +205,39 @@ class FtMultiLotSpecConnection:
         raise AssertionError(sql)
 
 
+class SummaryConnection:
+    def __init__(self, *, units: int, passes: int, failures: int) -> None:
+        self.units = units
+        self.passes = passes
+        self.failures = failures
+
+    def execute(self, statement, parameters=None):
+        sql = str(statement)
+        if "COUNT(DISTINCT dvr.processing_run_id)" in sql:
+            return Result(
+                rows=[
+                    {
+                        "dataset_code": "FT-1",
+                        "dataset_name": "FT dataset",
+                        "status": "PUBLISHED",
+                        "is_current": True,
+                        "run_count": 1,
+                        "lot_count": 1,
+                        "wafer_count": 0,
+                        "unit_count": self.units,
+                        "pass_count": self.passes,
+                        "fail_count": self.failures,
+                    }
+                ]
+            )
+        if "JOIN test.measurement m" in sql and "COUNT_BIG(*)" in sql:
+            return Result(scalar=self.units * 2)
+        if "GROUP BY ur.soft_bin" in sql:
+            assert "ur.soft_bin IS NOT NULL" in sql
+            return Result(rows=[])
+        raise AssertionError(sql)
+
+
 def test_sql_dq_gate_passes_only_ready_attributable_clean_data() -> None:
     result = SqlDatasetService(Engine(GateConnection())).evaluate_gate(1, 1)  # type: ignore[arg-type]
     assert result.status == "PASS"
@@ -342,3 +375,25 @@ def test_ft_charts_reject_source_from_another_selected_lot() -> None:
         )
 
     assert exc_info.value.code == "FT_SOURCE_NOT_FOUND"
+
+
+def test_dataset_summary_keeps_unknown_pass_fail_and_yield_null() -> None:
+    result = SqlDatasetService(
+        Engine(SummaryConnection(units=10, passes=0, failures=0))  # type: ignore[arg-type]
+    ).get_summary(1, 1)
+
+    assert result.unit_count == 10
+    assert result.pass_count is None
+    assert result.fail_count is None
+    assert result.yield_rate is None
+    assert result.bin_counts == {}
+
+
+def test_dataset_summary_excludes_unknown_units_from_yield_denominator() -> None:
+    result = SqlDatasetService(
+        Engine(SummaryConnection(units=12, passes=9, failures=1))  # type: ignore[arg-type]
+    ).get_summary(1, 1)
+
+    assert result.pass_count == 9
+    assert result.fail_count == 1
+    assert result.yield_rate == pytest.approx(0.9)

@@ -1,6 +1,6 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
-import { downloadStageUploadFile, getStageInputRequests, listStageResults, listStageUploads, reprocessStageBatch, resolveStageInputRequests, uploadStageData } from "./stageData";
+import { downloadStageUploadFile, getStageInputRequests, listFormalSourceDirectories, listFormalSourceRoots, listStageResults, listStageUploads, reprocessStageBatch, resolveStageInputRequests, uploadStageData } from "./stageData";
 
 beforeAll(() => {
   vi.stubGlobal("localStorage", { getItem: vi.fn((key: string) => key === "tms_access_token" ? "mock-token" : null), setItem: vi.fn(), removeItem: vi.fn() });
@@ -30,6 +30,40 @@ describe("stage data api", () => {
     expect(body.get("factory_code")).toBe("huahong");
     expect(body.get("remark")).toBe("备注");
     expect(body.getAll("files").length).toBe(1);
+  });
+
+  it("submits an authorized source root and relative directory without an absolute path", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ import_batch_id: 11, status: "QUEUED", input_mode: "SOURCE_CATALOG" }), { status: 201 }),
+    );
+    await uploadStageData(
+      "PRODUCTION",
+      "FT",
+      [],
+      "riyuexin",
+      "受控目录",
+      "RIYUEXIN_PRODUCTION",
+      "产品A/批次1",
+    );
+    const body = fetchMock.mock.calls[0][1]?.body as FormData;
+    expect(body.get("source_root_code")).toBe("RIYUEXIN_PRODUCTION");
+    expect(body.get("source_relative_path")).toBe("产品A/批次1");
+    expect(body.get("source_path")).toBeNull();
+    expect(body.getAll("files")).toHaveLength(0);
+  });
+
+  it("lists only the scoped formal source catalog", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(
+      async () => new Response(JSON.stringify([]), { status: 200 }),
+    );
+    await listFormalSourceRoots("ENGINEERING", "CP", "jetech");
+    await listFormalSourceDirectories("ENGINEERING", "CP", "jetech", "JT_ROOT", "产品 A");
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "/api/v1/engineering/cp/source-roots?factory_code=jetech",
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "/api/v1/engineering/cp/source-roots/JT_ROOT/directories?factory_code=jetech&relative_path=%E4%BA%A7%E5%93%81+A",
+    );
   });
 
   it("posts reprocess to the batch endpoint", async () => {

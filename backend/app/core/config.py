@@ -35,6 +35,7 @@ class Settings:
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
+    environment = os.getenv("TMS_ENV", "development").strip().lower()
     job_repository = os.getenv("TMS_JOB_REPOSITORY", "memory").lower()
     if job_repository not in {"memory", "sql"}:
         raise RuntimeError("TMS_JOB_REPOSITORY must be memory or sql")
@@ -46,15 +47,26 @@ def get_settings() -> Settings:
         raise RuntimeError("TMS_LOG_BACKUP_COUNT must be between 1 and 100")
     log_dir = os.getenv("TMS_LOG_DIR", "").strip() or None
     process_name = os.getenv("TMS_PROCESS_NAME", "tms").strip() or "tms"
+    auth_required = _boolean_environment("TMS_AUTH_REQUIRED", default=True)
+    jwt_secret = os.getenv("TMS_JWT_SECRET", "tms-local-development-only")
+    if environment in {"staging", "production"}:
+        if not auth_required:
+            raise RuntimeError(f"TMS_AUTH_REQUIRED must be true in {environment}")
+        if jwt_secret == "tms-local-development-only" or len(jwt_secret) < 32:
+            raise RuntimeError(
+                f"TMS_JWT_SECRET must be an environment-specific secret of at least 32 characters in {environment}"
+            )
+        if job_repository != "sql":
+            raise RuntimeError(f"TMS_JOB_REPOSITORY must be sql in {environment}")
     return Settings(
-        environment=os.getenv("TMS_ENV", "development"),
+        environment=environment,
         log_level=os.getenv("TMS_LOG_LEVEL", "INFO").upper(),
         log_dir=log_dir,
         log_max_bytes=log_max_bytes,
         log_backup_count=log_backup_count,
         process_name=process_name,
         job_repository=job_repository,
-        auth_required=_boolean_environment("TMS_AUTH_REQUIRED", default=True),
-        jwt_secret=os.getenv("TMS_JWT_SECRET", "tms-local-development-only"),
+        auth_required=auth_required,
+        jwt_secret=jwt_secret,
         access_token_minutes=int(os.getenv("TMS_ACCESS_TOKEN_MINUTES", "480")),
     )

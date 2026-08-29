@@ -17,6 +17,7 @@ from app.domain.jobs import JobType
 from app.infrastructure.cp_csv_triplet_writer import CpCsvTripletWriter
 from app.infrastructure.database import get_engine
 from app.infrastructure.ft_xlsx_scatter_writer import FtXlsxScatterWriter
+from app.infrastructure.source_catalog import SourceCatalog, SourceRoot
 from app.infrastructure.sql_auth_service import SqlAuthService
 from app.infrastructure.sql_cleaner_registry import SqlCleanerRegistry
 from app.infrastructure.sql_job_service import SqlJobService
@@ -62,6 +63,20 @@ def main() -> None:
         ).scalar_one()
     principal = SqlAuthService(engine).principal_for_user(int(user_id))
     app = create_app()
+    app.state.source_catalog = SourceCatalog(
+        (
+            SourceRoot(
+                "G0_FT_SOURCE",
+                "G0 FT verification source",
+                source,
+                "FT",
+                args.factory.upper(),
+                (".xlsx",),
+                "FORMAL_IMPORT",
+                (args.domain.upper(),),
+            ),
+        )
+    )
     app.dependency_overrides[current_principal] = lambda: principal
 
     with TestClient(app) as client:
@@ -69,7 +84,8 @@ def main() -> None:
             f"/api/v1/{args.domain}/ft/uploads",
             data={
                 "factory_code": args.factory,
-                "source_path": str(source),
+                "source_root_code": "G0_FT_SOURCE",
+                "source_relative_path": ".",
                 "remark": f"{args.factory} FT Route A verification",
             },
         )

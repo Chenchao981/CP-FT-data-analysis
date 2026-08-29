@@ -36,6 +36,27 @@ class SqlStageDataService:
         remark: str | None,
     ) -> int:
         stage_label = test_stage.upper()
+        catalog_metadata = [
+            item.source_metadata
+            for item in files
+            if item.source_metadata is not None
+        ]
+        source_channel = "SOURCE_CATALOG" if catalog_metadata else "WEB"
+        batch_metadata: dict[str, object] = {"uploader_user_id": principal.user_id}
+        if catalog_metadata:
+            first = catalog_metadata[0]
+            batch_metadata["source_catalog"] = {
+                key: first[key]
+                for key in (
+                    "source_root_code",
+                    "source_relative_path",
+                    "source_manifest_mode",
+                    "source_manifest_sha256",
+                    "source_file_count",
+                    "source_total_bytes",
+                )
+                if key in first
+            }
         batch_name = (
             files[0].original_name
             if len(files) == 1
@@ -46,10 +67,11 @@ class SqlStageDataService:
                 connection.execute(
                     text(
                         "INSERT ingestion.import_batch(source_channel,uploaded_by,status,metadata_json,owner_user_id,business_domain,test_stage,factory_code,batch_name,remark) "
-                        "OUTPUT INSERTED.import_batch_id VALUES('WEB',:login,'RECEIVED',:metadata,:owner,:domain,:stage,:factory,:name,:remark)"
+                        "OUTPUT INSERTED.import_batch_id VALUES(:source_channel,:login,'RECEIVED',:metadata,:owner,:domain,:stage,:factory,:name,:remark)"
                     ),
                     {
                         "login": principal.login_name,
+                        "source_channel": source_channel,
                         "owner": principal.user_id,
                         "domain": business_domain,
                         "stage": stage_label,
@@ -57,7 +79,7 @@ class SqlStageDataService:
                         "name": batch_name,
                         "remark": remark,
                         "metadata": json.dumps(
-                            {"uploader_user_id": principal.user_id}, ensure_ascii=False
+                            batch_metadata, ensure_ascii=False
                         ),
                     },
                 ).scalar_one()
@@ -92,18 +114,20 @@ class SqlStageDataService:
                     connection.execute(
                         text(
                             "INSERT ingestion.source_file_receipt(source_file_id,import_batch_id,original_file_name,received_by,received_channel,is_duplicate_receipt,metadata_json) "
-                            "OUTPUT INSERTED.receipt_id VALUES(:source,:batch,:name,:login,'WEB',:duplicate,:metadata)"
+                            "OUTPUT INSERTED.receipt_id VALUES(:source,:batch,:name,:login,:received_channel,:duplicate,:metadata)"
                         ),
                         {
                             "source": source_id,
                             "batch": batch_id,
                             "name": item.original_name,
                             "login": principal.login_name,
+                            "received_channel": source_channel,
                             "duplicate": duplicate,
                             "metadata": json.dumps(
                                 {
                                     "owner_user_id": principal.user_id,
                                     "receipt_storage_uri": str(item.path),
+                                    **(item.source_metadata or {}),
                                 },
                                 ensure_ascii=False,
                             ),
@@ -113,7 +137,7 @@ class SqlStageDataService:
                 connection.execute(
                     text(
                         "INSERT ingestion.import_batch_file(import_batch_id,receipt_id,file_role,ordinal_no,required_flag,detected_format_code,detected_profile_version,detection_evidence_json) "
-                        "VALUES(:batch,:receipt,'DETAIL',:ordinal,1,'HUAHONG_DCP','existing-release',:evidence)"
+                        "VALUES(:batch,:receipt,'DETAIL',:ordinal,1,NULL,NULL,:evidence)"
                     ),
                     {
                         "batch": batch_id,

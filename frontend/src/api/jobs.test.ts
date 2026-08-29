@@ -1,6 +1,10 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { createJob, transitionJob } from "./jobs";
+
+beforeAll(() => {
+  vi.stubGlobal("localStorage", { getItem: vi.fn(() => "mock-token"), setItem: vi.fn(), removeItem: vi.fn() });
+});
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -10,6 +14,7 @@ describe("jobs api", () => {
     await createJob({ source_file_id: 8, cleaner_release_id: 3, requested_by: "tester" });
     const [, init] = fetchMock.mock.calls[0];
     expect(JSON.parse(String(init?.body))).toMatchObject({ job_type: "PARSE", trigger_type: "MANUAL", source_file_id: 8 });
+    expect((init?.headers as Headers).get("Authorization")).toBe("Bearer mock-token");
   });
 
   it("sends a valid transition payload", async () => {

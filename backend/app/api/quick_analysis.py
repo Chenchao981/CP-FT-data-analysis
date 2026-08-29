@@ -47,7 +47,7 @@ def list_source_roots(
     request: Request,
     _principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
 ) -> tuple[dict[str, object], ...]:
-    return source_catalog(request).list_roots()
+    return source_catalog(request).list_roots(purpose="QUICK_ANALYSIS")
 
 
 @router.get("/source-roots/{root_code}/directories")
@@ -57,9 +57,14 @@ def list_source_directories(
     relative_path: str = Query(default=".", max_length=1000),
     _principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
 ) -> dict[str, object]:
-    current, parent, directories = source_catalog(request).browse(
-        root_code, relative_path
+    catalog = source_catalog(request)
+    catalog.require_scope(
+        root_code,
+        purpose="QUICK_ANALYSIS",
+        test_stage="FT",
+        factory_code="JIEQUN",
     )
+    current, parent, directories = catalog.browse(root_code, relative_path)
     return {
         "root_code": root_code.strip().upper(),
         "current_relative_path": current,
@@ -75,11 +80,12 @@ def create_quick_pat(
     principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
 ) -> dict:
     catalog = source_catalog(request)
-    root = catalog.get_root(payload.source_root_code)
-    if root.test_stage != "FT" or root.factory_code != "JIEQUN":
-        raise DomainError(
-            "QUICK_PAT_SOURCE_UNSUPPORTED", "当前快速 PAT 仅支持杰群 FT 数据源", 422
-        )
+    root = catalog.require_scope(
+        payload.source_root_code,
+        purpose="QUICK_ANALYSIS",
+        test_stage="FT",
+        factory_code="JIEQUN",
+    )
     manifest = catalog.build_manifest(root.code, payload.source_relative_path)
     capacity = capacity_policy(request)
     reserved_bytes = capacity.reservation_for(manifest.total_bytes)

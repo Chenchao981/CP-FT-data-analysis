@@ -17,6 +17,7 @@ from app.domain.jobs import JobType
 from app.infrastructure.cp_csv_triplet_writer import CpCsvTripletWriter
 from app.infrastructure.database import get_engine
 from app.infrastructure.ft_xlsx_scatter_writer import FtXlsxScatterWriter
+from app.infrastructure.source_catalog import SourceCatalog, SourceRoot
 from app.infrastructure.sql_auth_service import SqlAuthService
 from app.infrastructure.sql_cleaner_registry import SqlCleanerRegistry
 from app.infrastructure.sql_job_service import SqlJobService
@@ -34,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Upload and process one real CP source through Route A"
     )
-    parser.add_argument("--factory", required=True, choices=("jetech", "lion", "guoyu"))
+    parser.add_argument("--factory", required=True, choices=("huahong", "jetech", "lion"))
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--domain", default="engineering", choices=("engineering", "production"))
     return parser.parse_args()
@@ -43,8 +44,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     source = args.source.resolve()
-    if not source.exists():
-        raise FileNotFoundError(source)
+    if not source.is_dir():
+        raise NotADirectoryError(source)
 
     engine = get_engine()
     with engine.connect() as connection:
@@ -59,13 +60,38 @@ def main() -> None:
         ).scalar_one()
     principal = SqlAuthService(engine).principal_for_user(int(user_id))
     app = create_app()
+    factory_code = {
+        "huahong": "HUAHONG",
+        "jetech": "JETECH",
+        "lion": "LION",
+    }[args.factory]
+    suffixes = {
+        "huahong": (".zip", ".7z", ".txt"),
+        "jetech": (".zip", ".xls", ".xlsx"),
+        "lion": (".zip", ".xls", ".xlsx"),
+    }[args.factory]
+    app.state.source_catalog = SourceCatalog(
+        (
+            SourceRoot(
+                "G0_CP_SOURCE",
+                "G0 CP verification source",
+                source,
+                "CP",
+                factory_code,
+                suffixes,
+                "FORMAL_IMPORT",
+                (args.domain.upper(),),
+            ),
+        )
+    )
     app.dependency_overrides[current_principal] = lambda: principal
     with TestClient(app) as client:
         response = client.post(
             f"/api/v1/{args.domain}/cp/uploads",
             data={
                 "factory_code": args.factory,
-                "source_path": str(source),
+                "source_root_code": "G0_CP_SOURCE",
+                "source_relative_path": ".",
                 "remark": "CP multi-company Route A verification",
             },
         )
