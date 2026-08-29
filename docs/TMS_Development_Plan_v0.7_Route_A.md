@@ -1,5 +1,7 @@
 # TMS 开发规划 v0.7（Route A）
 
+> **执行基线更新（2026-08-29）**：本文保留 Route A 阶段设计和历史验收拆分；生产就绪收口以 [`TMS_Development_Plan_v0.9_Production_Readiness_Closure.md`](TMS_Development_Plan_v0.9_Production_Readiness_Closure.md) 为当前执行计划。本文中的“第一批次 Spec / FIRST_BATCH”已失效，现行规则是 Lot 级 Spec Binding，无法证明一致时失败关闭。
+
 状态：**候选执行计划，待需求与架构评审确认**
 
 形成日期：2026-08-24

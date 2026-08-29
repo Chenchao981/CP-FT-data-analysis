@@ -1,7 +1,9 @@
 # TMS 双通道开发计划 v0.8
 
+> **执行基线更新（2026-08-29）**：本文保留双通道设计和 Quick Analysis 阶段证据；生产就绪收口以 [`TMS_Development_Plan_v0.9_Production_Readiness_Closure.md`](TMS_Development_Plan_v0.9_Production_Readiness_Closure.md) 为当前执行计划。本文 Q0 中“SQL Server 不可达”的描述是 2026-08-26 的历史状态，后续开发库闭环已经完成。
+
 - 日期：2026-08-26
-- 状态：执行中
+- 状态：历史阶段计划，增量工作并入 v0.9
 - 正式入库基线：`TMS_Development_Plan_v0.7_Route_A.md`
 - 快速分析业务合同：`business/TMS_Quick_Analysis_Business_Requirements_v0.1.md`
 - 架构合同：`architecture/TMS_System_Architecture_v0.8_Dual_Channel.md`

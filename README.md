@@ -6,6 +6,7 @@
 
 当前唯一有效的业务、架构和开发入口是：
 
+- [`docs/TMS_Development_Plan_v0.9_Production_Readiness_Closure.md`](docs/TMS_Development_Plan_v0.9_Production_Readiness_Closure.md)：当前生产就绪收口执行计划、灰度门、回归矩阵和完成定义；与 v0.7/v0.8 的计划状态或 FIRST_BATCH 规则冲突时以本计划为准。
 - [`docs/business/TMS_Business_Requirements_v0.2.md`](docs/business/TMS_Business_Requirements_v0.2.md)：当前业务需求口径；与旧业务流程冲突时优先。
 - [`docs/architecture/TMS_System_Architecture_v0.7_Route_A.md`](docs/architecture/TMS_System_Architecture_v0.7_Route_A.md)：Route A 系统架构与唯一 Canonical 决策。
 - [`docs/business/TMS_Quick_Analysis_Business_Requirements_v0.1.md`](docs/business/TMS_Quick_Analysis_Business_Requirements_v0.1.md)：一次性快速计算与正式入库的业务边界。
@@ -13,8 +14,8 @@
 - [`docs/architecture/TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md`](docs/architecture/TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md)：正式入库缺 Lot 的暂停、人工确认、子 Job 重跑与审计合同。
 - [`docs/development/TMS_Lot_Input_Recovery_Completion_Report_2026-08-27.md`](docs/development/TMS_Lot_Input_Recovery_Completion_Report_2026-08-27.md)：日月新/日月光真实浏览器与 SQL Server 闭环证据及剩余生产门禁。
 - [`docs/development/TMS_Local_Test_Environment_Completion_Report_2026-08-28.md`](docs/development/TMS_Local_Test_Environment_Completion_Report_2026-08-28.md)：本机一键启停、常驻 Worker、UTF-8 修复和真实 FT 前端闭环证据。
-- [`docs/TMS_Development_Plan_v0.8_Dual_Channel.md`](docs/TMS_Development_Plan_v0.8_Dual_Channel.md)：Quick Analysis、临时 Workspace、Storage Adapter 与 Local Agent 的阶段计划。
-- [`docs/TMS_Development_Plan_v0.7_Route_A.md`](docs/TMS_Development_Plan_v0.7_Route_A.md)：后续开发阶段、交付物和验收门槛。
+- [`docs/TMS_Development_Plan_v0.8_Dual_Channel.md`](docs/TMS_Development_Plan_v0.8_Dual_Channel.md)：Quick Analysis、临时 Workspace、Storage Adapter 与 Local Agent 的历史阶段计划。
+- [`docs/TMS_Development_Plan_v0.7_Route_A.md`](docs/TMS_Development_Plan_v0.7_Route_A.md)：Route A 历史阶段计划和验收拆分。
 - [`docs/TMS_Development_Baseline_v0.6_Unified_Cleaning_Analytics/`](docs/TMS_Development_Baseline_v0.6_Unified_Cleaning_Analytics/README.md)：已实现技术资产和历史基线；与 v0.2/v0.7 冲突时以后者为准。
 - [`docs/G0/G0_Execution_Plan_v0.6.md`](docs/G0/G0_Execution_Plan_v0.6.md)：已执行 G0 的历史计划与证据入口。
 
