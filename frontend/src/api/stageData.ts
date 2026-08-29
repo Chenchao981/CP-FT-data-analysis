@@ -3,6 +3,24 @@ import { apiRequest, downloadAuthenticatedFile } from "./auth";
 export type BusinessDomain = "ENGINEERING" | "PRODUCTION";
 export type TestStage = "CP" | "FT";
 
+export interface PageResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+export interface StagePageRequest {
+  page: number;
+  page_size: number;
+  factory_code?: string;
+  status?: string;
+  product_name?: string;
+  lot_id?: string;
+  from_utc?: string;
+  to_utc?: string;
+}
+
 export interface StageUploadRow {
   import_batch_id: number;
   sequence_no: number;
@@ -21,6 +39,7 @@ export interface StageUploadRow {
   error_code: string | null;
   error_message: string | null;
   action_required: "LOT_ID" | null;
+  queue_age_seconds?: number | null;
 }
 
 export interface StageInputRequest {
@@ -66,6 +85,7 @@ export interface StageResultRow {
   data_type: string;
   dataset_id: number | null;
   dataset_version_no: number | null;
+  job_id?: number | null;
   created_at_utc: string;
 }
 
@@ -94,6 +114,17 @@ export interface FormalDirectoryListing {
   directories: FormalSourceDirectory[];
 }
 
+export interface FormalSourceManifestPreview {
+  root_code: string;
+  relative_path: string;
+  mode: string;
+  recursive: boolean;
+  file_count: number;
+  total_bytes: number;
+  sha: string;
+  allowed_suffixes: string[];
+}
+
 const stageBase = (businessDomain: BusinessDomain, testStage: TestStage) =>
   `/api/v1/${businessDomain.toLowerCase()}/${testStage.toLowerCase()}`;
 
@@ -102,6 +133,34 @@ export const listStageUploads = (businessDomain: BusinessDomain, testStage: Test
 
 export const listStageResults = (businessDomain: BusinessDomain, testStage: TestStage) =>
   apiRequest<StageResultRow[]>(`${stageBase(businessDomain, testStage)}/results`);
+
+const stagePageQuery = (request: StagePageRequest) => {
+  const query = new URLSearchParams({
+    page: String(request.page),
+    page_size: String(request.page_size),
+  });
+  for (const key of ["factory_code", "status", "product_name", "lot_id", "from_utc", "to_utc"] as const) {
+    const value = request[key]?.trim();
+    if (value) query.set(key, value);
+  }
+  return query;
+};
+
+export const listStageUploadsPage = (
+  businessDomain: BusinessDomain,
+  testStage: TestStage,
+  request: StagePageRequest,
+) => apiRequest<PageResult<StageUploadRow>>(
+  `${stageBase(businessDomain, testStage)}/uploads/page?${stagePageQuery(request)}`,
+);
+
+export const listStageResultsPage = (
+  businessDomain: BusinessDomain,
+  testStage: TestStage,
+  request: StagePageRequest,
+) => apiRequest<PageResult<StageResultRow>>(
+  `${stageBase(businessDomain, testStage)}/results/page?${stagePageQuery(request)}`,
+);
 
 export const listFormalSourceRoots = (
   businessDomain: BusinessDomain,
@@ -130,6 +189,22 @@ export const listFormalSourceDirectories = (
   );
 };
 
+export const previewFormalSourceManifest = (
+  businessDomain: BusinessDomain,
+  testStage: TestStage,
+  factoryCode: string,
+  rootCode: string,
+  relativePath = ".",
+) => {
+  const query = new URLSearchParams({
+    factory_code: factoryCode,
+    relative_path: relativePath,
+  });
+  return apiRequest<FormalSourceManifestPreview>(
+    `${stageBase(businessDomain, testStage)}/source-roots/${encodeURIComponent(rootCode)}/manifest-preview?${query}`,
+  );
+};
+
 export function uploadStageData(
   businessDomain: BusinessDomain,
   testStage: TestStage,
@@ -138,6 +213,8 @@ export function uploadStageData(
   remark?: string,
   sourceRootCode?: string,
   sourceRelativePath?: string,
+  sourceManifestMode?: string,
+  sourceManifestSha256?: string,
 ) {
   const body = new FormData();
   files.forEach((file) => body.append("files", file));
@@ -145,6 +222,12 @@ export function uploadStageData(
   if (sourceRootCode?.trim()) {
     body.append("source_root_code", sourceRootCode.trim());
     body.append("source_relative_path", sourceRelativePath?.trim() || ".");
+    if (sourceManifestMode?.trim()) {
+      body.append("source_manifest_mode", sourceManifestMode.trim());
+    }
+    if (sourceManifestSha256?.trim()) {
+      body.append("source_manifest_sha256", sourceManifestSha256.trim());
+    }
   }
   if (remark) body.append("remark", remark);
   return apiRequest<{

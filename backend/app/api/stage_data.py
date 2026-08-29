@@ -4,6 +4,7 @@ import hashlib
 import os
 import shutil
 from dataclasses import asdict
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -11,10 +12,13 @@ from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, 
 from fastapi.responses import FileResponse
 
 from app.api.dependencies import require_permission
+from app.api.m2_filters import build_page_filters
 from app.core.errors import DomainError
 from app.domain.auth import Principal
 from app.domain.jobs import CreateJobRequest, JobType, TriggerType
-from app.domain.stage_data import StoredUpload
+from app.domain.m2_queries import M2QueryService
+from app.domain.stage_data import FormalSourceManifestPreview, StoredUpload
+from app.infrastructure.source_catalog import SourceCatalog, SourceManifest, SourceRoot
 
 router = APIRouter()
 FACTORY_ALLOWED_SUFFIXES = {
@@ -58,12 +62,31 @@ REGISTRY_FACTORY_CODES = {
     "riyuexin": "RIYUEXIN",
     "riyueguang": "RIYUEGUANG",
 }
+UPLOAD_PAGE_STATUSES = frozenset(
+    {
+        "RECEIVED",
+        "QUEUED",
+        "PROCESSING",
+        "NEEDS_INPUT",
+        "PROCESSED",
+        "FAILED",
+        "CANCELLED",
+    }
+)
+RESULT_PAGE_STATUSES = frozenset({"PROCESSED", "FAILED", "ARCHIVED"})
 
 
 def service(request: Request):
     instance = getattr(request.app.state, "stage_data_service", None)
     if instance is None:
         raise DomainError("DATABASE_NOT_CONFIGURED", "数据服务尚未连接数据库", 503)
+    return instance
+
+
+def m2_query_service(request: Request) -> M2QueryService:
+    instance = getattr(request.app.state, "m2_query_service", None)
+    if instance is None:
+        raise DomainError("DATABASE_NOT_CONFIGURED", "数据查询服务尚未连接数据库", 503)
     return instance
 
 
@@ -117,6 +140,17 @@ def _normalize_list_stage(value: str) -> str:
     stage = LIST_TEST_STAGES.get(value.strip().lower())
     if stage is None:
         raise DomainError("TEST_STAGE_UNSUPPORTED", f"不支持的测试阶段：{value}", 404)
+    return stage
+
+
+def _normalize_page_stage(value: str) -> str:
+    stage = UPLOAD_TEST_STAGES.get(value.strip().lower())
+    if stage is None:
+        raise DomainError(
+            "TEST_STAGE_UNSUPPORTED",
+            f"分页查询仅支持 CP/FT，收到：{value}",
+            404,
+        )
     return stage
 
 
@@ -229,7 +263,126 @@ def _snapshot_catalog_directory(
     factory: str,
     root_code: str,
     relative_path: str,
+    expected_manifest_mode: str,
+    expected_manifest_sha256: str,
 ) -> tuple[StoredUpload, ...]:
+    catalog, root, manifest, recursive = _formal_source_manifest(
+        request,
+        business_domain=business_domain,
+        test_stage=test_stage,
+        factory=factory,
+        root_code=root_code,
+        relative_path=relative_path,
+    )
+    if not manifest.matches_confirmation(
+        mode=expected_manifest_mode, sha256=expected_manifest_sha256
+    ):
+        raise DomainError(
+            "FORMAL_SOURCE_CHANGED",
+            "源目录与提交前确认的清单不一致，请重新预览后再提交",
+            409,
+        )
+
+    selected = catalog.resolve_directory(root.code, manifest.selected_relative_path)
+    upload_root = _upload_root()
+    catalog.assert_storage_separate(upload_root)
+    upload_root.mkdir(parents=True, exist_ok=True)
+    available = shutil.disk_usage(upload_root).free
+    reserve = _positive_limit("TMS_FORMAL_MIN_FREE_BYTES", 1024**3)
+    if available - manifest.total_bytes < reserve:
+        raise DomainError(
+            "FORMAL_SOURCE_DISK_CAPACITY_INSUFFICIENT",
+            "正式入库快照空间不足，请联系管理员清理或扩容",
+            507,
+        )
+    target = (
+        upload_root
+        / business_domain.lower()
+        / test_stage.lower()
+        / uuid4().hex
+    )
+    target.mkdir(parents=True, exist_ok=False)
+    selected_directory_name = selected.name.strip()
+    if not selected_directory_name:
+        shutil.rmtree(target, ignore_errors=True)
+        raise DomainError(
+            "FORMAL_SOURCE_IDENTITY_UNAVAILABLE",
+            "所选目录缺少可保留的目录身份，请选择数据源内的业务目录",
+            422,
+        )
+    snapshot_root = target / selected_directory_name
+    stored: list[StoredUpload] = []
+    try:
+        for entry in manifest.files:
+            source = selected / Path(entry.relative_path)
+            # Existing CP Cleaners intentionally use the source parent directory as
+            # business identity. Keep the selected directory leaf inside the managed
+            # snapshot instead of exposing or reusing the physical source path.
+            destination = snapshot_root / Path(entry.relative_path)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            digest = hashlib.sha256()
+            copied_bytes = 0
+            with source.open("rb") as input_stream, destination.open("xb") as output:
+                while chunk := input_stream.read(1024 * 1024):
+                    copied_bytes += len(chunk)
+                    digest.update(chunk)
+                    output.write(chunk)
+            if copied_bytes != entry.size_bytes:
+                raise DomainError(
+                    "FORMAL_SOURCE_CHANGED",
+                    f"源文件在建立快照时发生变化：{entry.relative_path}",
+                    409,
+                )
+            metadata: dict[str, object] = {
+                "purpose": "FORMAL_IMPORT",
+                "source_root_code": root.code,
+                "source_relative_path": manifest.selected_relative_path,
+                "source_file_relative_path": entry.relative_path,
+                "source_manifest_mode": manifest.mode,
+                "source_manifest_sha256": manifest.sha256,
+                "source_file_count": manifest.file_count,
+                "source_total_bytes": manifest.total_bytes,
+                "snapshot_selected_directory_name": selected_directory_name,
+                "snapshot_copy": True,
+            }
+            stored.append(
+                StoredUpload(
+                    entry.relative_path,
+                    destination.resolve(),
+                    copied_bytes,
+                    digest.hexdigest(),
+                    metadata,
+                )
+            )
+        completed = catalog.build_manifest(
+            root.code, relative_path, recursive=recursive
+        )
+        if (
+            completed.sha256 != manifest.sha256
+            or completed.as_json() != manifest.as_json()
+        ):
+            raise DomainError(
+                "FORMAL_SOURCE_CHANGED",
+                "源目录在建立正式入库快照期间发生变化，请重新选择后再提交",
+                409,
+            )
+    except Exception:
+        shutil.rmtree(target, ignore_errors=True)
+        raise
+    return tuple(stored)
+
+
+def _formal_source_manifest(
+    request: Request,
+    *,
+    business_domain: str,
+    test_stage: str,
+    factory: str,
+    root_code: str,
+    relative_path: str,
+) -> tuple[SourceCatalog, SourceRoot, SourceManifest, bool]:
+    """Build the one authoritative formal-import manifest used by preview and submit."""
+
     catalog = source_catalog(request)
     registry_factory = REGISTRY_FACTORY_CODES[factory]
     root = catalog.require_scope(
@@ -262,76 +415,7 @@ def _snapshot_catalog_directory(
             f"正式入库源数据大小超过上限 {max_bytes} 字节",
             422,
         )
-
-    selected = catalog.resolve_directory(root.code, manifest.selected_relative_path)
-    upload_root = _upload_root()
-    catalog.assert_storage_separate(upload_root)
-    upload_root.mkdir(parents=True, exist_ok=True)
-    available = shutil.disk_usage(upload_root).free
-    reserve = _positive_limit("TMS_FORMAL_MIN_FREE_BYTES", 1024**3)
-    if available - manifest.total_bytes < reserve:
-        raise DomainError(
-            "FORMAL_SOURCE_DISK_CAPACITY_INSUFFICIENT",
-            "正式入库快照空间不足，请联系管理员清理或扩容",
-            507,
-        )
-    target = (
-        upload_root
-        / business_domain.lower()
-        / test_stage.lower()
-        / uuid4().hex
-    )
-    target.mkdir(parents=True, exist_ok=False)
-    stored: list[StoredUpload] = []
-    try:
-        for entry in manifest.files:
-            source = selected / Path(entry.relative_path)
-            destination = target / Path(entry.relative_path)
-            destination.parent.mkdir(parents=True, exist_ok=True)
-            digest = hashlib.sha256()
-            copied_bytes = 0
-            with source.open("rb") as input_stream, destination.open("xb") as output:
-                while chunk := input_stream.read(1024 * 1024):
-                    copied_bytes += len(chunk)
-                    digest.update(chunk)
-                    output.write(chunk)
-            if copied_bytes != entry.size_bytes:
-                raise DomainError(
-                    "FORMAL_SOURCE_CHANGED",
-                    f"源文件在建立快照时发生变化：{entry.relative_path}",
-                    409,
-                )
-            metadata: dict[str, object] = {
-                "purpose": "FORMAL_IMPORT",
-                "source_root_code": root.code,
-                "source_relative_path": manifest.selected_relative_path,
-                "source_file_relative_path": entry.relative_path,
-                "source_manifest_mode": manifest.mode,
-                "source_manifest_sha256": manifest.sha256,
-                "source_file_count": manifest.file_count,
-                "source_total_bytes": manifest.total_bytes,
-                "snapshot_copy": True,
-            }
-            stored.append(
-                StoredUpload(
-                    entry.relative_path,
-                    destination.resolve(),
-                    copied_bytes,
-                    digest.hexdigest(),
-                    metadata,
-                )
-            )
-        completed = catalog.build_manifest(root.code, relative_path, recursive=recursive)
-        if completed.sha256 != manifest.sha256 or completed.as_json() != manifest.as_json():
-            raise DomainError(
-                "FORMAL_SOURCE_CHANGED",
-                "源目录在建立正式入库快照期间发生变化，请重新选择后再提交",
-                409,
-            )
-    except Exception:
-        shutil.rmtree(target, ignore_errors=True)
-        raise
-    return tuple(stored)
+    return catalog, root, manifest, recursive
 
 
 @router.get("/{business_domain}/{test_stage}/source-roots")
@@ -395,6 +479,46 @@ def list_formal_source_directories(
     }
 
 
+@router.get("/{business_domain}/{test_stage}/source-roots/{root_code}/manifest-preview")
+def preview_formal_source_manifest(
+    root_code: str,
+    request: Request,
+    business_domain: str,
+    test_stage: str,
+    factory_code: str = Query(min_length=1, max_length=128),
+    relative_path: str = Query(default=".", max_length=1000),
+    _principal: Principal = Depends(require_permission("TASK_CREATE")),
+) -> dict[str, object]:
+    domain = _normalize_business_domain(business_domain)
+    stage = UPLOAD_TEST_STAGES.get(test_stage.strip().lower())
+    if stage is None:
+        raise DomainError(
+            "STAGE_UPLOAD_UNSUPPORTED",
+            f"{test_stage.upper()}暂不支持受控数据源正式入库",
+            422,
+        )
+    factory = _normalize_factory(factory_code, stage)
+    _, root, manifest, recursive = _formal_source_manifest(
+        request,
+        business_domain=domain,
+        test_stage=stage,
+        factory=factory,
+        root_code=root_code,
+        relative_path=relative_path,
+    )
+    preview = FormalSourceManifestPreview(
+        root_code=root.code,
+        relative_path=manifest.selected_relative_path,
+        mode=manifest.mode,
+        recursive=recursive,
+        file_count=manifest.file_count,
+        total_bytes=manifest.total_bytes,
+        sha=manifest.sha256,
+        allowed_suffixes=root.allowed_suffixes,
+    )
+    return asdict(preview)
+
+
 @router.post(
     "/{business_domain}/{test_stage}/uploads", status_code=status.HTTP_201_CREATED
 )
@@ -406,6 +530,8 @@ def upload_stage_data(
     factory_code: str = Form(""),
     source_root_code: str | None = Form(None),
     source_relative_path: str | None = Form(None),
+    source_manifest_mode: str | None = Form(None),
+    source_manifest_sha256: str | None = Form(None),
     source_path: str | None = Form(None),
     remark: str | None = Form(None),
     principal: Principal = Depends(require_permission("TASK_CREATE")),
@@ -432,6 +558,14 @@ def upload_stage_data(
             raise DomainError(
                 "SOURCE_INPUT_CONFLICT", "源文件上传和受控数据源只能选择一种", 422
             )
+        confirmed_mode = (source_manifest_mode or "").strip()
+        confirmed_sha256 = (source_manifest_sha256 or "").strip()
+        if not confirmed_mode or not confirmed_sha256:
+            raise DomainError(
+                "FORMAL_SOURCE_MANIFEST_REQUIRED",
+                "受控数据源提交前必须先预览并确认 Manifest",
+                422,
+            )
         stored = _snapshot_catalog_directory(
             request,
             business_domain=domain,
@@ -439,8 +573,16 @@ def upload_stage_data(
             factory=factory,
             root_code=selected_root,
             relative_path=selected_relative,
+            expected_manifest_mode=confirmed_mode,
+            expected_manifest_sha256=confirmed_sha256,
         )
     else:
+        if source_manifest_mode or source_manifest_sha256:
+            raise DomainError(
+                "SOURCE_ROOT_REQUIRED",
+                "Manifest 确认必须与受控数据源一起提交",
+                422,
+            )
         if source_relative_path and source_relative_path.strip() not in {"", "."}:
             raise DomainError(
                 "SOURCE_ROOT_REQUIRED",
@@ -516,6 +658,76 @@ def list_stage_results(
     return [
         asdict(item) for item in service(request).list_results(principal, domain, stage)
     ]
+
+
+@router.get("/{business_domain}/{test_stage}/uploads/page")
+def list_stage_uploads_page(
+    request: Request,
+    business_domain: str,
+    test_stage: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    factory_code: str | None = Query(default=None, max_length=64),
+    status_filter: str | None = Query(default=None, alias="status", max_length=32),
+    product_name: str | None = Query(default=None, max_length=200),
+    lot_id: str | None = Query(default=None, max_length=128),
+    from_utc: datetime | None = Query(default=None),
+    to_utc: datetime | None = Query(default=None),
+    principal: Principal = Depends(require_permission("DATASET_READ")),
+) -> dict:
+    domain = _normalize_business_domain(business_domain)
+    stage = _normalize_page_stage(test_stage)
+    filters = build_page_filters(
+        page=page,
+        page_size=page_size,
+        factory_code=factory_code,
+        status=status_filter,
+        product_name=product_name,
+        lot_id=lot_id,
+        from_utc=from_utc,
+        to_utc=to_utc,
+        allowed_statuses=UPLOAD_PAGE_STATUSES,
+    )
+    return asdict(
+        m2_query_service(request).list_uploads_page(
+            principal, domain, stage, filters
+        )
+    )
+
+
+@router.get("/{business_domain}/{test_stage}/results/page")
+def list_stage_results_page(
+    request: Request,
+    business_domain: str,
+    test_stage: str,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=20, ge=1, le=100),
+    factory_code: str | None = Query(default=None, max_length=64),
+    status_filter: str | None = Query(default=None, alias="status", max_length=32),
+    product_name: str | None = Query(default=None, max_length=200),
+    lot_id: str | None = Query(default=None, max_length=128),
+    from_utc: datetime | None = Query(default=None),
+    to_utc: datetime | None = Query(default=None),
+    principal: Principal = Depends(require_permission("DATASET_READ")),
+) -> dict:
+    domain = _normalize_business_domain(business_domain)
+    stage = _normalize_page_stage(test_stage)
+    filters = build_page_filters(
+        page=page,
+        page_size=page_size,
+        factory_code=factory_code,
+        status=status_filter,
+        product_name=product_name,
+        lot_id=lot_id,
+        from_utc=from_utc,
+        to_utc=to_utc,
+        allowed_statuses=RESULT_PAGE_STATUSES,
+    )
+    return asdict(
+        m2_query_service(request).list_results_page(
+            principal, domain, stage, filters
+        )
+    )
 
 
 @router.get(

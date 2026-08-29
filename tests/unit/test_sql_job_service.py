@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -47,9 +47,11 @@ def test_database_job_row_maps_to_domain() -> None:
         "heartbeat_at_utc": datetime(2026, 8, 20, 1, 2, 4, tzinfo=UTC),
         "attempt_count": 1,
         "max_attempts": 3,
+        "finalize_protocol": "ATOMIC_V1",
     }
     job = _to_job(row)
     assert job.status == JobStatus.RUNNING
+    assert job.finalize_protocol == "ATOMIC_V1"
     assert job.requested_at_utc.utcoffset().total_seconds() == 0
 
 
@@ -167,6 +169,17 @@ class _SqlResult:
         assert len(self._rows) == 1
         return self._rows[0]
 
+    def all(self):
+        return self._rows
+
+    def scalar_one_or_none(self):
+        if not self._rows:
+            return None
+        row = self._rows[0]
+        if isinstance(row, dict):
+            return next(iter(row.values()))
+        return row
+
 
 class _AtomicInitialImportConnection:
     def __init__(self) -> None:
@@ -212,6 +225,7 @@ class _AtomicInitialImportConnection:
                         "attempt_count": 0,
                         "max_attempts": 3,
                         "parent_job_id": None,
+                        "finalize_protocol": "ATOMIC_V1",
                     }
                 ]
             )
@@ -254,6 +268,7 @@ def test_initial_import_job_and_batch_queue_are_written_in_one_transaction() -> 
     assert "WITH (UPDLOCK,HOLDLOCK)" in statements[0]
     assert "status='QUEUED'" in statements[1]
     assert "INSERT ingestion.processing_job" in statements[-1]
+    assert connection.statements[-1][1]["finalize_protocol"] == "ATOMIC_V1"
 
 
 class _BatchFailureConnection:
@@ -285,3 +300,571 @@ def test_max_attempt_cleanup_fails_only_linked_active_initial_import_batches() -
     assert "b.status IN('QUEUED','PROCESSING')" in sql
     assert "active_job.status IN('QUEUED','RUNNING')" in sql
     assert parameters == {"now": now, "batch": 7}
+
+
+_LEASE_TOKEN = "11111111-aaaa-bbbb-cccc-222222222222"
+
+
+def _atomic_job_row(
+    *,
+    status: str = "RUNNING",
+    lease_token: str | None = _LEASE_TOKEN,
+) -> dict[str, Any]:
+    now = datetime.now(UTC).replace(tzinfo=None)
+    return {
+        "job_id": 91,
+        "source_file_id": None,
+        "import_batch_id": 7,
+        "analysis_session_id": None,
+        "cleaner_release_id": 2,
+        "job_type": "INITIAL_IMPORT",
+        "trigger_type": "MANUAL",
+        "requested_by": "user-1",
+        "requested_by_user_id": 1,
+        "reason": "atomic finalize test",
+        "status": status,
+        "requested_at_utc": now,
+        "started_at_utc": now,
+        "finished_at_utc": now if status in {"SUCCESS", "FAILED"} else None,
+        "error_code": "CLEANER_FAILED" if status == "FAILED" else None,
+        "error_message": "failed" if status == "FAILED" else None,
+        "idempotency_key": "atomic-finalize-test",
+        "not_before_utc": now,
+        "lease_token": lease_token,
+        "lease_owner": "route-a-worker-1" if lease_token else None,
+        "lease_expires_at_utc": now + timedelta(minutes=5) if lease_token else None,
+        "heartbeat_at_utc": now,
+        "attempt_count": 1,
+        "max_attempts": 3,
+        "parent_job_id": None,
+        "finalize_protocol": "ATOMIC_V1",
+    }
+
+
+def _staged_intent_row() -> dict[str, Any]:
+    return {
+        "job_id": 91,
+        "import_batch_id": 7,
+        "processing_run_id": 101,
+        "dataset_version_id": 205,
+        "status": "STAGED",
+        "finalized_lease_token": None,
+        "dataset_id": 41,
+        "version_no": 5,
+        "input_batch_id": 7,
+        "version_status": "DRAFT",
+        "is_current": False,
+        "unit_count": 20,
+        "measurement_count": 200,
+        "spec_set_id": None,
+        "run_job_id": 91,
+        "run_status": "READY",
+        "run_is_current": False,
+        "source_file_id": 31,
+        "unit_count_output": 20,
+        "measurement_count_output": 200,
+        "lifecycle_action_type": None,
+        "lifecycle_dataset_id": None,
+        "lifecycle_target_version_id": None,
+        "lifecycle_dataset_status": None,
+        "lifecycle_target_version_status": None,
+        "lifecycle_target_is_current": None,
+        "lifecycle_target_batch_id": None,
+    }
+
+
+class _AtomicFinalizeConnection:
+    def __init__(
+        self,
+        *,
+        job_row: dict[str, Any] | None = None,
+        intent_row: dict[str, Any] | None = None,
+        links: dict[str, int] | None = None,
+        previous_version_id: int | None = 204,
+        previous_run_id: int | None = 100,
+        zero_rowcount_contains: str | None = None,
+    ) -> None:
+        self.job_row = job_row or _atomic_job_row()
+        self.intent_row = intent_row or _staged_intent_row()
+        self.links = links or {
+            "batch_file_count": 3,
+            "lineage_count": 3,
+            "wrong_batch_count": 0,
+            "unverified_lineage_count": 0,
+            "version_run_count": 1,
+        }
+        self.previous_version_id = previous_version_id
+        self.previous_run_id = previous_run_id
+        self.zero_rowcount_contains = zero_rowcount_contains
+        self.statements: list[tuple[str, dict[str, Any]]] = []
+
+    def execute(self, statement, parameters=None):
+        sql = " ".join(str(statement).split())
+        parameters = parameters or {}
+        self.statements.append((sql, parameters))
+        if (
+            "SELECT job_id" in sql
+            and "FROM ingestion.processing_job" in sql
+            and "WHERE job_id=:job_id" in sql
+        ):
+            return _SqlResult(rows=[self.job_row])
+        if sql.startswith("SELECT i.job_id"):
+            return _SqlResult(rows=[self.intent_row])
+        if sql.startswith("SELECT import_batch_id,processing_run_id,dataset_version_id,status"):
+            simple_intent = {
+                key: self.intent_row[key]
+                for key in (
+                    "import_batch_id",
+                    "processing_run_id",
+                    "dataset_version_id",
+                    "status",
+                )
+            }
+            return _SqlResult(rows=[simple_intent])
+        if sql.startswith("SELECT status,owner_user_id"):
+            return _SqlResult(rows=[{"status": "PROCESSING", "owner_user_id": 1}])
+        if sql.startswith("SELECT (SELECT COUNT(*)"):
+            return _SqlResult(rows=[self.links])
+        if sql.startswith("SELECT dataset_version_id FROM dataset.dataset_version"):
+            rows = (
+                [{"dataset_version_id": self.previous_version_id}]
+                if self.previous_version_id is not None
+                else []
+            )
+            return _SqlResult(rows=rows)
+        if sql.startswith("SELECT processing_run_id FROM ingestion.processing_run"):
+            rows = (
+                [{"processing_run_id": self.previous_run_id}]
+                if self.previous_run_id is not None
+                else []
+            )
+            return _SqlResult(rows=rows)
+        if (
+            sql.startswith("UPDATE ingestion.processing_job")
+            and "SET status=:status" in sql
+        ):
+            failed = _atomic_job_row(status="FAILED", lease_token=None)
+            return _SqlResult(rows=[failed], rowcount=1)
+        if (
+            sql.startswith("UPDATE ingestion.processing_job SET status='SUCCESS'")
+        ):
+            succeeded = _atomic_job_row(status="SUCCESS", lease_token=None)
+            return _SqlResult(rows=[succeeded], rowcount=1)
+        if sql.startswith("UPDATE ingestion.processing_result_summary SET data_name"):
+            return _SqlResult(rowcount=0)
+        if sql.startswith(("UPDATE ", "INSERT ")):
+            if self.zero_rowcount_contains and self.zero_rowcount_contains in sql:
+                return _SqlResult(rowcount=0)
+            return _SqlResult(rowcount=1)
+        raise AssertionError(f"unhandled SQL in atomic test fake: {sql}")
+
+
+class _TransactionalFakeEngine:
+    def __init__(self, connection: _AtomicFinalizeConnection) -> None:
+        self.connection = connection
+        self.begin_count = 0
+        self.commit_count = 0
+        self.rollback_count = 0
+
+    @contextmanager
+    def begin(self):
+        self.begin_count += 1
+        try:
+            yield self.connection
+        except BaseException:
+            self.rollback_count += 1
+            raise
+        else:
+            self.commit_count += 1
+
+
+def _atomic_summary() -> dict[str, Any]:
+    return {
+        "data_name": "NCE CP LOT-001",
+        "product_name": "NCE-TEST",
+        "lot_id": "LOT-001",
+        "wafer_count": 2,
+        "factory_code": "HUAHONG",
+        "output_uri": "tms://formal/job-91",
+        "test_item_count": 10,
+        "unit_count": 20,
+        "pass_count": 18,
+        "yield_rate": 0.9,
+        "data_type": "CP",
+        "artifacts": [{"name": "manifest.json"}],
+        # These untrusted values must never override the staged Intent lineage.
+        "dataset_id": 999,
+        "dataset_version_no": 999,
+    }
+
+
+def test_finish_leased_rejects_atomic_initial_import_success() -> None:
+    connection = _AtomicFinalizeConnection()
+    engine = _TransactionalFakeEngine(connection)
+    service = SqlJobService(engine)  # type: ignore[arg-type]
+
+    with pytest.raises(DomainError) as exc_info:
+        service.finish_leased(91, _LEASE_TOKEN, JobStatus.SUCCESS)
+
+    assert exc_info.value.code == "ATOMIC_FINALIZE_REQUIRED"
+    assert engine.begin_count == 1
+    assert engine.rollback_count == 1
+    assert not any(sql.startswith("UPDATE ") for sql, _ in connection.statements)
+
+
+def test_finish_leased_failure_aborts_staged_atomic_import_in_one_transaction() -> None:
+    connection = _AtomicFinalizeConnection()
+    engine = _TransactionalFakeEngine(connection)
+    service = SqlJobService(engine)  # type: ignore[arg-type]
+
+    job = service.finish_leased(
+        91,
+        _LEASE_TOKEN,
+        JobStatus.FAILED,
+        error_code="CLEANER_FAILED",
+        error_message="cleaner failed after staging",
+    )
+
+    assert job.status == JobStatus.FAILED
+    assert engine.begin_count == 1
+    assert engine.commit_count == 1
+    assert engine.rollback_count == 0
+    statements = [sql for sql, _ in connection.statements]
+    assert any(
+        "UPDATE ingestion.processing_run SET status='FAILED'" in sql
+        and "status='READY'" in sql
+        for sql in statements
+    )
+    assert any(
+        "UPDATE dataset.dataset_version SET status='ARCHIVED'" in sql
+        and "status='DRAFT'" in sql
+        for sql in statements
+    )
+    assert any(
+        "initial_import_finalize_intent SET status='ABORTED'" in sql
+        and "status='STAGED'" in sql
+        for sql in statements
+    )
+    assert any(
+        "import_batch SET status='FAILED'" in sql
+        and "status IN('QUEUED','PROCESSING')" in sql
+        for sql in statements
+    )
+
+
+def test_atomic_abort_rejects_run_state_drift_and_rolls_back_job_failure() -> None:
+    connection = _AtomicFinalizeConnection(
+        zero_rowcount_contains="processing_run SET status='FAILED'"
+    )
+    engine = _TransactionalFakeEngine(connection)
+    service = SqlJobService(engine)  # type: ignore[arg-type]
+
+    with pytest.raises(DomainError) as exc_info:
+        service.finish_leased(
+            91,
+            _LEASE_TOKEN,
+            JobStatus.FAILED,
+            error_code="CLEANER_FAILED",
+            error_message="synthetic drift",
+        )
+
+    assert exc_info.value.code == "ATOMIC_ABORT_RUN_STATE_CONFLICT"
+    assert engine.commit_count == 0
+    assert engine.rollback_count == 1
+
+
+def test_finalize_initial_import_publishes_complete_lineage_atomically() -> None:
+    connection = _AtomicFinalizeConnection()
+    engine = _TransactionalFakeEngine(connection)
+    service = SqlJobService(engine)  # type: ignore[arg-type]
+
+    job = service.finalize_initial_import(
+        job_id=91,
+        lease_token=_LEASE_TOKEN,
+        processing_run_id=101,
+        dataset_version_id=205,
+        summary=_atomic_summary(),
+    )
+
+    assert job.status == JobStatus.SUCCESS
+    assert job.finalize_protocol == "ATOMIC_V1"
+    assert engine.begin_count == 1
+    assert engine.commit_count == 1
+    assert engine.rollback_count == 0
+    statements = [sql for sql, _ in connection.statements]
+    assert any(
+        "FROM ingestion.processing_job WITH (UPDLOCK,HOLDLOCK)" in sql
+        for sql in statements
+    )
+    assert any("sys.sp_getapplock" in sql for sql in statements)
+    assert any(
+        "FROM ingestion.initial_import_finalize_intent i WITH (UPDLOCK,HOLDLOCK)"
+        in sql
+        and "JOIN dataset.dataset_version dv WITH (UPDLOCK,HOLDLOCK)" in sql
+        and "JOIN ingestion.processing_run pr WITH (UPDLOCK,HOLDLOCK)" in sql
+        for sql in statements
+    )
+    assert any(
+        "FROM ingestion.import_batch WITH (UPDLOCK,HOLDLOCK)" in sql
+        for sql in statements
+    )
+    lineage_sql, lineage_parameters = next(
+        (sql, parameters)
+        for sql, parameters in connection.statements
+        if "AS batch_file_count" in sql
+    )
+    assert "processing_run_input_file" in lineage_sql
+    assert "dataset.dataset_version_run" in lineage_sql
+    assert lineage_parameters == {"batch": 7, "run": 101, "version": 205}
+    assert any(
+        "SET status='SUPERSEDED',is_current=0" in sql for sql in statements
+    )
+    assert any(
+        "SET status='PUBLISHED',is_current=1" in sql
+        and "status='DRAFT'" in sql
+        for sql in statements
+    )
+    assert any(
+        "processing_run SET status='PUBLISHED'" in sql
+        and "is_current=1" in sql
+        and "status='READY'" in sql
+        for sql in statements
+    )
+    assert any(
+        "processing_run SET status='SUPERSEDED'" in sql
+        and "is_current=0" in sql
+        for sql in statements
+    )
+    result_parameters = next(
+        parameters
+        for sql, parameters in connection.statements
+        if sql.startswith("UPDATE ingestion.processing_result_summary SET data_name")
+    )
+    assert result_parameters["dataset_id"] == 41
+    assert result_parameters["dataset_version_no"] == 5
+    assert any("import_batch SET status='PROCESSED'" in sql for sql in statements)
+    assert any("processing_job SET status='SUCCESS'" in sql for sql in statements)
+    assert any(
+        "initial_import_finalize_intent SET status='FINALIZED'" in sql
+        for sql in statements
+    )
+
+
+def test_reprocess_finalize_locks_and_validates_lifecycle_target() -> None:
+    lifecycle_intent = {
+        **_staged_intent_row(),
+        "lifecycle_action_type": "REPROCESS_UPDATE",
+        "lifecycle_dataset_id": 41,
+        "lifecycle_target_version_id": 204,
+        "lifecycle_dataset_status": "ACTIVE",
+        "lifecycle_target_version_status": "PUBLISHED",
+        "lifecycle_target_is_current": True,
+        "lifecycle_target_batch_id": 7,
+    }
+    connection = _AtomicFinalizeConnection(intent_row=lifecycle_intent)
+    engine = _TransactionalFakeEngine(connection)
+
+    result = SqlJobService(engine).finalize_initial_import(  # type: ignore[arg-type]
+        job_id=91,
+        lease_token=_LEASE_TOKEN,
+        processing_run_id=101,
+        dataset_version_id=205,
+        summary=_atomic_summary(),
+    )
+
+    assert result.status == JobStatus.SUCCESS
+    intent_sql = next(
+        sql for sql, _ in connection.statements if sql.startswith("SELECT i.job_id")
+    )
+    assert "lifecycle_job_target lt WITH (UPDLOCK,HOLDLOCK)" in intent_sql
+    assert "dataset.dataset ld WITH (UPDLOCK,HOLDLOCK)" in intent_sql
+    assert "dataset.dataset_version ldv WITH (UPDLOCK,HOLDLOCK)" in intent_sql
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"lifecycle_dataset_status": "ARCHIVED"},
+        {"lifecycle_target_is_current": False},
+        {"lifecycle_dataset_id": 99},
+        {"lifecycle_target_batch_id": 99},
+    ],
+)
+def test_reprocess_finalize_rejects_archived_replaced_or_wrong_canonical_target(
+    overrides: dict[str, Any],
+) -> None:
+    lifecycle_intent = {
+        **_staged_intent_row(),
+        "lifecycle_action_type": "REPROCESS_UPDATE",
+        "lifecycle_dataset_id": 41,
+        "lifecycle_target_version_id": 204,
+        "lifecycle_dataset_status": "ACTIVE",
+        "lifecycle_target_version_status": "PUBLISHED",
+        "lifecycle_target_is_current": True,
+        "lifecycle_target_batch_id": 7,
+        **overrides,
+    }
+    connection = _AtomicFinalizeConnection(intent_row=lifecycle_intent)
+    engine = _TransactionalFakeEngine(connection)
+
+    with pytest.raises(DomainError) as exc_info:
+        SqlJobService(engine).finalize_initial_import(  # type: ignore[arg-type]
+            job_id=91,
+            lease_token=_LEASE_TOKEN,
+            processing_run_id=101,
+            dataset_version_id=205,
+            summary=_atomic_summary(),
+        )
+
+    assert exc_info.value.code == "LIFECYCLE_TARGET_DRIFTED"
+    assert engine.rollback_count == 1
+    assert not any(sql.startswith("UPDATE ") for sql, _ in connection.statements)
+
+
+def test_finalize_initial_import_wrong_lease_fails_closed() -> None:
+    connection = _AtomicFinalizeConnection(
+        job_row=_atomic_job_row(lease_token="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
+    )
+    engine = _TransactionalFakeEngine(connection)
+    service = SqlJobService(engine)  # type: ignore[arg-type]
+
+    with pytest.raises(DomainError) as exc_info:
+        service.finalize_initial_import(
+            job_id=91,
+            lease_token=_LEASE_TOKEN,
+            processing_run_id=101,
+            dataset_version_id=205,
+            summary=_atomic_summary(),
+        )
+
+    assert exc_info.value.code == "JOB_LEASE_LOST"
+    assert engine.rollback_count == 1
+    assert not any(sql.startswith("UPDATE ") for sql, _ in connection.statements)
+
+
+def test_finalize_idempotency_requires_same_lease_run_and_version() -> None:
+    finalized_intent = {
+        **_staged_intent_row(),
+        "status": "FINALIZED",
+        "finalized_lease_token": _LEASE_TOKEN,
+        "version_status": "PUBLISHED",
+        "is_current": True,
+        "run_status": "PUBLISHED",
+    }
+    connection = _AtomicFinalizeConnection(
+        job_row=_atomic_job_row(status="SUCCESS", lease_token=None),
+        intent_row=finalized_intent,
+    )
+    engine = _TransactionalFakeEngine(connection)
+    service = SqlJobService(engine)  # type: ignore[arg-type]
+
+    repeated = service.finalize_initial_import(
+        job_id=91,
+        lease_token=_LEASE_TOKEN,
+        processing_run_id=101,
+        dataset_version_id=205,
+        summary=_atomic_summary(),
+    )
+    assert repeated.status == JobStatus.SUCCESS
+
+    with pytest.raises(DomainError) as exc_info:
+        service.finalize_initial_import(
+            job_id=91,
+            lease_token=_LEASE_TOKEN,
+            processing_run_id=999,
+            dataset_version_id=205,
+            summary=_atomic_summary(),
+        )
+    assert exc_info.value.code == "JOB_LEASE_LOST"
+
+
+def test_finalize_initial_import_incomplete_lineage_fails_closed() -> None:
+    connection = _AtomicFinalizeConnection(
+        links={
+            "batch_file_count": 3,
+            "lineage_count": 2,
+            "wrong_batch_count": 0,
+            "unverified_lineage_count": 0,
+            "version_run_count": 1,
+        }
+    )
+    engine = _TransactionalFakeEngine(connection)
+    service = SqlJobService(engine)  # type: ignore[arg-type]
+
+    with pytest.raises(DomainError) as exc_info:
+        service.finalize_initial_import(
+            job_id=91,
+            lease_token=_LEASE_TOKEN,
+            processing_run_id=101,
+            dataset_version_id=205,
+            summary=_atomic_summary(),
+        )
+
+    assert exc_info.value.code == "ATOMIC_LINEAGE_INCOMPLETE"
+    assert engine.rollback_count == 1
+    assert not any(sql.startswith("UPDATE ") for sql, _ in connection.statements)
+
+
+def test_finalize_initial_import_rejects_unverified_legacy_lineage() -> None:
+    connection = _AtomicFinalizeConnection(
+        links={
+            "batch_file_count": 3,
+            "lineage_count": 3,
+            "wrong_batch_count": 0,
+            "unverified_lineage_count": 1,
+            "version_run_count": 1,
+        }
+    )
+    engine = _TransactionalFakeEngine(connection)
+    service = SqlJobService(engine)  # type: ignore[arg-type]
+
+    with pytest.raises(DomainError) as exc_info:
+        service.finalize_initial_import(
+            job_id=91,
+            lease_token=_LEASE_TOKEN,
+            processing_run_id=101,
+            dataset_version_id=205,
+            summary=_atomic_summary(),
+        )
+
+    assert exc_info.value.code == "ATOMIC_LINEAGE_INCOMPLETE"
+    assert engine.rollback_count == 1
+
+
+class _InjectedFinalizeFault(RuntimeError):
+    pass
+
+
+@pytest.mark.parametrize(
+    "fault_point",
+    [
+        "after_previous_current_superseded",
+        "after_new_version_published",
+        "after_result_persisted",
+        "after_batch_completed",
+        "after_job_completed",
+        "after_intent_finalized",
+    ],
+)
+def test_finalize_faults_propagate_and_rollback_transaction(fault_point: str) -> None:
+    connection = _AtomicFinalizeConnection()
+    engine = _TransactionalFakeEngine(connection)
+
+    def inject(point: str) -> None:
+        if point == fault_point:
+            raise _InjectedFinalizeFault(point)
+
+    service = SqlJobService(engine, fault_injector=inject)  # type: ignore[arg-type]
+
+    with pytest.raises(_InjectedFinalizeFault, match=fault_point):
+        service.finalize_initial_import(
+            job_id=91,
+            lease_token=_LEASE_TOKEN,
+            processing_run_id=101,
+            dataset_version_id=205,
+            summary=_atomic_summary(),
+        )
+
+    assert engine.begin_count == 1
+    assert engine.commit_count == 0
+    assert engine.rollback_count == 1

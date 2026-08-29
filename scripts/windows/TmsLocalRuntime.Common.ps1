@@ -46,12 +46,9 @@ function Set-TmsLocalPrivateDirectory {
     )
 
     New-Item -ItemType Directory -Path $Path -Force | Out-Null
-    $directory = Get-Item -LiteralPath $Path -ErrorAction Stop
-    $acl = $directory.GetAccessControl()
+    $directory = [IO.DirectoryInfo]::new($Path)
+    $acl = [Security.AccessControl.DirectorySecurity]::new()
     $acl.SetAccessRuleProtection($true, $false)
-    foreach ($existingRule in @($acl.Access)) {
-        [void]$acl.RemoveAccessRuleSpecific($existingRule)
-    }
     $inheritance = [Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit'
     $propagation = [Security.AccessControl.PropagationFlags]::None
     $allow = [Security.AccessControl.AccessControlType]::Allow
@@ -70,7 +67,7 @@ function Set-TmsLocalPrivateDirectory {
         )
         [void]$acl.AddAccessRule($rule)
     }
-    $directory.SetAccessControl($acl)
+    [IO.FileSystemAclExtensions]::SetAccessControl($directory, $acl)
 }
 
 function Write-TmsLocalState {

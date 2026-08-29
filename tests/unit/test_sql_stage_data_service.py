@@ -14,6 +14,9 @@ class _Result:
     def __init__(self, rowcount: int) -> None:
         self.rowcount = rowcount
 
+    def scalar_one_or_none(self):
+        return 1 if self.rowcount else None
+
 
 class _Connection:
     def __init__(self, rowcounts: tuple[int, ...]) -> None:
@@ -56,14 +59,29 @@ class _RegisterConnection:
 
 
 def test_worker_only_moves_a_queued_batch_to_processing() -> None:
-    connection = _Connection((0,))
+    connection = _Connection((0, 0))
     service = SqlStageDataService(_Engine(connection))  # type: ignore[arg-type]
 
     with pytest.raises(DomainError) as exc_info:
-        service.worker_mark_processing(7)
+        service.worker_mark_processing(
+            7, 41, "11111111-1111-1111-1111-111111111111"
+        )
 
     assert exc_info.value.code == "BATCH_STATE_CONFLICT"
-    assert "status='QUEUED'" in connection.statements[0]
+    assert "b.status='QUEUED'" in connection.statements[0]
+    assert "finalize_protocol='ATOMIC_V1'" in connection.statements[0]
+    assert "lease_token=CONVERT(uniqueidentifier,:lease_token)" in connection.statements[0]
+
+
+def test_worker_processing_transition_is_idempotent_for_the_same_active_lease() -> None:
+    connection = _Connection((0, 1))
+    service = SqlStageDataService(_Engine(connection))  # type: ignore[arg-type]
+
+    service.worker_mark_processing(
+        7, 41, "11111111-1111-1111-1111-111111111111"
+    )
+
+    assert "b.status='PROCESSING'" in connection.statements[1]
 
 
 def test_legacy_mark_queued_cannot_regress_terminal_batches() -> None:

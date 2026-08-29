@@ -1,8 +1,8 @@
 import { App as AntApp } from "antd";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { clearToken, CurrentUser, getMe, login as loginApi, logout as logoutApi, saveToken } from "../../api/auth";
+import { clearToken, CurrentUser, getMe, login as loginApi, logout as logoutApi, type PermissionCode, saveToken } from "../../api/auth";
 
-type AuthContextValue = { user: CurrentUser | null; loading: boolean; login: (loginName: string, password: string) => Promise<void>; logout: () => Promise<void>; can: (permission: string) => boolean };
+type AuthContextValue = { user: CurrentUser | null; loading: boolean; login: (loginName: string, password: string) => Promise<void>; logout: () => Promise<void>; can: (permission: PermissionCode) => boolean };
 const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { message } = AntApp.useApp(); const [user, setUser] = useState<CurrentUser | null>(null); const [loading, setLoading] = useState(true);

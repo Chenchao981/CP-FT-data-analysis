@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import inspect
 import json
 from pathlib import Path
 
@@ -146,6 +147,16 @@ def test_parse_ft_scatter_reconciles_manifest_specs_and_rows(tmp_path: Path) -> 
     assert parsed.rows[0].logical_key == "FT:L1:S1:1"
     assert parsed.rows[1].values == ("", "11")
     assert parsed.spec_items[0].test_condition == "ID=1mA"
+
+
+def test_ft_writer_uses_atomic_draft_stage_without_current_publish() -> None:
+    source = inspect.getsource(FtXlsxScatterWriter.write)
+
+    assert "prepare_atomic_stage" in source
+    assert "insert_draft_dataset_version" in source
+    assert "record_atomic_stage" in source
+    assert "PUBLISHED" not in source
+    assert "SUPERSEDED" not in source
 
 
 def test_parse_ft_scatter_isolates_different_source_specs(tmp_path: Path) -> None:
@@ -384,7 +395,9 @@ def test_manual_lot_adapter_artifacts_reach_canonical_write_boundary(
         FtXlsxScatterWriter(engine).write(  # type: ignore[arg-type]
             job_id=41,
             import_batch_id=17,
+            lease_token="11111111-1111-1111-1111-111111111111",
             artifacts=artifacts,
+            finalize_summary={"unit_count": 1},
         )
 
     assert engine.called is True

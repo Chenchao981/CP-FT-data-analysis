@@ -45,12 +45,14 @@ def main() -> None:
     receipt_id: int | None = None
     import_job_id: int | None = None
     lease_job_id: int | None = None
+    previous_current_run_id: int | None = None
+    previous_current_version_ids: tuple[int, ...] = ()
     try:
         with engine.begin() as connection:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert revision == "sql2014_0014", revision
+            assert revision == "sql2014_0018", revision
             route_b_count = connection.execute(
                 text(
                     "SELECT COUNT(*) FROM sys.tables t JOIN sys.schemas s "
@@ -84,6 +86,29 @@ def main() -> None:
             )
             if not Path(source["canonical_storage_uri"]).is_file():
                 raise FileNotFoundError(source["canonical_storage_uri"])
+            previous_current_run_id = connection.execute(
+                text(
+                    "SELECT processing_run_id FROM ingestion.processing_run "
+                    "WHERE source_file_id=:source AND status='PUBLISHED' "
+                    "AND is_current=1"
+                ),
+                {"source": source["source_file_id"]},
+            ).scalar_one_or_none()
+            if previous_current_run_id is not None:
+                previous_current_version_ids = tuple(
+                    int(row[0])
+                    for row in connection.execute(
+                        text(
+                            "SELECT dv.dataset_version_id "
+                            "FROM dataset.dataset_version dv "
+                            "JOIN dataset.dataset_version_run dvr "
+                            "ON dvr.dataset_version_id=dv.dataset_version_id "
+                            "WHERE dvr.processing_run_id=:run "
+                            "AND dv.status='PUBLISHED' AND dv.is_current=1"
+                        ),
+                        {"run": previous_current_run_id},
+                    )
+                )
             batch_id = connection.execute(
                 text(
                     "INSERT ingestion.import_batch(source_channel,uploaded_by,status,owner_user_id,"
@@ -150,6 +175,7 @@ def main() -> None:
                     CpCsvTripletWriter(engine),
                     FtXlsxScatterWriter(engine),
                     work_root=work_root,
+                    finalizer=queue,
                 )
             },
             worker_id=f"route-a-verification-{token[:8]}",
@@ -187,6 +213,46 @@ def main() -> None:
                 )
             }
             assert artifact_roles == {"cleaned", "yield", "spec"}, artifact_roles
+            atomic_state = (
+                connection.execute(
+                    text(
+                        "SELECT i.status AS intent_status,dv.status AS version_status,"
+                        "dv.is_current,pr.status AS run_status,"
+                        "pr.is_current AS run_is_current,j.status AS job_status,"
+                        "b.status AS batch_status,"
+                        "(SELECT COUNT(*) FROM ingestion.import_batch_file "
+                        "WHERE import_batch_id=b.import_batch_id) AS batch_file_count,"
+                        "(SELECT COUNT(*) FROM ingestion.processing_run_input_file ri "
+                        "WHERE ri.processing_run_id=pr.processing_run_id) AS lineage_count,"
+                        "(SELECT COUNT(*) FROM ingestion.processing_run_input_file ri "
+                        "WHERE ri.processing_run_id=pr.processing_run_id "
+                        "AND ri.lineage_basis<>'WRITER_VERIFIED') AS unverified_count "
+                        "FROM ingestion.initial_import_finalize_intent i "
+                        "JOIN ingestion.processing_job j ON j.job_id=i.job_id "
+                        "JOIN ingestion.import_batch b ON b.import_batch_id=i.import_batch_id "
+                        "JOIN ingestion.processing_run pr "
+                        "ON pr.processing_run_id=i.processing_run_id "
+                        "JOIN dataset.dataset_version dv "
+                        "ON dv.dataset_version_id=i.dataset_version_id "
+                        "WHERE i.job_id=:job"
+                    ),
+                    {"job": import_job_id},
+                )
+                .mappings()
+                .one()
+            )
+            assert dict(atomic_state) == {
+                "intent_status": "FINALIZED",
+                "version_status": "PUBLISHED",
+                "is_current": True,
+                "run_status": "PUBLISHED",
+                "run_is_current": True,
+                "job_status": "SUCCESS",
+                "batch_status": "PROCESSED",
+                "batch_file_count": 1,
+                "lineage_count": 1,
+                "unverified_count": 0,
+            }, atomic_state
 
         lease_request = CreateJobRequest(
             source_file_id=int(source["source_file_id"]),
@@ -231,10 +297,18 @@ def main() -> None:
         print("route_a_schema=PASS")
         print("route_a_cleaner_registry=PASS")
         print("route_a_initial_worker=PASS")
+        print("route_a_atomic_finalize=PASS")
         print("route_a_worker_lease_recovery=PASS")
     finally:
         with engine.begin() as connection:
             if import_job_id is not None:
+                connection.execute(
+                    text(
+                        "DELETE ingestion.initial_import_finalize_intent "
+                        "WHERE job_id=:job"
+                    ),
+                    {"job": import_job_id},
+                )
                 run_ids = [
                     int(row[0])
                     for row in connection.execute(
@@ -282,6 +356,13 @@ def main() -> None:
                 for run_id in run_ids:
                     connection.execute(
                         text(
+                            "DELETE ingestion.processing_run_input_file "
+                            "WHERE processing_run_id=:run"
+                        ),
+                        {"run": run_id},
+                    )
+                    connection.execute(
+                        text(
                             "DELETE m FROM test.measurement m JOIN test.unit_result ur ON ur.unit_id=m.unit_id "
                             "JOIN test.test_run tr ON tr.run_id=ur.run_id WHERE tr.processing_run_id=:run"
                         ),
@@ -302,6 +383,33 @@ def main() -> None:
                         text("DELETE ingestion.processing_run WHERE processing_run_id=:run"),
                         {"run": run_id},
                     )
+                if previous_current_run_id is not None:
+                    restored_run = connection.execute(
+                        text(
+                            "UPDATE ingestion.processing_run SET status='PUBLISHED',"
+                            "is_current=1 WHERE processing_run_id=:run "
+                            "AND status='SUPERSEDED' AND is_current=0"
+                        ),
+                        {"run": previous_current_run_id},
+                    )
+                    if restored_run.rowcount != 1:
+                        raise RuntimeError(
+                            "failed to restore the pre-verification current run"
+                        )
+                    for version_id in previous_current_version_ids:
+                        restored_version = connection.execute(
+                            text(
+                                "UPDATE dataset.dataset_version "
+                                "SET status='PUBLISHED',is_current=1 "
+                                "WHERE dataset_version_id=:version "
+                                "AND status='SUPERSEDED' AND is_current=0"
+                            ),
+                            {"version": version_id},
+                        )
+                        if restored_version.rowcount != 1:
+                            raise RuntimeError(
+                                "failed to restore a pre-verification Dataset Current"
+                            )
                 for dataset_id in dataset_ids:
                     connection.execute(
                         text("DELETE dataset.dataset WHERE dataset_id=:dataset"),
@@ -309,6 +417,13 @@ def main() -> None:
                     )
             for job_id in (lease_job_id, import_job_id):
                 if job_id is not None:
+                    connection.execute(
+                        text(
+                            "DELETE governance.audit_log "
+                            "WHERE correlation_id=:correlation"
+                        ),
+                        {"correlation": f"job:{job_id}"},
+                    )
                     connection.execute(
                         text("DELETE ingestion.processing_job WHERE job_id=:job"),
                         {"job": job_id},

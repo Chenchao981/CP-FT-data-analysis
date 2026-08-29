@@ -32,10 +32,10 @@ def test_lot_input_migration_is_sql2014_safe_and_keeps_test_run_nullable() -> No
     assert "OPENJSON" not in sql
 
 
-def test_existing_release_bootstrap_requires_lot_input_schema() -> None:
+def test_existing_release_bootstrap_requires_current_atomic_schema() -> None:
     script = (ROOT / "scripts" / "g0" / "bootstrap_existing_cleaner_releases.py").read_text(
         encoding="utf-8-sig"
     )
-    assert 'revision != "sql2014_0014"' in script
+    assert 'revision != "sql2014_0018"' in script
     assert "Cleaner version checksum collision" in script
     assert "artifact_uri=:artifact_uri" in script

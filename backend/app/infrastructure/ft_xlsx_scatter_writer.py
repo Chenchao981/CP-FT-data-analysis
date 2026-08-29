@@ -5,6 +5,7 @@ import gzip
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -14,6 +15,12 @@ from sqlalchemy import Engine, text
 from sqlalchemy.engine import Connection
 
 from app.infrastructure.existing_cleaner_runner import CleanerArtifact
+from app.infrastructure.initial_import_staging import (
+    insert_draft_dataset_version,
+    prepare_atomic_stage,
+    record_atomic_stage,
+)
+from app.infrastructure.sql_master_data_service import observe_product_crosswalk
 
 
 class FtXlsxScatterError(ValueError):
@@ -76,6 +83,7 @@ class FtSourceSpec:
 class FtCanonicalImportResult:
     processing_run_id: int
     dataset_id: int
+    dataset_version_id: int
     dataset_version_no: int
     spec_set_id: int | None
     unit_count: int
@@ -746,35 +754,36 @@ class FtXlsxScatterWriter:
         *,
         job_id: int,
         import_batch_id: int,
+        lease_token: str,
         artifacts: tuple[CleanerArtifact, ...],
+        finalize_summary: Mapping[str, Any],
     ) -> FtCanonicalImportResult:
         output = parse_ft_xlsx_scatter(artifacts)
         measurement_count = len(output.rows) * len(output.parameters)
         with self._engine.begin() as connection:
-            context = (
-                connection.execute(
-                    text(
-                        "SELECT b.owner_user_id,b.business_domain,b.test_stage,b.factory_code,"
-                        "j.status AS job_status,cr.output_contract_version,sf.source_file_id "
-                        "FROM ingestion.import_batch b "
-                        "JOIN ingestion.processing_job j ON j.import_batch_id=b.import_batch_id "
-                        "JOIN ingestion.cleaner_release cr ON cr.cleaner_release_id=j.cleaner_release_id "
-                        "CROSS APPLY(SELECT TOP(1) sfr.source_file_id FROM ingestion.import_batch_file ibf "
-                        "JOIN ingestion.source_file_receipt sfr ON sfr.receipt_id=ibf.receipt_id "
-                        "WHERE ibf.import_batch_id=b.import_batch_id ORDER BY ibf.ordinal_no) sf "
-                        "WHERE b.import_batch_id=:batch AND j.job_id=:job"
-                    ),
-                    {"batch": import_batch_id, "job": job_id},
-                )
-                .mappings()
-                .one_or_none()
+            preparation = prepare_atomic_stage(
+                connection,
+                job_id=job_id,
+                import_batch_id=import_batch_id,
+                lease_token=lease_token,
+                artifacts=artifacts,
             )
-            if context is None:
-                raise FtXlsxScatterError("FT import job/batch context was not found")
-            if context["job_status"] != "RUNNING" or context["test_stage"] != "FT":
-                raise FtXlsxScatterError("FT import job must be a RUNNING FT task")
+            context = preparation.context
+            if context["test_stage"] != "FT":
+                raise FtXlsxScatterError("FT writer received a non-FT upload task")
             if context["output_contract_version"] != "FT_XLSX_SCATTER_V1":
                 raise FtXlsxScatterError("FT Cleaner output contract is not supported")
+            if preparation.existing is not None:
+                existing = preparation.existing
+                return FtCanonicalImportResult(
+                    processing_run_id=existing.processing_run_id,
+                    dataset_id=existing.dataset_id,
+                    dataset_version_id=existing.dataset_version_id,
+                    dataset_version_no=existing.dataset_version_no,
+                    spec_set_id=existing.spec_set_id,
+                    unit_count=existing.unit_count,
+                    measurement_count=existing.measurement_count,
+                )
 
             context_factory = str(context["factory_code"]).strip().upper()
             context_factory = {
@@ -814,6 +823,13 @@ class FtXlsxScatterWriter:
                     "VALUES(:code,:name,1)",
                     {"code": output.product_name, "name": output.product_name},
                 )
+            observe_product_crosswalk(
+                connection,
+                supplier_id=int(supplier_id),
+                product_id=int(product_id),
+                test_stage="FT",
+                raw_product_code=output.product_name,
+            )
 
             program_code = str(context["output_contract_version"])
             program_id = connection.execute(
@@ -890,7 +906,7 @@ class FtXlsxScatterWriter:
                 "SYSUTCDATETIME(),SYSUTCDATETIME(),:metadata)",
                 {
                     "job": job_id,
-                    "source": context["source_file_id"],
+                    "source": preparation.source_file_id,
                     "parser": parser_profile_id,
                     "units": len(output.rows),
                     "measurements": measurement_count,
@@ -902,6 +918,7 @@ class FtXlsxScatterWriter:
                             "spec_set_ids": spec_set_ids,
                             "spec_selection_rule": "SOURCE_RUN_SPEC_FINGERPRINT",
                             "pass_fail_available": False,
+                            "atomic_finalize_summary": dict(finalize_summary),
                         },
                         ensure_ascii=False,
                     ),
@@ -1026,95 +1043,49 @@ class FtXlsxScatterWriter:
                         "owner": context["owner_user_id"],
                     },
                 )
-            previous = connection.execute(
-                text(
-                    "SELECT dataset_version_id FROM dataset.dataset_version WITH (UPDLOCK,HOLDLOCK) "
-                    "WHERE dataset_id=:dataset AND status='PUBLISHED' AND is_current=1"
-                ),
-                {"dataset": dataset_id},
-            ).scalar_one_or_none()
-            version_no = int(
-                connection.execute(
-                    text(
-                        "SELECT ISNULL(MAX(version_no),0)+1 FROM dataset.dataset_version WITH (UPDLOCK,HOLDLOCK) "
-                        "WHERE dataset_id=:dataset"
-                    ),
-                    {"dataset": dataset_id},
-                ).scalar_one()
-            )
-            if previous is not None:
-                connection.execute(
-                    text(
-                        "UPDATE dataset.dataset_version SET status='SUPERSEDED',is_current=0 "
-                        "WHERE dataset_version_id=:previous"
-                    ),
-                    {"previous": previous},
-                )
-            version_id = self._scalar(
+            version_id, version_no = insert_draft_dataset_version(
                 connection,
-                "INSERT dataset.dataset_version(dataset_id,version_no,input_batch_id,canonical_model_version,status,"
-                "is_current,row_count,unit_count,measurement_count,published_by,published_at_utc,"
-                "supersedes_dataset_version_id,spec_set_id,metadata_json) OUTPUT INSERTED.dataset_version_id "
-                "VALUES(:dataset,:version,:batch,'1.0','PUBLISHED',1,:units,:units,:measurements,:owner,"
-                "SYSUTCDATETIME(),:previous,:spec,:metadata)",
-                {
-                    "dataset": dataset_id,
-                    "version": version_no,
-                    "batch": import_batch_id,
-                    "units": len(output.rows),
-                    "measurements": measurement_count,
-                    "owner": context["owner_user_id"],
-                    "previous": previous,
-                    "spec": dataset_spec_set_id,
-                    "metadata": json.dumps(
-                        {
-                            "spec_selection_rule": "SOURCE_RUN_SPEC_FINGERPRINT",
-                            "spec_set_ids": spec_set_ids,
-                            "spec_bindings": [
-                                {
-                                    "lot_id": source_spec.lot_id,
-                                    "source_id": source_spec.source_id,
-                                    "source_file": source_spec.source_file,
-                                    "tester_id": source_spec.tester_id,
-                                    "program_version_id": profiles_by_source[
-                                        (source_spec.source_id, source_spec.lot_id)
-                                    ][0],
-                                    "spec_set_id": profiles_by_source[
-                                        (source_spec.source_id, source_spec.lot_id)
-                                    ][1],
-                                }
-                                for source_spec in output.source_specs
-                            ],
-                            "pass_fail_available": False,
-                        },
-                        ensure_ascii=False,
-                    ),
-                },
-            )
-            connection.execute(
-                text(
-                    "INSERT dataset.dataset_version_run(dataset_version_id,processing_run_id,run_role,ordinal_no) "
-                    "VALUES(:version,:processing,'PRIMARY',1)"
+                dataset_id=int(dataset_id),
+                import_batch_id=import_batch_id,
+                unit_count=len(output.rows),
+                measurement_count=measurement_count,
+                spec_set_id=dataset_spec_set_id,
+                metadata_json=json.dumps(
+                    {
+                        "spec_selection_rule": "SOURCE_RUN_SPEC_FINGERPRINT",
+                        "spec_set_ids": spec_set_ids,
+                        "spec_bindings": [
+                            {
+                                "lot_id": source_spec.lot_id,
+                                "source_id": source_spec.source_id,
+                                "source_file": source_spec.source_file,
+                                "tester_id": source_spec.tester_id,
+                                "program_version_id": profiles_by_source[
+                                    (source_spec.source_id, source_spec.lot_id)
+                                ][0],
+                                "spec_set_id": profiles_by_source[
+                                    (source_spec.source_id, source_spec.lot_id)
+                                ][1],
+                            }
+                            for source_spec in output.source_specs
+                        ],
+                        "pass_fail_available": False,
+                    },
+                    ensure_ascii=False,
                 ),
-                {"version": version_id, "processing": processing_run_id},
             )
-            connection.execute(
-                text(
-                    "UPDATE ingestion.processing_run SET status='PUBLISHED',is_current=0 "
-                    "WHERE processing_run_id=:processing"
-                ),
-                {"processing": processing_run_id},
-            )
-            connection.execute(
-                text(
-                    "UPDATE ingestion.processing_artifact SET processing_run_id=:processing "
-                    "WHERE job_id=:job"
-                ),
-                {"processing": processing_run_id, "job": job_id},
+            record_atomic_stage(
+                connection,
+                job_id=job_id,
+                import_batch_id=import_batch_id,
+                processing_run_id=processing_run_id,
+                dataset_version_id=version_id,
+                preparation=preparation,
             )
         return FtCanonicalImportResult(
             processing_run_id=processing_run_id,
             dataset_id=int(dataset_id),
+            dataset_version_id=version_id,
             dataset_version_no=version_no,
             spec_set_id=(
                 int(dataset_spec_set_id)

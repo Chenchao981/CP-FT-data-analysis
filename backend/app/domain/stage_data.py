@@ -18,6 +18,18 @@ class StoredUpload:
 
 
 @dataclass(frozen=True, slots=True)
+class FormalSourceManifestPreview:
+    root_code: str
+    relative_path: str
+    mode: str
+    recursive: bool
+    file_count: int
+    total_bytes: int
+    sha: str
+    allowed_suffixes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class StageUploadRow:
     import_batch_id: int
     sequence_no: int

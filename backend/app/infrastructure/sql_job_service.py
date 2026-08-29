@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -22,12 +22,26 @@ from app.domain.jobs import (
     TriggerType,
 )
 
+_LIFECYCLE_APPLOCK_BY_JOB_SQL = (
+    "DECLARE @tms_lifecycle_dataset_id bigint=("
+    "SELECT dataset_id FROM ingestion.lifecycle_job_target WHERE job_id=:job_id); "
+    "IF @tms_lifecycle_dataset_id IS NOT NULL BEGIN "
+    "DECLARE @tms_lifecycle_resource nvarchar(255)="
+    "N'TMS:LIFECYCLE:DATASET:'+CONVERT(nvarchar(20),@tms_lifecycle_dataset_id); "
+    "DECLARE @tms_lifecycle_lock_result int; "
+    "EXEC @tms_lifecycle_lock_result=sys.sp_getapplock "
+    "@Resource=@tms_lifecycle_resource,@LockMode='Exclusive',"
+    "@LockOwner='Transaction',@LockTimeout=10000; "
+    "IF @tms_lifecycle_lock_result<0 "
+    "RAISERROR('TMS lifecycle Dataset lock unavailable.',16,1); END; "
+)
+
 JOB_COLUMNS = """
 job_id, source_file_id, import_batch_id, analysis_session_id, cleaner_release_id, job_type,
 trigger_type, requested_by, requested_by_user_id, reason, status, requested_at_utc,
 started_at_utc, finished_at_utc, error_code, error_message, idempotency_key,
 not_before_utc, lease_token, lease_owner, lease_expires_at_utc, heartbeat_at_utc,
-attempt_count, max_attempts, parent_job_id
+attempt_count, max_attempts, parent_job_id, finalize_protocol
 """
 
 
@@ -64,6 +78,7 @@ def _to_job(row: Mapping[str, Any]) -> Job:
         attempt_count=row["attempt_count"],
         max_attempts=row["max_attempts"],
         parent_job_id=row.get("parent_job_id"),
+        finalize_protocol=str(row.get("finalize_protocol") or "LEGACY"),
     )
 
 
@@ -77,6 +92,16 @@ def _lease_tokens_equal(stored: str | None, supplied: str) -> bool:
         return UUID(str(stored)) == UUID(supplied)
     except (AttributeError, TypeError, ValueError):
         return False
+
+
+def _leased_job_is_active(job: Job, supplied: str, now: datetime) -> bool:
+    expires = job.lease_expires_at_utc
+    aware_now = now if now.tzinfo is not None else now.replace(tzinfo=UTC)
+    return (
+        _lease_tokens_equal(job.lease_token, supplied)
+        and expires is not None
+        and expires >= aware_now
+    )
 
 
 def _assert_idempotent_job_scope(
@@ -134,6 +159,21 @@ def _mark_exhausted_initial_import_batches_failed(
     exhausted_rows: list[Mapping[str, Any]],
     now: datetime,
 ) -> None:
+    for row in exhausted_rows:
+        if (
+            row["job_type"] == JobType.INITIAL_IMPORT.value
+            and row.get("finalize_protocol") == "ATOMIC_V1"
+            and row.get("job_id") is not None
+            and row.get("import_batch_id") is not None
+        ):
+            _abort_atomic_initial_import_stage(
+                connection,
+                job_id=int(row["job_id"]),
+                batch_id=int(row["import_batch_id"]),
+                now=now,
+                error_code="MAX_ATTEMPTS_EXCEEDED",
+                error_message="Worker租约多次失效，已达到最大尝试次数",
+            )
     batch_ids = {
         int(row["import_batch_id"])
         for row in exhausted_rows
@@ -155,9 +195,115 @@ def _mark_exhausted_initial_import_batches_failed(
         )
 
 
+def _abort_atomic_initial_import_stage(
+    connection: Connection,
+    *,
+    job_id: int,
+    batch_id: int,
+    now: datetime,
+    error_code: str,
+    error_message: str,
+) -> None:
+    intent = (
+        connection.execute(
+            text(
+                "SELECT import_batch_id,processing_run_id,dataset_version_id,status "
+                "FROM ingestion.initial_import_finalize_intent WITH (UPDLOCK,HOLDLOCK) "
+                "WHERE job_id=:job"
+            ),
+            {"job": job_id},
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if intent is not None and int(intent["import_batch_id"]) != batch_id:
+        raise DomainError(
+            "ATOMIC_ABORT_SCOPE_MISMATCH",
+            "Finalize Intent 与待失败批次不一致，拒绝清理",
+            409,
+        )
+    if intent is not None and str(intent["status"]) not in {"STAGED", "ABORTED"}:
+        raise DomainError(
+            "ATOMIC_ABORT_STATE_CONFLICT",
+            "已完成发布的 Finalize Intent 不得转为 ABORTED",
+            409,
+        )
+    if intent is not None and str(intent["status"]) == "STAGED":
+        run_failed = connection.execute(
+            text(
+                "UPDATE ingestion.processing_run SET status='FAILED',finished_at_utc=:now "
+                "WHERE processing_run_id=:run AND status='READY'"
+            ),
+            {"run": intent["processing_run_id"], "now": now},
+        )
+        if run_failed.rowcount != 1:
+            raise DomainError(
+                "ATOMIC_ABORT_RUN_STATE_CONFLICT",
+                "STAGED Processing Run 已发生状态漂移，拒绝清理",
+                409,
+            )
+        version_archived = connection.execute(
+            text(
+                "UPDATE dataset.dataset_version SET status='ARCHIVED',is_current=0 "
+                "WHERE dataset_version_id=:version AND status='DRAFT' AND is_current=0"
+            ),
+            {"version": intent["dataset_version_id"]},
+        )
+        if version_archived.rowcount != 1:
+            raise DomainError(
+                "ATOMIC_ABORT_VERSION_STATE_CONFLICT",
+                "STAGED Dataset Version 已发生状态漂移，拒绝清理",
+                409,
+            )
+        intent_aborted = connection.execute(
+            text(
+                "UPDATE ingestion.initial_import_finalize_intent SET status='ABORTED',"
+                "aborted_at_utc=:now,abort_error_code=:code,abort_error_message=:message "
+                "WHERE job_id=:job AND status='STAGED'"
+            ),
+            {
+                "job": job_id,
+                "now": now,
+                "code": error_code[:64],
+                "message": error_message[-2000:],
+            },
+        )
+        if intent_aborted.rowcount != 1:
+            raise DomainError(
+                "ATOMIC_ABORT_INTENT_STATE_CONFLICT",
+                "Finalize Intent 已发生状态漂移，拒绝清理",
+                409,
+            )
+    batch_failed = connection.execute(
+        text(
+            "UPDATE ingestion.import_batch SET status='FAILED',completed_at_utc=:now "
+            "WHERE import_batch_id=:batch AND status IN('QUEUED','PROCESSING')"
+        ),
+        {"batch": batch_id, "now": now},
+    )
+    if batch_failed.rowcount != 1 and not (
+        intent is not None and str(intent["status"]) == "ABORTED"
+    ):
+        raise DomainError(
+            "ATOMIC_ABORT_BATCH_STATE_CONFLICT",
+            "正式导入批次已发生状态漂移，拒绝清理",
+            409,
+        )
+
+
 class SqlJobService:
-    def __init__(self, engine: Engine) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        *,
+        fault_injector: Callable[[str], None] | None = None,
+    ) -> None:
         self._engine = engine
+        self._fault_injector = fault_injector
+
+    def _inject_fault(self, point: str) -> None:
+        if self._fault_injector is not None:
+            self._fault_injector(point)
 
     def _create_with_connection(
         self,
@@ -171,13 +317,13 @@ class SqlJobService:
             INSERT ingestion.processing_job(
                 source_file_id, import_batch_id, analysis_session_id, cleaner_release_id,
                 job_type, trigger_type, requested_by, requested_by_user_id,
-                reason, status, idempotency_key, max_attempts
+                reason, status, idempotency_key, max_attempts, finalize_protocol
             )
             OUTPUT {", ".join("INSERTED." + item.strip() for item in JOB_COLUMNS.split(","))}
             VALUES(
                 :source_file_id, :import_batch_id, :analysis_session_id, :cleaner_release_id,
                 :job_type, :trigger_type, :requested_by, :requested_by_user_id,
-                :reason, 'QUEUED', :idempotency_key, :max_attempts
+                :reason, 'QUEUED', :idempotency_key, :max_attempts, :finalize_protocol
             )
             """
         )
@@ -213,6 +359,11 @@ class SqlJobService:
                     "reason": request.reason,
                     "idempotency_key": request.idempotency_key,
                     "max_attempts": request.max_attempts,
+                    "finalize_protocol": (
+                        "ATOMIC_V1"
+                        if request.job_type == JobType.INITIAL_IMPORT
+                        else "LEGACY"
+                    ),
                 },
             )
             .mappings()
@@ -386,7 +537,8 @@ class SqlJobService:
                     "finished_at_utc=:now,error_code='MAX_ATTEMPTS_EXCEEDED',"
                     "error_message=N'Worker租约多次失效，已达到最大尝试次数',"
                     "lease_token=NULL,lease_owner=NULL,lease_expires_at_utc=NULL "
-                    "OUTPUT INSERTED.job_type,INSERTED.import_batch_id "
+                    "OUTPUT INSERTED.job_id,INSERTED.job_type,INSERTED.import_batch_id,"
+                    "INSERTED.finalize_protocol "
                     f"WHERE job_type IN ({type_placeholders}) "
                     "AND attempt_count>=max_attempts AND ("
                     "status='QUEUED' OR (status='RUNNING' AND lease_expires_at_utc<:now))"
@@ -467,6 +619,7 @@ class SqlJobService:
                         OUTPUT {", ".join("INSERTED." + item.strip() for item in JOB_COLUMNS.split(","))}
                         WHERE job_id=:job_id AND status='RUNNING'
                           AND lease_token=CONVERT(uniqueidentifier,:lease_token)
+                          AND lease_expires_at_utc>=:now
                         """
                     ),
                     {
@@ -506,6 +659,37 @@ class SqlJobService:
             raise ValueError("error details are only valid for FAILED jobs")
         now = datetime.now(UTC).replace(tzinfo=None)
         with self._engine.begin() as connection:
+            current_row = (
+                connection.execute(
+                    text(
+                        _LIFECYCLE_APPLOCK_BY_JOB_SQL
+                        + f"SELECT {JOB_COLUMNS} FROM ingestion.processing_job "
+                        "WITH (UPDLOCK,HOLDLOCK) WHERE job_id=:job_id"
+                    ),
+                    {"job_id": job_id},
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if current_row is None:
+                raise DomainError("JOB_NOT_FOUND", f"job {job_id} was not found", 404)
+            current = _to_job(current_row)
+            if current.status != JobStatus.RUNNING or not _leased_job_is_active(
+                current, lease_token, now
+            ):
+                raise DomainError(
+                    "JOB_LEASE_LOST", f"job {job_id} lease is no longer valid", 409
+                )
+            atomic_initial_import = (
+                current.job_type == JobType.INITIAL_IMPORT
+                and current.finalize_protocol == "ATOMIC_V1"
+            )
+            if atomic_initial_import and target_status == JobStatus.SUCCESS:
+                raise DomainError(
+                    "ATOMIC_FINALIZE_REQUIRED",
+                    "ATOMIC_V1正式导入必须通过原子Finalizer完成",
+                    409,
+                )
             row = (
                 connection.execute(
                     text(
@@ -517,6 +701,7 @@ class SqlJobService:
                         OUTPUT {", ".join("INSERTED." + item.strip() for item in JOB_COLUMNS.split(","))}
                         WHERE job_id=:job_id AND status='RUNNING'
                           AND lease_token=CONVERT(uniqueidentifier,:lease_token)
+                          AND lease_expires_at_utc>=:now
                         """
                     ),
                     {
@@ -531,11 +716,557 @@ class SqlJobService:
                 .mappings()
                 .one_or_none()
             )
-        if row is None:
+            if row is None:
+                raise DomainError(
+                    "JOB_LEASE_LOST", f"job {job_id} lease is no longer valid", 409
+                )
+            if (
+                current.job_type == JobType.INITIAL_IMPORT
+                and current.import_batch_id is not None
+                and target_status in {JobStatus.FAILED, JobStatus.CANCELLED}
+            ):
+                failure_code = error_code or "JOB_CANCELLED"
+                failure_message = error_message or "任务已取消"
+                if atomic_initial_import:
+                    _abort_atomic_initial_import_stage(
+                        connection,
+                        job_id=job_id,
+                        batch_id=current.import_batch_id,
+                        now=now,
+                        error_code=failure_code,
+                        error_message=failure_message,
+                    )
+                else:
+                    connection.execute(
+                        text(
+                            "UPDATE ingestion.import_batch SET status='FAILED',completed_at_utc=:now "
+                            "WHERE import_batch_id=:batch AND status IN('QUEUED','PROCESSING')"
+                        ),
+                        {"batch": current.import_batch_id, "now": now},
+                    )
+        return _to_job(row)
+
+    def finalize_staged_initial_import_if_present(
+        self,
+        *,
+        job_id: int,
+        lease_token: str,
+    ) -> Job | None:
+        """Finalize a durable STAGED write without rerunning a non-byte-stable Cleaner."""
+
+        with self._engine.begin() as connection:
+            staged = (
+                connection.execute(
+                    text(
+                        "SELECT j.status AS job_status,j.finalize_protocol,j.lease_token,"
+                        "CASE WHEN j.lease_expires_at_utc>SYSUTCDATETIME() THEN 1 ELSE 0 END "
+                        "AS lease_is_live,i.status AS intent_status,i.processing_run_id,"
+                        "i.dataset_version_id,pr.metadata_json "
+                        "FROM ingestion.processing_job j "
+                        "LEFT JOIN ingestion.initial_import_finalize_intent i ON i.job_id=j.job_id "
+                        "LEFT JOIN ingestion.processing_run pr "
+                        "ON pr.processing_run_id=i.processing_run_id "
+                        "WHERE j.job_id=:job"
+                    ),
+                    {"job": job_id},
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if staged is None:
+            raise DomainError("JOB_NOT_FOUND", f"job {job_id} was not found", 404)
+        if staged["intent_status"] is None:
+            return None
+        if (
+            str(staged["job_status"]) != "RUNNING"
+            or str(staged["finalize_protocol"]) != "ATOMIC_V1"
+            or not _lease_tokens_equal(str(staged["lease_token"]), lease_token)
+            or not bool(staged["lease_is_live"])
+        ):
             raise DomainError(
                 "JOB_LEASE_LOST", f"job {job_id} lease is no longer valid", 409
             )
-        return _to_job(row)
+        if str(staged["intent_status"]) != "STAGED":
+            raise DomainError(
+                "ATOMIC_INTENT_STATE_CONFLICT",
+                "已有原子发布意图不处于可恢复的 STAGED 状态",
+                409,
+            )
+        try:
+            metadata = json.loads(str(staged["metadata_json"] or "{}"))
+            summary = metadata["atomic_finalize_summary"]
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise DomainError(
+                "ATOMIC_STAGED_SUMMARY_MISSING",
+                "STAGED Processing Run 缺少可审计的发布摘要，不能自动恢复",
+                409,
+            ) from exc
+        if not isinstance(summary, dict):
+            raise DomainError(
+                "ATOMIC_STAGED_SUMMARY_MISSING",
+                "STAGED Processing Run 的发布摘要格式无效",
+                409,
+            )
+        return self.finalize_initial_import(
+            job_id=job_id,
+            lease_token=lease_token,
+            processing_run_id=int(staged["processing_run_id"]),
+            dataset_version_id=int(staged["dataset_version_id"]),
+            summary=summary,
+        )
+
+    def finalize_initial_import(
+        self,
+        *,
+        job_id: int,
+        lease_token: str,
+        processing_run_id: int,
+        dataset_version_id: int,
+        summary: Mapping[str, Any],
+    ) -> Job:
+        """Publish Dataset, Result, Batch and Job in one lease-guarded transaction."""
+
+        now = datetime.now(UTC).replace(tzinfo=None)
+        with self._engine.begin() as connection:
+            current_row = (
+                connection.execute(
+                    text(
+                        _LIFECYCLE_APPLOCK_BY_JOB_SQL
+                        + f"SELECT {JOB_COLUMNS} FROM ingestion.processing_job "
+                        "WITH (UPDLOCK,HOLDLOCK) WHERE job_id=:job_id"
+                    ),
+                    {"job_id": job_id},
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if current_row is None:
+                raise DomainError("JOB_NOT_FOUND", f"job {job_id} was not found", 404)
+            current = _to_job(current_row)
+            intent = (
+                connection.execute(
+                    text(
+                        "SELECT i.job_id,i.import_batch_id,i.processing_run_id,"
+                        "i.dataset_version_id,i.status,i.finalized_lease_token,"
+                        "dv.dataset_id,dv.version_no,dv.input_batch_id,dv.status AS version_status,"
+                        "dv.is_current,dv.unit_count,dv.measurement_count,dv.spec_set_id,"
+                        "pr.job_id AS run_job_id,pr.status AS run_status,"
+                        "pr.is_current AS run_is_current,pr.source_file_id,"
+                        "pr.unit_count_output,pr.measurement_count_output,"
+                        "lt.action_type AS lifecycle_action_type,"
+                        "lt.dataset_id AS lifecycle_dataset_id,"
+                        "lt.target_dataset_version_id AS lifecycle_target_version_id,"
+                        "ld.lifecycle_status AS lifecycle_dataset_status,"
+                        "ldv.status AS lifecycle_target_version_status,"
+                        "ldv.is_current AS lifecycle_target_is_current,"
+                        "ldv.input_batch_id AS lifecycle_target_batch_id "
+                        "FROM ingestion.initial_import_finalize_intent i WITH (UPDLOCK,HOLDLOCK) "
+                        "JOIN dataset.dataset_version dv WITH (UPDLOCK,HOLDLOCK) "
+                        "ON dv.dataset_version_id=i.dataset_version_id "
+                        "JOIN ingestion.processing_run pr WITH (UPDLOCK,HOLDLOCK) "
+                        "ON pr.processing_run_id=i.processing_run_id "
+                        "LEFT JOIN ingestion.lifecycle_job_target lt WITH (UPDLOCK,HOLDLOCK) "
+                        "ON lt.job_id=i.job_id "
+                        "LEFT JOIN dataset.dataset ld WITH (UPDLOCK,HOLDLOCK) "
+                        "ON ld.dataset_id=lt.dataset_id "
+                        "LEFT JOIN dataset.dataset_version ldv WITH (UPDLOCK,HOLDLOCK) "
+                        "ON ldv.dataset_version_id=lt.target_dataset_version_id "
+                        "WHERE i.job_id=:job"
+                    ),
+                    {"job": job_id},
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                current.status == JobStatus.SUCCESS
+                and intent is not None
+                and str(intent["status"]) == "FINALIZED"
+                and _lease_tokens_equal(
+                    str(intent["finalized_lease_token"]), lease_token
+                )
+                and int(intent["processing_run_id"]) == processing_run_id
+                and int(intent["dataset_version_id"]) == dataset_version_id
+            ):
+                return current
+            if (
+                current.job_type != JobType.INITIAL_IMPORT
+                or current.finalize_protocol != "ATOMIC_V1"
+                or current.status != JobStatus.RUNNING
+                or current.import_batch_id is None
+                or not _leased_job_is_active(current, lease_token, now)
+            ):
+                raise DomainError(
+                    "JOB_LEASE_LOST", f"job {job_id} lease is no longer valid", 409
+                )
+            if intent is None or str(intent["status"]) != "STAGED":
+                raise DomainError(
+                    "ATOMIC_STAGE_NOT_READY",
+                    "正式导入尚未形成可原子发布的 STAGED 版本",
+                    409,
+                )
+            if (
+                int(intent["import_batch_id"]) != current.import_batch_id
+                or int(intent["processing_run_id"]) != processing_run_id
+                or int(intent["dataset_version_id"]) != dataset_version_id
+                or int(intent["input_batch_id"]) != current.import_batch_id
+                or int(intent["run_job_id"]) != job_id
+                or str(intent["version_status"]) != "DRAFT"
+                or bool(intent["is_current"])
+                or str(intent["run_status"]) != "READY"
+                or bool(intent["run_is_current"])
+                or intent["source_file_id"] is None
+            ):
+                raise DomainError(
+                    "ATOMIC_STAGE_SCOPE_MISMATCH",
+                    "STAGED Run、Dataset Version、Job 或 Batch 关系不一致",
+                    409,
+                )
+            lifecycle_action = intent.get("lifecycle_action_type")
+            if lifecycle_action is not None and (
+                str(lifecycle_action) != "REPROCESS_UPDATE"
+                or intent.get("lifecycle_dataset_id") is None
+                or int(intent["lifecycle_dataset_id"]) != int(intent["dataset_id"])
+                or intent.get("lifecycle_target_version_id") is None
+                or int(intent["lifecycle_target_version_id"]) == dataset_version_id
+                or str(intent.get("lifecycle_dataset_status")) != "ACTIVE"
+                or str(intent.get("lifecycle_target_version_status")) != "PUBLISHED"
+                or not bool(intent.get("lifecycle_target_is_current"))
+                or int(intent.get("lifecycle_target_batch_id") or -1)
+                != current.import_batch_id
+            ):
+                raise DomainError(
+                    "LIFECYCLE_TARGET_DRIFTED",
+                    "显式重处理目标已归档、已换版或与本次 Canonical 不一致",
+                    409,
+                )
+            batch = (
+                connection.execute(
+                    text(
+                        "SELECT status,owner_user_id FROM ingestion.import_batch "
+                        "WITH (UPDLOCK,HOLDLOCK) WHERE import_batch_id=:batch"
+                    ),
+                    {"batch": current.import_batch_id},
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if (
+                batch is None
+                or str(batch["status"]) != "PROCESSING"
+                or batch["owner_user_id"] is None
+            ):
+                raise DomainError(
+                    "BATCH_NOT_PROCESSING",
+                    "正式导入批次不在可发布的处理中状态",
+                    409,
+                )
+            links = (
+                connection.execute(
+                    text(
+                        "SELECT "
+                        "(SELECT COUNT(*) FROM ingestion.import_batch_file "
+                        "WHERE import_batch_id=:batch) AS batch_file_count,"
+                        "(SELECT COUNT(*) FROM ingestion.processing_run_input_file "
+                        "WHERE processing_run_id=:run) AS lineage_count,"
+                        "(SELECT COUNT(*) FROM ingestion.processing_run_input_file ri "
+                        "JOIN ingestion.import_batch_file ibf "
+                        "ON ibf.import_batch_file_id=ri.import_batch_file_id "
+                        "WHERE ri.processing_run_id=:run AND ibf.import_batch_id<>:batch) AS wrong_batch_count,"
+                        "(SELECT COUNT(*) FROM ingestion.processing_run_input_file "
+                        "WHERE processing_run_id=:run "
+                        "AND lineage_basis<>'WRITER_VERIFIED') AS unverified_lineage_count,"
+                        "(SELECT COUNT(*) FROM dataset.dataset_version_run "
+                        "WHERE dataset_version_id=:version AND processing_run_id=:run "
+                        "AND run_role='PRIMARY') AS version_run_count"
+                    ),
+                    {
+                        "batch": current.import_batch_id,
+                        "run": processing_run_id,
+                        "version": dataset_version_id,
+                    },
+                )
+                .mappings()
+                .one()
+            )
+            if (
+                int(links["batch_file_count"]) < 1
+                or int(links["lineage_count"]) != int(links["batch_file_count"])
+                or int(links["wrong_batch_count"]) != 0
+                or int(links["unverified_lineage_count"]) != 0
+                or int(links["version_run_count"]) != 1
+            ):
+                raise DomainError(
+                    "ATOMIC_LINEAGE_INCOMPLETE",
+                    "STAGED Run 未完整绑定当前批次的全部源文件",
+                    409,
+                )
+            if (
+                int(intent["unit_count"]) != int(intent["unit_count_output"])
+                or int(intent["measurement_count"])
+                != int(intent["measurement_count_output"])
+            ):
+                raise DomainError(
+                    "ATOMIC_COUNT_RECONCILIATION_FAILED",
+                    "Dataset Version 与 Processing Run 的数据量不一致",
+                    409,
+                )
+            if summary.get("unit_count") is not None and int(
+                summary["unit_count"]
+            ) != int(intent["unit_count"]):
+                raise DomainError(
+                    "ATOMIC_SUMMARY_RECONCILIATION_FAILED",
+                    "结果摘要与 Canonical Unit 数量不一致",
+                    409,
+                )
+
+            previous = connection.execute(
+                text(
+                    "SELECT dataset_version_id FROM dataset.dataset_version WITH (UPDLOCK,HOLDLOCK) "
+                    "WHERE dataset_id=:dataset AND status='PUBLISHED' AND is_current=1 "
+                    "AND dataset_version_id<>:version"
+                ),
+                {
+                    "dataset": intent["dataset_id"],
+                    "version": dataset_version_id,
+                },
+            ).scalar_one_or_none()
+            if previous is not None:
+                previous_updated = connection.execute(
+                    text(
+                        "UPDATE dataset.dataset_version SET status='SUPERSEDED',is_current=0 "
+                        "WHERE dataset_version_id=:previous AND status='PUBLISHED' AND is_current=1"
+                    ),
+                    {"previous": previous},
+                )
+                if previous_updated.rowcount != 1:
+                    raise DomainError(
+                        "ATOMIC_PREVIOUS_VERSION_CONFLICT",
+                        "旧 Current Dataset Version 状态已变化",
+                        409,
+                    )
+
+            previous_run = connection.execute(
+                text(
+                    "SELECT processing_run_id FROM ingestion.processing_run "
+                    "WITH (UPDLOCK,HOLDLOCK) WHERE source_file_id=:source "
+                    "AND status='PUBLISHED' AND is_current=1 "
+                    "AND processing_run_id<>:run"
+                ),
+                {
+                    "source": int(intent["source_file_id"]),
+                    "run": processing_run_id,
+                },
+            ).scalar_one_or_none()
+            if previous_run is not None:
+                connection.execute(
+                    text(
+                        "UPDATE dv SET status='SUPERSEDED',is_current=0 "
+                        "FROM dataset.dataset_version dv WITH (UPDLOCK,HOLDLOCK) "
+                        "JOIN dataset.dataset_version_run dvr "
+                        "ON dvr.dataset_version_id=dv.dataset_version_id "
+                        "WHERE dvr.processing_run_id=:previous_run "
+                        "AND dv.status='PUBLISHED' AND dv.is_current=1"
+                    ),
+                    {"previous_run": previous_run},
+                )
+                previous_run_updated = connection.execute(
+                    text(
+                        "UPDATE ingestion.processing_run SET status='SUPERSEDED',"
+                        "is_current=0 WHERE processing_run_id=:previous_run "
+                        "AND status='PUBLISHED' AND is_current=1"
+                    ),
+                    {"previous_run": previous_run},
+                )
+                if previous_run_updated.rowcount != 1:
+                    raise DomainError(
+                        "ATOMIC_PREVIOUS_RUN_CONFLICT",
+                        "旧 Current Processing Run 状态已变化",
+                        409,
+                    )
+            self._inject_fault("after_previous_current_superseded")
+            published = connection.execute(
+                text(
+                    "UPDATE dataset.dataset_version SET status='PUBLISHED',is_current=1,"
+                    "published_by=:owner,published_at_utc=:now,"
+                    "supersedes_dataset_version_id=:previous "
+                    "WHERE dataset_version_id=:version AND status='DRAFT' AND is_current=0"
+                ),
+                {
+                    "owner": int(batch["owner_user_id"]),
+                    "now": now,
+                    "previous": previous,
+                    "version": dataset_version_id,
+                },
+            )
+            if published.rowcount != 1:
+                raise DomainError(
+                    "ATOMIC_VERSION_STATE_CONFLICT",
+                    "Dataset Version 状态已变化，无法发布",
+                    409,
+                )
+            self._inject_fault("after_new_version_published")
+            run_published = connection.execute(
+                text(
+                    "UPDATE ingestion.processing_run SET status='PUBLISHED',is_current=1,"
+                    "supersedes_processing_run_id=:previous_run,finished_at_utc=:now "
+                    "WHERE processing_run_id=:run AND status='READY' AND is_current=0"
+                ),
+                {
+                    "run": processing_run_id,
+                    "previous_run": previous_run,
+                    "now": now,
+                },
+            )
+            if run_published.rowcount != 1:
+                raise DomainError(
+                    "ATOMIC_RUN_STATE_CONFLICT",
+                    "Processing Run 状态已变化，无法发布",
+                    409,
+                )
+            connection.execute(
+                text(
+                    "UPDATE ingestion.processing_artifact SET processing_run_id=:run "
+                    "WHERE job_id=:job"
+                ),
+                {"run": processing_run_id, "job": job_id},
+            )
+            self._inject_fault("after_run_published")
+
+            connection.execute(
+                text(
+                    "UPDATE ingestion.processing_result_summary SET status='ARCHIVED' "
+                    "WHERE import_batch_id=:batch AND job_id<>:job AND status='PROCESSED'"
+                ),
+                {"batch": current.import_batch_id, "job": job_id},
+            )
+            result_values = {
+                "batch": current.import_batch_id,
+                "job": job_id,
+                "name": summary["data_name"],
+                "product": summary.get("product_name"),
+                "lot": summary.get("lot_id"),
+                "wafers": summary.get("wafer_count"),
+                "factory": summary["factory_code"],
+                "output": summary["output_uri"],
+                "items": summary.get("test_item_count"),
+                "units": int(intent["unit_count"]),
+                "passes": summary.get("pass_count"),
+                "yield_rate": summary.get("yield_rate"),
+                "data_type": summary.get("data_type", "CP"),
+                "dataset_id": int(intent["dataset_id"]),
+                "dataset_version_no": int(intent["version_no"]),
+                "manifest": json.dumps(
+                    summary.get("artifacts", []), ensure_ascii=False
+                ),
+            }
+            result_updated = connection.execute(
+                text(
+                    "UPDATE ingestion.processing_result_summary SET data_name=:name,"
+                    "product_name=:product,lot_id=:lot,wafer_count=:wafers,"
+                    "factory_code=:factory,output_uri=:output,test_item_count=:items,"
+                    "unit_count=:units,pass_count=:passes,yield_rate=:yield_rate,"
+                    "status='PROCESSED',data_type=:data_type,dataset_id=:dataset_id,"
+                    "dataset_version_no=:dataset_version_no,artifact_manifest_json=:manifest "
+                    "WHERE job_id=:job AND import_batch_id=:batch"
+                ),
+                result_values,
+            )
+            if result_updated.rowcount == 0:
+                connection.execute(
+                    text(
+                        "INSERT ingestion.processing_result_summary(import_batch_id,job_id,data_name,"
+                        "product_name,lot_id,wafer_count,factory_code,output_uri,test_item_count,unit_count,"
+                        "pass_count,yield_rate,status,data_type,dataset_id,dataset_version_no,artifact_manifest_json) "
+                        "VALUES(:batch,:job,:name,:product,:lot,:wafers,:factory,:output,:items,:units,"
+                        ":passes,:yield_rate,'PROCESSED',:data_type,:dataset_id,:dataset_version_no,:manifest)"
+                    ),
+                    result_values,
+                )
+            self._inject_fault("after_result_persisted")
+            batch_updated = connection.execute(
+                text(
+                    "UPDATE ingestion.import_batch SET status='PROCESSED',completed_at_utc=:now "
+                    "WHERE import_batch_id=:batch AND status='PROCESSING'"
+                ),
+                {"batch": current.import_batch_id, "now": now},
+            )
+            if batch_updated.rowcount != 1:
+                raise DomainError(
+                    "BATCH_STATE_CONFLICT", "批次状态已变化，无法完成原子发布", 409
+                )
+            self._inject_fault("after_batch_completed")
+            updated_job = (
+                connection.execute(
+                    text(
+                        f"UPDATE ingestion.processing_job SET status='SUCCESS',finished_at_utc=:now,"
+                        "error_code=NULL,error_message=NULL,lease_token=NULL,lease_owner=NULL,"
+                        "lease_expires_at_utc=NULL "
+                        f"OUTPUT {', '.join('INSERTED.' + item.strip() for item in JOB_COLUMNS.split(','))} "
+                        "WHERE job_id=:job AND status='RUNNING' "
+                        "AND finalize_protocol='ATOMIC_V1' "
+                        "AND lease_token=CONVERT(uniqueidentifier,:lease_token) "
+                        "AND lease_expires_at_utc>=:now"
+                    ),
+                    {"job": job_id, "now": now, "lease_token": lease_token},
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if updated_job is None:
+                raise DomainError(
+                    "JOB_LEASE_LOST", f"job {job_id} lease is no longer valid", 409
+                )
+            self._inject_fault("after_job_completed")
+            intent_updated = connection.execute(
+                text(
+                    "UPDATE ingestion.initial_import_finalize_intent SET status='FINALIZED',"
+                    "finalized_at_utc=:now,finalized_lease_token=CONVERT(uniqueidentifier,:lease_token) "
+                    "WHERE job_id=:job AND status='STAGED'"
+                ),
+                {"job": job_id, "now": now, "lease_token": lease_token},
+            )
+            if intent_updated.rowcount != 1:
+                raise DomainError(
+                    "ATOMIC_INTENT_STATE_CONFLICT",
+                    "Finalize Intent 状态已变化，无法提交",
+                    409,
+                )
+            self._inject_fault("after_intent_finalized")
+            connection.execute(
+                text(
+                    "INSERT governance.audit_log(actor,operation,entity_type,entity_id,"
+                    "before_json,after_json,reason,correlation_id,actor_user_id) VALUES("
+                    ":actor,'INITIAL_IMPORT_ATOMIC_FINALIZE','ingestion.processing_job',:entity,"
+                    ":before_json,:after_json,:reason,:correlation,:owner)"
+                ),
+                {
+                    "actor": f"worker:{current.lease_owner or 'unknown'}"[:128],
+                    "entity": str(job_id),
+                    "before_json": json.dumps(
+                        {
+                            "job_status": "RUNNING",
+                            "batch_status": "PROCESSING",
+                            "version_status": "DRAFT",
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "after_json": json.dumps(
+                        {
+                            "job_status": "SUCCESS",
+                            "batch_status": "PROCESSED",
+                            "version_status": "PUBLISHED",
+                            "dataset_version_id": dataset_version_id,
+                            "processing_run_id": processing_run_id,
+                        },
+                        separators=(",", ":"),
+                    ),
+                    "reason": "ATOMIC_V1 formal import finalize",
+                    "correlation": f"job:{job_id}",
+                    "owner": int(batch["owner_user_id"]),
+                },
+            )
+        return _to_job(updated_job)
 
     def pause_leased_for_input(
         self,
@@ -569,7 +1300,7 @@ class SqlJobService:
             current = _to_job(current_row)
             if (
                 current.status != JobStatus.RUNNING
-                or not _lease_tokens_equal(current.lease_token, lease_token)
+                or not _leased_job_is_active(current, lease_token, now)
                 or current.import_batch_id is None
             ):
                 raise DomainError(
@@ -655,7 +1386,8 @@ class SqlJobService:
                         "lease_token=NULL,lease_owner=NULL,lease_expires_at_utc=NULL "
                         f"OUTPUT {', '.join('INSERTED.' + item.strip() for item in JOB_COLUMNS.split(','))} "
                         "WHERE job_id=:job AND status='RUNNING' "
-                        "AND lease_token=CONVERT(uniqueidentifier,:lease_token)"
+                        "AND lease_token=CONVERT(uniqueidentifier,:lease_token) "
+                        "AND lease_expires_at_utc>=:now"
                     ),
                     {
                         "now": now,

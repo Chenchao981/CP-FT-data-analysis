@@ -364,9 +364,10 @@ class SqlProcessingInputRequestService:
                     text(
                         "INSERT ingestion.processing_job("
                         "source_file_id,import_batch_id,cleaner_release_id,parent_job_id,job_type,"
-                        "trigger_type,requested_by,requested_by_user_id,reason,status,idempotency_key,max_attempts) "
+                        "trigger_type,requested_by,requested_by_user_id,reason,status,idempotency_key,"
+                        "max_attempts,finalize_protocol) "
                         "OUTPUT INSERTED.job_id VALUES(NULL,:batch,:release,:parent,'INITIAL_IMPORT',"
-                        "'MANUAL',:login,:user_id,:reason,'QUEUED',:idempotency,:max_attempts)"
+                        "'MANUAL',:login,:user_id,:reason,'QUEUED',:idempotency,:max_attempts,'ATOMIC_V1')"
                     ),
                     {
                         "batch": import_batch_id,

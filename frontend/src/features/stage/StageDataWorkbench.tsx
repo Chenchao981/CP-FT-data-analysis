@@ -1,17 +1,17 @@
-import { BarChartOutlined, CloudServerOutlined, CloudUploadOutlined, DownloadOutlined, FileSearchOutlined, FolderOpenOutlined, FormOutlined, InfoCircleOutlined, LeftOutlined, RedoOutlined, ReloadOutlined } from "@ant-design/icons";
+import { BarChartOutlined, CloudServerOutlined, CloudUploadOutlined, DownloadOutlined, FileSearchOutlined, FilterOutlined, FolderOpenOutlined, FormOutlined, InfoCircleOutlined, LeftOutlined, RedoOutlined, ReloadOutlined, UnorderedListOutlined } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Alert, Button, Card, Col, Empty, Form, Input, Modal, Popconfirm, Radio, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography, Upload, message } from "antd";
+import { Alert, Button, Card, Checkbox, Col, Empty, Form, Input, Modal, Popconfirm, Radio, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography, Upload, message } from "antd";
 import type { UploadFile } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { BusinessDomain, FormalSourceDirectory, TestStage, downloadStageUploadFile, listFormalSourceDirectories, listFormalSourceRoots, listStageResults, listStageUploads, reprocessStageBatch, StageResultRow, StageUploadRow, uploadStageData } from "../../api/stageData";
+import { BusinessDomain, FormalSourceDirectory, TestStage, downloadStageUploadFile, listFormalSourceDirectories, listFormalSourceRoots, listStageResultsPage, listStageUploadsPage, previewFormalSourceManifest, reprocessStageBatch, StageResultRow, StageUploadRow, uploadStageData } from "../../api/stageData";
 import { formatUtcDateTime } from "../../utils/dateTime";
 import { useAuth } from "../auth/AuthContext";
 import { factoryInputs, factoryNames, formalFactoryOptions, isFormalFactory } from "../capabilities/capabilityCatalog";
 import { LotEnrichmentModal } from "./LotEnrichmentModal";
 
 const statusColor: Record<string, string> = { RECEIVED: "blue", QUEUED: "gold", PROCESSING: "processing", PROCESSED: "success", NEEDS_INPUT: "orange", FAILED: "error" };
-const statusName: Record<string, string> = { RECEIVED: "已接收", QUEUED: "排队中", PROCESSING: "处理中", PROCESSED: "已处理", NEEDS_INPUT: "待补录", FAILED: "失败" };
+const statusName: Record<string, string> = { RECEIVED: "已接收", QUEUED: "排队中", PROCESSING: "处理中", PROCESSED: "已处理", NEEDS_INPUT: "待补录", FAILED: "失败", CANCELLED: "已取消", ARCHIVED: "已归档" };
 const activeUploadStatuses = new Set(["RECEIVED", "QUEUED", "PROCESSING"]);
 const domainName: Record<BusinessDomain, string> = { ENGINEERING: "工程", PRODUCTION: "量产" };
 const stageDescription: Record<TestStage, string> = {
@@ -25,9 +25,20 @@ export interface StageDataWorkbenchProps {
   businessDomain: BusinessDomain;
   testStage: TestStage;
   onOpenAnalytics?: (datasetId: number, versionNo: number) => void;
+  onOpenJob?: (jobId: number) => void;
 }
 
-export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics }: StageDataWorkbenchProps) {
+interface StageFilterValues {
+  factory_code?: string;
+  upload_status?: string;
+  result_status?: string;
+  product_name?: string;
+  lot_id?: string;
+  from_utc?: string;
+  to_utc?: string;
+}
+
+export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics, onOpenJob }: StageDataWorkbenchProps) {
   const { user, can } = useAuth();
   const [open, setOpen] = useState(false);
   const [lotBatchId, setLotBatchId] = useState<number>();
@@ -36,7 +47,13 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
   const [inputMode, setInputMode] = useState<"UPLOAD" | "CATALOG">("UPLOAD");
   const [sourceRootCode, setSourceRootCode] = useState<string>();
   const [sourceRelativePath, setSourceRelativePath] = useState(".");
+  const [confirmedManifestSha, setConfirmedManifestSha] = useState<string>();
+  const [downloadError, setDownloadError] = useState<string>();
+  const [filters, setFilters] = useState<StageFilterValues>({});
+  const [uploadPage, setUploadPage] = useState({ page: 1, pageSize: 20 });
+  const [resultPage, setResultPage] = useState({ page: 1, pageSize: 20 });
   const [form] = Form.useForm<{ factory_code: string; remark?: string }>();
+  const [filterForm] = Form.useForm<StageFilterValues>();
   const defaultFactory = formalFactoryOptions[testStage][0].value;
   const watchedFactory = Form.useWatch("factory_code", form);
   const selectedFactory = watchedFactory && isFormalFactory(testStage, watchedFactory) ? watchedFactory : defaultFactory;
@@ -54,14 +71,46 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
     setInputMode("UPLOAD");
     setSourceRootCode(undefined);
     setSourceRelativePath(".");
+    setConfirmedManifestSha(undefined);
+    setDownloadError(undefined);
+    setFilters({});
+    setUploadPage({ page: 1, pageSize: 20 });
+    setResultPage({ page: 1, pageSize: 20 });
+    filterForm.resetFields();
     form.resetFields();
     form.setFieldsValue({ factory_code: defaultFactory, remark: undefined });
-  }, [businessDomain, defaultFactory, form, testStage]);
-  const uploads = useQuery({ queryKey: [...scopeKey, "uploads"], queryFn: () => listStageUploads(businessDomain, testStage), refetchInterval: (query) => (query.state.data ?? []).some((row) => activeUploadStatuses.has(row.status)) ? 3000 : false });
-  const results = useQuery({ queryKey: [...scopeKey, "results"], queryFn: () => listStageResults(businessDomain, testStage) });
+  }, [businessDomain, defaultFactory, filterForm, form, testStage]);
+  const uploads = useQuery({
+    queryKey: [...scopeKey, "uploads-page", uploadPage, filters],
+    queryFn: () => listStageUploadsPage(businessDomain, testStage, {
+      page: uploadPage.page,
+      page_size: uploadPage.pageSize,
+      factory_code: filters.factory_code,
+      status: filters.upload_status,
+      product_name: filters.product_name,
+      lot_id: filters.lot_id,
+      from_utc: filters.from_utc,
+      to_utc: filters.to_utc,
+    }),
+    refetchInterval: (query) => (query.state.data?.items ?? []).some((row) => activeUploadStatuses.has(row.status)) ? 3000 : false,
+  });
+  const results = useQuery({
+    queryKey: [...scopeKey, "results-page", resultPage, filters],
+    queryFn: () => listStageResultsPage(businessDomain, testStage, {
+      page: resultPage.page,
+      page_size: resultPage.pageSize,
+      factory_code: filters.factory_code,
+      status: filters.result_status,
+      product_name: filters.product_name,
+      lot_id: filters.lot_id,
+      from_utc: filters.from_utc,
+      to_utc: filters.to_utc,
+    }),
+  });
   useEffect(() => {
     setSourceRootCode(undefined);
     setSourceRelativePath(".");
+    setConfirmedManifestSha(undefined);
   }, [businessDomain, selectedFactory, testStage]);
   const sourceRoots = useQuery({
     queryKey: [...scopeKey, "formal-source-roots", selectedFactory],
@@ -81,10 +130,25 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
     queryFn: () => listFormalSourceDirectories(businessDomain, testStage, selectedFactory, sourceRootCode!, sourceRelativePath),
     enabled: open && inputMode === "CATALOG" && Boolean(sourceRootCode),
   });
+  const selectedCatalogPath = sourceDirectories.data?.current_relative_path ?? sourceRelativePath;
+  const sourceManifest = useQuery({
+    queryKey: [...scopeKey, "formal-source-manifest", selectedFactory, sourceRootCode, selectedCatalogPath],
+    queryFn: () => previewFormalSourceManifest(
+      businessDomain,
+      testStage,
+      selectedFactory,
+      sourceRootCode!,
+      selectedCatalogPath,
+    ),
+    enabled: open
+      && inputMode === "CATALOG"
+      && Boolean(sourceRootCode)
+      && sourceDirectories.isSuccess,
+  });
   useEffect(() => {
     const pollingScope = `${businessDomain}:${testStage}`;
     const currentActiveBatchIds = new Set(
-      (uploads.data ?? [])
+      (uploads.data?.items ?? [])
         .filter((row) => activeUploadStatuses.has(row.status))
         .map((row) => row.import_batch_id),
     );
@@ -97,7 +161,7 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
       .some((batchId) => !currentActiveBatchIds.has(batchId));
     previousActiveBatchIds.current = currentActiveBatchIds;
     if (batchReachedTerminalStatus) {
-      void queryClient.invalidateQueries({ queryKey: [...scopeKey, "results"] });
+      void queryClient.invalidateQueries({ queryKey: [...scopeKey, "results-page"] });
     }
   }, [businessDomain, queryClient, testStage, uploads.data]);
   const refresh = async () => Promise.all([uploads.refetch(), results.refetch()]);
@@ -106,6 +170,9 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
       const nativeFiles = files.flatMap((item) => item.originFileObj ? [item.originFileObj as File] : []);
       if (inputMode === "UPLOAD" && !nativeFiles.length) throw new Error(`请选择${testStage}源文件`);
       if (inputMode === "CATALOG" && (!sourceRootCode || !sourceDirectories.data)) throw new Error("请选择可用的受控数据源目录");
+      if (inputMode === "CATALOG" && (!sourceManifest.data || confirmedManifestSha !== sourceManifest.data.sha)) {
+        throw new Error("请先核对并确认当前目录的正式入库清单");
+      }
       return uploadStageData(
         businessDomain,
         testStage,
@@ -113,11 +180,19 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
         values.factory_code,
         values.remark,
         inputMode === "CATALOG" ? sourceRootCode : undefined,
-        inputMode === "CATALOG" ? sourceDirectories.data?.current_relative_path ?? sourceRelativePath : undefined,
+        inputMode === "CATALOG" ? sourceManifest.data?.relative_path ?? selectedCatalogPath : undefined,
+        inputMode === "CATALOG" ? sourceManifest.data?.mode : undefined,
+        inputMode === "CATALOG" ? sourceManifest.data?.sha : undefined,
       );
     },
-    onSuccess: async (data) => { messageApi.success(`批次 ${data.import_batch_id} 已进入后台清洗队列（任务 ${data.job_id}）`); setOpen(false); setFiles([]); setInputMode("UPLOAD"); setSourceRootCode(undefined); setSourceRelativePath("."); form.resetFields(); await queryClient.invalidateQueries({ queryKey: scopeKey }); },
-    onError: (error) => messageApi.error(error.message),
+    onSuccess: async (data) => { messageApi.success(`批次 ${data.import_batch_id} 已进入后台清洗队列（任务 ${data.job_id}）`); setOpen(false); setFiles([]); setInputMode("UPLOAD"); setSourceRootCode(undefined); setSourceRelativePath("."); setConfirmedManifestSha(undefined); form.resetFields(); await queryClient.invalidateQueries({ queryKey: scopeKey }); },
+    onError: async (error) => {
+      messageApi.error(error.message);
+      if (inputMode === "CATALOG") {
+        setConfirmedManifestSha(undefined);
+        await Promise.all([sourceDirectories.refetch(), sourceManifest.refetch()]);
+      }
+    },
   });
   const reprocessMutation = useMutation({
     mutationFn: (batchId: number) => reprocessStageBatch(businessDomain, testStage, batchId),
@@ -126,12 +201,28 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
   });
   const batchRows = useMemo(() => {
     const firstByBatch = new Map<number, StageUploadRow>();
-    for (const row of uploads.data ?? []) {
+    for (const row of uploads.data?.items ?? []) {
       const current = firstByBatch.get(row.import_batch_id);
       if (!current || row.sequence_no < current.sequence_no) firstByBatch.set(row.import_batch_id, row);
     }
     return [...firstByBatch.values()];
-  }, [uploads.data]);
+  }, [uploads.data?.items]);
+  const handleDownload = async (row: StageUploadRow) => {
+    setDownloadError(undefined);
+    try {
+      await downloadStageUploadFile(
+        businessDomain,
+        testStage,
+        row.import_batch_id,
+        row.receipt_id,
+        row.original_file_name,
+      );
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : "未知错误";
+      setDownloadError(detail);
+      messageApi.error("源文件下载失败");
+    }
+  };
   const firstSequenceByBatch = useMemo(
     () => new Map(batchRows.map((row) => [row.import_batch_id, row.sequence_no])),
     [batchRows],
@@ -140,20 +231,21 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
     {
       title: "目录",
       dataIndex: "name",
-      render: (name, row) => <Button type="link" icon={<FolderOpenOutlined />} onClick={() => setSourceRelativePath(row.relative_path)}>{name}</Button>,
+      render: (name, row) => <Button type="link" icon={<FolderOpenOutlined />} onClick={() => { setSourceRelativePath(row.relative_path); setConfirmedManifestSha(undefined); }}>{name}</Button>,
     },
     { title: "当前层源文件", dataIndex: "direct_file_count", width: 120 },
     { title: "当前层大小", dataIndex: "direct_total_bytes", width: 120, render: size },
   ];
   const uploadColumns: ColumnsType<StageUploadRow> = [
     { title: "批次编号", dataIndex: "import_batch_id", width: 95, fixed: "left" },
-    { title: "当前任务", dataIndex: "latest_job_id", width: 105, render: (v) => v ? `Job #${v}` : "—" },
+    { title: "当前任务", dataIndex: "latest_job_id", width: 115, render: (v) => v ? <Button type="link" size="small" icon={<UnorderedListOutlined />} onClick={() => onOpenJob?.(v)}>Job #{v}</Button> : "—" },
     { title: "SEQ", dataIndex: "sequence_no", width: 70 },
     { title: "源文件名称", dataIndex: "original_file_name", width: 300, ellipsis: true },
     { title: "扩展名", dataIndex: "extension", width: 80, render: (v) => v.toUpperCase() },
     { title: "大小", dataIndex: "size_bytes", width: 100, render: size },
     { title: testStage === "CP" ? "晶圆厂" : "封测厂", dataIndex: "factory_code", width: 100, render: (v) => factoryNames[String(v).toLowerCase()] ?? v },
     { title: "上传时间", dataIndex: "upload_time_utc", width: 175, render: formatUtcDateTime },
+    { title: "队列等待", dataIndex: "queue_age_seconds", width: 105, render: (value: number | null | undefined) => value == null ? "—" : `${value} 秒` },
     { title: "完成时间", dataIndex: "completion_time_utc", width: 175, render: formatUtcDateTime },
     { title: "上传账号", dataIndex: "uploader_login", width: 120 },
     { title: "上传人", dataIndex: "uploader_name", width: 110 },
@@ -166,7 +258,7 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
       const awaitingLot = needsLotInput(row);
       const ordinaryFailure = row.status === "FAILED" && !awaitingLot;
       return <Space size={0} wrap>
-        <Button type="link" size="small" icon={<DownloadOutlined />} onClick={() => void downloadStageUploadFile(businessDomain, testStage, row.import_batch_id, row.receipt_id, row.original_file_name)}>下载</Button>
+        <Button type="link" size="small" icon={<DownloadOutlined />} onClick={() => void handleDownload(row)}>下载</Button>
         {firstRow && awaitingLot && can("TASK_CREATE") && <Button type="link" size="small" icon={<FormOutlined />} onClick={() => setLotBatchId(row.import_batch_id)}>补录批次号</Button>}
         {firstRow && ordinaryFailure && <Button type="link" size="small" icon={<InfoCircleOutlined />} onClick={() => setFailureRow(row)}>失败详情</Button>}
         {firstRow && ordinaryFailure && can("TASK_CREATE") && isFormalFactory(testStage, row.factory_code) && <Popconfirm title="重新处理该批次？" description="系统会使用现有源文件重新运行清洗程序。" onConfirm={() => reprocessMutation.mutate(row.import_batch_id)}><Button type="link" size="small" icon={<RedoOutlined />} loading={reprocessMutation.isPending && reprocessMutation.variables === row.import_batch_id}>重新处理</Button></Popconfirm>}
@@ -186,35 +278,58 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
     { title: "状态", dataIndex: "status", width: 100, render: (v) => <Tag color="success">{statusName[v] ?? v}</Tag> },
     { title: "Data Type", dataIndex: "data_type", width: 105 },
     { title: "处理时间", dataIndex: "created_at_utc", width: 175, render: formatUtcDateTime },
-    { title: "操作", key: "actions", width: 210, fixed: "right", render: (_, row) => <Space size={0}>
+    { title: "操作", key: "actions", width: 270, fixed: "right", render: (_, row) => <Space size={0}>
       {row.dataset_id && row.dataset_version_no && can("ANALYSIS_RUN") && <Button type="link" size="small" icon={<BarChartOutlined />} onClick={() => onOpenAnalytics?.(row.dataset_id!, row.dataset_version_no!)}>数据分析</Button>}
+      {row.job_id && <Button type="link" size="small" icon={<UnorderedListOutlined />} onClick={() => onOpenJob?.(row.job_id!)}>Job详情</Button>}
       {can("TASK_CREATE") && isFormalFactory(testStage, row.factory_code) && <Popconfirm title="重新处理该批次？" description="将重跑现有清洗程序并归档旧结果。" onConfirm={() => reprocessMutation.mutate(row.import_batch_id)}><Button type="link" size="small" icon={<RedoOutlined />} loading={reprocessMutation.isPending && reprocessMutation.variables === row.import_batch_id}>重新处理</Button></Popconfirm>}
     </Space> },
   ];
   const metrics = useMemo(() => ({
-    total: batchRows.length,
+    total: uploads.data?.total ?? 0,
     processing: batchRows.filter((row) => activeUploadStatuses.has(row.status)).length,
-    processed: new Set((results.data ?? []).map((row) => row.import_batch_id)).size,
+    processed: results.data?.total ?? 0,
     needsInput: batchRows.filter(needsLotInput).length,
     failed: batchRows.filter((row) => row.status === "FAILED" && !needsLotInput(row)).length,
-  }), [batchRows, results.data]);
+  }), [batchRows, results.data?.total, uploads.data?.total]);
+  const oldestQueueAge = useMemo(() => {
+    const ages = (uploads.data?.items ?? [])
+      .filter((row) => row.status === "QUEUED" && row.queue_age_seconds != null)
+      .map((row) => row.queue_age_seconds!);
+    return ages.length ? Math.max(...ages) : undefined;
+  }, [uploads.data?.items]);
 
   return <div className="workbench production-workbench">
     {contextHolder}
     <div className="page-heading"><div><Typography.Text type="secondary">{domainName[businessDomain]}数据 / {testStage}数据</Typography.Text><Typography.Title level={2}>{testStage}数据</Typography.Title><Typography.Text type="secondary">{stageDescription[testStage]}</Typography.Text></div><Space><Button icon={<ReloadOutlined />} onClick={() => void refresh()}>刷新</Button>{can("TASK_CREATE") && <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => { setFiles([]); setInputMode("UPLOAD"); setSourceRootCode(undefined); setSourceRelativePath("."); setOpen(true); }}>上传数据</Button>}</Space></div>
-    <Row gutter={[16, 16]} className="production-stats"><Col flex="1 1 170px"><Card><Statistic title="上传批次" value={metrics.total} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="处理中" value={metrics.processing} valueStyle={{ color: "#1677ff" }} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="已处理批次" value={metrics.processed} valueStyle={{ color: "#3f8600" }} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="待补录批次" value={metrics.needsInput} valueStyle={{ color: metrics.needsInput ? "#d46b08" : undefined }} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="失败批次" value={metrics.failed} valueStyle={{ color: metrics.failed ? "#cf1322" : undefined }} /></Card></Col></Row>
+    <Row gutter={[16, 16]} className="production-stats"><Col flex="1 1 170px"><Card><Statistic title="查询上传记录" value={metrics.total} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="当前页处理中" value={metrics.processing} valueStyle={{ color: "#1677ff" }} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="查询清洗结果" value={metrics.processed} valueStyle={{ color: "#3f8600" }} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="当前页待补录" value={metrics.needsInput} valueStyle={{ color: metrics.needsInput ? "#d46b08" : undefined }} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="当前页失败" value={metrics.failed} valueStyle={{ color: metrics.failed ? "#cf1322" : undefined }} /></Card></Col></Row>
+    <Card className="review-filter-card">
+      <Form<StageFilterValues> form={filterForm} layout="vertical" onFinish={(values) => { setFilters(values); setUploadPage((current) => ({ ...current, page: 1 })); setResultPage((current) => ({ ...current, page: 1 })); }}>
+        <Row gutter={[12, 0]}>
+          <Col xs={24} sm={12} lg={4}><Form.Item label={testStage === "CP" ? "晶圆厂" : "封测厂"} name="factory_code"><Select allowClear options={formalFactoryOptions[testStage]} /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={4}><Form.Item label="上传状态" name="upload_status"><Select allowClear options={["RECEIVED", "QUEUED", "PROCESSING", "NEEDS_INPUT", "PROCESSED", "FAILED", "CANCELLED"].map((value) => ({ value, label: statusName[value] }))} /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={4}><Form.Item label="结果状态" name="result_status"><Select allowClear options={["PROCESSED", "FAILED", "ARCHIVED"].map((value) => ({ value, label: statusName[value] }))} /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={4}><Form.Item label="产品" name="product_name"><Input allowClear /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={4}><Form.Item label="Lot" name="lot_id"><Input allowClear /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={4}><Form.Item label="开始时间（UTC）" name="from_utc"><Input allowClear placeholder="2026-08-01T00:00:00Z" /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={4}><Form.Item label="结束时间（UTC）" name="to_utc"><Input allowClear placeholder="2026-08-31T23:59:59Z" /></Form.Item></Col>
+          <Col span={24}><Space><Button type="primary" htmlType="submit" icon={<FilterOutlined />}>服务端检索</Button><Button onClick={() => { filterForm.resetFields(); setFilters({}); setUploadPage((current) => ({ ...current, page: 1 })); setResultPage((current) => ({ ...current, page: 1 })); }}>清空</Button><Typography.Text type="secondary">结果由服务端按权限、筛选和页码返回，页面不加载全表。</Typography.Text></Space></Col>
+        </Row>
+      </Form>
+    </Card>
+    {oldestQueueAge != null && <Alert type="info" showIcon message="队列等待观测（当前页）" description={`当前页最长已等待 ${oldestQueueAge} 秒。该值不代表 Worker 在线或离线；请由具备 AUDIT_READ 权限的人员在“运行一致性”查看后端运维观测。`} className="review-alert" />}
     {(uploads.isError || results.isError) && <Alert type="error" showIcon message={`${testStage}数据加载失败`} description={(uploads.error ?? results.error)?.message} />}
+    {downloadError && <Alert type="error" showIcon closable message="源文件下载失败" description={downloadError} onClose={() => setDownloadError(undefined)} style={{ marginBottom: 16 }} />}
     <Card className="production-table-card"><Tabs items={[
-      { key: "source", label: "原始文件", children: <Table rowKey={(r) => `${r.import_batch_id}-${r.sequence_no}`} columns={uploadColumns} dataSource={uploads.data ?? []} loading={uploads.isLoading} scroll={{ x: 1680 }} pagination={{ pageSize: 20, showSizeChanger: true }} /> },
-      { key: "result", label: "清洗结果", children: <Table rowKey="result_summary_id" columns={resultColumns} dataSource={results.data ?? []} loading={results.isLoading} scroll={{ x: 1500 }} pagination={{ pageSize: 20, showSizeChanger: true }} /> },
+      { key: "source", label: "原始文件", children: <Table rowKey={(r) => `${r.import_batch_id}-${r.sequence_no}`} columns={uploadColumns} dataSource={uploads.data?.items ?? []} loading={uploads.isLoading} scroll={{ x: 1820 }} pagination={{ current: uploads.data?.page ?? uploadPage.page, pageSize: uploads.data?.page_size ?? uploadPage.pageSize, total: uploads.data?.total ?? 0, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (total) => `共 ${total} 条` }} onChange={(pagination) => setUploadPage({ page: pagination.current ?? 1, pageSize: pagination.pageSize ?? 20 })} /> },
+      { key: "result", label: "清洗结果", children: <Table rowKey="result_summary_id" columns={resultColumns} dataSource={results.data?.items ?? []} loading={results.isLoading} scroll={{ x: 1600 }} pagination={{ current: results.data?.page ?? resultPage.page, pageSize: results.data?.page_size ?? resultPage.pageSize, total: results.data?.total ?? 0, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (total) => `共 ${total} 条` }} onChange={(pagination) => setResultPage({ page: pagination.current ?? 1, pageSize: pagination.pageSize ?? 20 })} /> },
     ]} /></Card>
-    <Modal title={`提交${domainName[businessDomain]}${testStage}数据`} open={open} width={820} onCancel={() => !mutation.isPending && setOpen(false)} onOk={() => form.submit()} okText="提交后台清洗" confirmLoading={mutation.isPending} destroyOnHidden>
+    <Modal title={`提交${domainName[businessDomain]}${testStage}数据`} open={open} width={820} onCancel={() => !mutation.isPending && setOpen(false)} onOk={() => form.submit()} okText="提交后台清洗" confirmLoading={mutation.isPending} okButtonProps={{ disabled: inputMode === "CATALOG" && (!sourceManifest.data || confirmedManifestSha !== sourceManifest.data.sha) }} destroyOnHidden>
       <Alert showIcon type="info" message={`上传身份：${user?.display_name}（${user?.login_name}）`} description="系统从当前登录账号自动记录上传人，无需填写。" />
       <Form form={form} layout="vertical" initialValues={{ factory_code: defaultFactory }} onFinish={(values) => mutation.mutate(values)} className="cp-upload-form">
         <Form.Item label="业务分类"><Space><Tag color="blue">{domainName[businessDomain]}</Tag><Tag color="cyan">{testStage}数据</Tag></Space></Form.Item>
         <Form.Item label={testStage === "CP" ? "晶圆厂" : "封测厂"} name="factory_code" rules={[{ required: true }]}><Select options={formalFactoryOptions[testStage]} /></Form.Item>
         <Form.Item label="数据来源" required>
-          <Radio.Group value={inputMode} optionType="button" buttonStyle="solid" onChange={(event) => { setInputMode(event.target.value); setFiles([]); setSourceRootCode(undefined); setSourceRelativePath("."); }}>
+          <Radio.Group value={inputMode} optionType="button" buttonStyle="solid" onChange={(event) => { setInputMode(event.target.value); setFiles([]); setSourceRootCode(undefined); setSourceRelativePath("."); setConfirmedManifestSha(undefined); }}>
             <Radio.Button value="UPLOAD"><CloudUploadOutlined /> 本机文件上传</Radio.Button>
             <Radio.Button value="CATALOG"><CloudServerOutlined /> 受控服务器目录</Radio.Button>
           </Radio.Group>
@@ -227,13 +342,34 @@ export function StageDataWorkbench({ businessDomain, testStage, onOpenAnalytics 
               {sourceRoots.isError ? <Alert type="error" showIcon message="受控数据源加载失败" description={sourceRoots.error.message} /> : !sourceRoots.isLoading && !sourceRoots.data?.length ? <Empty description={`管理员尚未为${domainName[businessDomain]}${testStage}/${factoryNames[selectedFactory]}配置正式数据源`} /> : <>
                 <Space wrap style={{ marginBottom: 12 }}>
                   <Typography.Text strong>数据源</Typography.Text>
-                  <Select value={sourceRootCode} loading={sourceRoots.isLoading} style={{ minWidth: 260 }} options={(sourceRoots.data ?? []).map((item) => ({ value: item.code, label: `${item.name}${item.available ? "" : "（不可用）"}`, disabled: !item.available }))} onChange={(value) => { setSourceRootCode(value); setSourceRelativePath("."); }} />
-                  <Button icon={<LeftOutlined />} disabled={!sourceDirectories.data?.parent_relative_path} onClick={() => sourceDirectories.data?.parent_relative_path != null && setSourceRelativePath(sourceDirectories.data.parent_relative_path)}>上一级</Button>
+                  <Select value={sourceRootCode} loading={sourceRoots.isLoading} style={{ minWidth: 260 }} options={(sourceRoots.data ?? []).map((item) => ({ value: item.code, label: `${item.name}${item.available ? "" : "（不可用）"}`, disabled: !item.available }))} onChange={(value) => { setSourceRootCode(value); setSourceRelativePath("."); setConfirmedManifestSha(undefined); }} />
+                  <Button icon={<LeftOutlined />} disabled={!sourceDirectories.data?.parent_relative_path} onClick={() => { if (sourceDirectories.data?.parent_relative_path != null) { setSourceRelativePath(sourceDirectories.data.parent_relative_path); setConfirmedManifestSha(undefined); } }}>上一级</Button>
                   <Typography.Text code>{sourceDirectories.data?.current_relative_path ?? sourceRelativePath}</Typography.Text>
                 </Space>
                 {sourceDirectories.isError && <Alert type="error" showIcon message="目录读取失败" description={sourceDirectories.error.message} />}
                 <Table rowKey="relative_path" size="small" loading={sourceDirectories.isLoading} columns={sourceDirectoryColumns} dataSource={sourceDirectories.data?.directories ?? []} pagination={false} locale={{ emptyText: "当前目录没有子目录，可直接提交当前目录。" }} />
-                <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>系统不会修改共享目录原文件；提交时会复制只读快照、计算 SHA-256，再由 Worker 二次校验。</Typography.Paragraph>
+                <div style={{ marginTop: 12 }}>
+                  {sourceManifest.isError ? <Alert type="error" showIcon message="正式入库清单加载失败" description={sourceManifest.error.message} /> : (
+                    <Card size="small" loading={sourceManifest.isLoading}>
+                      {sourceManifest.data ? <>
+                        <Row gutter={[12, 12]}>
+                          <Col xs={24} sm={8}><Statistic title="扫描范围" value={sourceManifest.data.recursive ? "当前目录及全部子目录" : "仅当前目录"} /></Col>
+                          <Col xs={12} sm={8}><Statistic title="源文件数" value={sourceManifest.data.file_count} /></Col>
+                          <Col xs={12} sm={8}><Statistic title="源数据大小" value={size(sourceManifest.data.total_bytes)} /></Col>
+                        </Row>
+                        <Typography.Paragraph style={{ marginTop: 12, marginBottom: 8 }}>
+                          <Typography.Text type="secondary">清单指纹（SHA-256）</Typography.Text><br />
+                          <Typography.Text code copyable>{sourceManifest.data.sha}</Typography.Text>
+                        </Typography.Paragraph>
+                        <Checkbox
+                          checked={confirmedManifestSha === sourceManifest.data.sha}
+                          onChange={(event) => setConfirmedManifestSha(event.target.checked ? sourceManifest.data?.sha : undefined)}
+                        >我已核对目录、递归范围、文件数和清单指纹，确认以此清单提交正式入库。</Checkbox>
+                      </> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="正在生成正式入库清单" />}
+                    </Card>
+                  )}
+                </div>
+                <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>系统不会修改共享目录原文件；提交时会按上述指纹校验后复制只读快照，再由 Worker 二次校验。</Typography.Paragraph>
               </>}
             </Card>
           </Form.Item>

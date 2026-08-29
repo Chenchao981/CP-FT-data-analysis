@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from app.core.errors import DomainError
 from app.domain.cleaner_registry import CleanerRelease
 from app.domain.jobs import Job, JobStatus, JobType, TriggerType
 from app.domain.stage_data import BatchFileInfo, WorkerBatchInfo
@@ -12,7 +13,11 @@ from app.infrastructure.cp_csv_triplet_writer import (
     CP_MULTI_LOT_SPEC_BINDING_REQUIRED,
     CpMultiLotSpecBindingRequired,
 )
-from app.infrastructure.existing_cleaner_runner import CleanerInputRequired
+from app.infrastructure.existing_cleaner_runner import (
+    CleanerArtifact,
+    CleanerInputRequired,
+    ExistingCleanerRunResult,
+)
 from app.workers.route_a_worker import DatabaseJobWorker, RouteAInitialImportHandler
 
 
@@ -40,6 +45,7 @@ def _claimed_job() -> Job:
         heartbeat_at_utc=now,
         attempt_count=1,
         max_attempts=3,
+        finalize_protocol="ATOMIC_V1",
     )
 
 
@@ -95,6 +101,17 @@ class FakeQueue:
         )
 
 
+class LeaseLostQueue(FakeQueue):
+    def finish_leased(self, *args, **kwargs):
+        raise DomainError("JOB_LEASE_LOST", "synthetic expired lease", 409)
+
+
+class NoStageFinalizer:
+    def finalize_staged_initial_import_if_present(self, *, job_id, lease_token):
+        assert job_id == 41
+        assert lease_token
+
+
 def test_worker_dispatches_claimed_job_and_finishes_success() -> None:
     queue = FakeQueue(_claimed_job())
     handled: list[int] = []
@@ -109,6 +126,33 @@ def test_worker_dispatches_claimed_job_and_finishes_success() -> None:
     assert handled == [41]
     assert result is not None and result.status == JobStatus.SUCCESS
     assert queue.finished == (JobStatus.SUCCESS, None)
+
+
+def test_worker_does_not_finish_twice_when_atomic_handler_returns_success() -> None:
+    queue = FakeQueue(_claimed_job())
+
+    def atomic_finalize(job):
+        return replace(
+            job,
+            status=JobStatus.SUCCESS,
+            finished_at_utc=datetime.now(UTC),
+            lease_token=None,
+            lease_owner=None,
+            lease_expires_at_utc=None,
+        )
+
+    worker = DatabaseJobWorker(
+        queue,
+        {JobType.INITIAL_IMPORT: atomic_finalize},
+        worker_id="worker-1",
+        lease_for=timedelta(seconds=2),
+        heartbeat_every=timedelta(seconds=1),
+    )
+
+    result = worker.run_once()
+
+    assert result is not None and result.status == JobStatus.SUCCESS
+    assert queue.finished is None
 
 
 def test_worker_records_handler_failure_as_terminal_job() -> None:
@@ -127,6 +171,23 @@ def test_worker_records_handler_failure_as_terminal_job() -> None:
     result = worker.run_once()
     assert result is not None and result.status == JobStatus.FAILED
     assert queue.finished == (JobStatus.FAILED, "WORKER_EXECUTION_FAILED")
+
+
+def test_worker_keeps_process_alive_when_terminal_write_loses_lease() -> None:
+    queue = LeaseLostQueue(_claimed_job())
+
+    def fail(_job):
+        raise RuntimeError("slow handler lost its lease")
+
+    worker = DatabaseJobWorker(
+        queue,
+        {JobType.INITIAL_IMPORT: fail},
+        worker_id="worker-1",
+        lease_for=timedelta(seconds=2),
+        heartbeat_every=timedelta(seconds=1),
+    )
+
+    assert worker.run_once() is None
 
 
 def test_worker_preserves_multi_lot_spec_binding_error_code() -> None:
@@ -175,6 +236,246 @@ def test_worker_pauses_for_typed_lot_input_without_marking_failed() -> None:
     assert queue.finished is None
 
 
+def test_atomic_finalize_transient_failure_recovers_without_rerunning_cleaner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class StageData:
+        def __init__(self) -> None:
+            self.batch_info_calls = 0
+            self.processing_calls = 0
+            self.artifact_calls = 0
+
+        def worker_batch_info(self, batch_id):
+            assert batch_id == 7
+            self.batch_info_calls += 1
+            return WorkerBatchInfo(
+                7,
+                "PRODUCTION",
+                "FT",
+                "riyuexin",
+                (
+                    BatchFileInfo(
+                        17,
+                        "lot-1.xlsx",
+                        str(tmp_path / "lot-1.xlsx"),
+                        71,
+                        "0" * 64,
+                    ),
+                ),
+            )
+
+        def worker_mark_processing(self, batch_id, job_id, lease_token):
+            assert (batch_id, job_id) == (7, 41)
+            assert lease_token
+            self.processing_calls += 1
+
+        def record_artifacts(self, job_id, lease_token, artifacts, expires):
+            assert job_id == 41
+            assert lease_token
+            assert artifacts
+            assert expires > datetime.now(UTC).replace(tzinfo=None)
+            self.artifact_calls += 1
+
+    class Registry:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def get_released(self, release_id):
+            assert release_id == 9
+            self.calls += 1
+            if self.calls > 1:
+                raise AssertionError(
+                    "STAGED recovery must not require the Cleaner Release"
+                )
+            return CleanerRelease(
+                cleaner_release_id=9,
+                format_profile_id=7,
+                test_stage="FT",
+                factory_code="RIYUEXIN",
+                format_code="FT_XLSX",
+                profile_version="v1",
+                cleaner_code="RIYUEXIN_FT",
+                cleaner_version="v1",
+                code_checksum="0" * 64,
+                artifact_uri="cleaner.pyz",
+                runtime_uri="python.exe",
+                entrypoint="tms-adapter",
+                adapter_code="FT_XLSX_SCATTER_V1",
+                input_contract_version="v1",
+                output_contract_version="v1",
+                execution_config_json=None,
+                timeout_seconds=60,
+                max_output_bytes=1_000_000,
+            )
+
+    class Runner:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def run_release(self, **kwargs):
+            assert kwargs["inputs"] == [tmp_path / "lot-1.xlsx"]
+            self.calls += 1
+            return ExistingCleanerRunResult(
+                test_stage="FT",
+                factory="riyuexin",
+                output_root=str(tmp_path / "cleaned"),
+                artifacts=(
+                    CleanerArtifact(
+                        "cleaned",
+                        str(tmp_path / "cleaned.xlsx"),
+                        123,
+                        "c" * 64,
+                    ),
+                ),
+                stdout_tail="ok",
+            )
+
+    class Finalizer:
+        def __init__(self) -> None:
+            self.stage_exists = False
+            self.probe_calls = 0
+            self.finalize_calls = 0
+
+        def finalize_staged_initial_import_if_present(
+            self, *, job_id, lease_token
+        ):
+            assert job_id == 41
+            assert lease_token
+            self.probe_calls += 1
+            if not self.stage_exists:
+                return None
+            return replace(
+                _claimed_job(),
+                status=JobStatus.SUCCESS,
+                attempt_count=2,
+                finished_at_utc=datetime.now(UTC),
+                lease_token=None,
+                lease_owner=None,
+                lease_expires_at_utc=None,
+            )
+
+        def finalize_initial_import(self, **kwargs):
+            assert kwargs["job_id"] == 41
+            assert kwargs["processing_run_id"] == 501
+            assert kwargs["dataset_version_id"] == 601
+            self.finalize_calls += 1
+            raise RuntimeError("synthetic transient Finalizer timeout")
+
+    class Writer:
+        def __init__(self, finalizer) -> None:
+            self._finalizer = finalizer
+            self.calls = 0
+
+        def write(self, **kwargs):
+            assert kwargs["job_id"] == 41
+            assert kwargs["import_batch_id"] == 7
+            self.calls += 1
+            self._finalizer.stage_exists = True
+
+            class Canonical:
+                processing_run_id = 501
+                dataset_version_id = 601
+
+            return Canonical()
+
+    summary = {
+        "record_count": 71,
+        "parameter_count": 2,
+        "lot_ids": ["LOT-1"],
+    }
+    monkeypatch.setattr(
+        "app.workers.route_a_worker.summarize_existing_cleaner_result",
+        lambda _result: summary,
+    )
+    stage_data = StageData()
+    registry = Registry()
+    runner = Runner()
+    finalizer = Finalizer()
+    writer = Writer(finalizer)
+    handler = RouteAInitialImportHandler(
+        registry,  # type: ignore[arg-type]
+        stage_data,  # type: ignore[arg-type]
+        object(),  # type: ignore[arg-type]
+        writer,  # type: ignore[arg-type]
+        runner,  # type: ignore[arg-type]
+        work_root=tmp_path,
+        finalizer=finalizer,
+    )
+    queue = FakeQueue(_claimed_job())
+    worker = DatabaseJobWorker(
+        queue,
+        {JobType.INITIAL_IMPORT: handler},
+        worker_id="worker-1",
+        lease_for=timedelta(seconds=2),
+        heartbeat_every=timedelta(seconds=1),
+    )
+
+    assert worker.run_once() is None
+    assert queue.finished is None
+    assert runner.calls == 1
+    assert writer.calls == 1
+    assert finalizer.finalize_calls == 1
+
+    queue.job = replace(
+        _claimed_job(),
+        attempt_count=2,
+        lease_token="22222222-2222-2222-2222-222222222222",
+    )
+    recovered = worker.run_once()
+
+    assert recovered is not None and recovered.status == JobStatus.SUCCESS
+    assert queue.finished is None
+    assert runner.calls == 1
+    assert writer.calls == 1
+    assert registry.calls == 1
+    assert stage_data.batch_info_calls == 1
+    assert stage_data.processing_calls == 1
+    assert stage_data.artifact_calls == 1
+    assert finalizer.probe_calls == 2
+    assert finalizer.finalize_calls == 1
+
+
+def test_atomic_finalize_domain_conflict_fails_closed_without_running_cleaner(
+    tmp_path: Path,
+) -> None:
+    class Finalizer:
+        def finalize_staged_initial_import_if_present(
+            self, *, job_id, lease_token
+        ):
+            raise DomainError(
+                "ATOMIC_INTENT_STATE_CONFLICT",
+                "synthetic invalid staged intent",
+                409,
+            )
+
+    class MustNotRun:
+        def __getattr__(self, name):
+            raise AssertionError(f"{name} must not run before STAGED recovery")
+
+    queue = FakeQueue(_claimed_job())
+    handler = RouteAInitialImportHandler(
+        MustNotRun(),  # type: ignore[arg-type]
+        MustNotRun(),  # type: ignore[arg-type]
+        MustNotRun(),  # type: ignore[arg-type]
+        runner=MustNotRun(),  # type: ignore[arg-type]
+        work_root=tmp_path,
+        finalizer=Finalizer(),
+    )
+    worker = DatabaseJobWorker(
+        queue,
+        {JobType.INITIAL_IMPORT: handler},
+        worker_id="worker-1",
+        lease_for=timedelta(seconds=2),
+        heartbeat_every=timedelta(seconds=1),
+    )
+
+    result = worker.run_once()
+
+    assert result is not None and result.status == JobStatus.FAILED
+    assert queue.finished == (JobStatus.FAILED, "WORKER_EXECUTION_FAILED")
+
+
 def test_worker_returns_none_when_queue_is_empty() -> None:
     worker = DatabaseJobWorker(
         FakeQueue(None),
@@ -186,7 +487,7 @@ def test_worker_returns_none_when_queue_is_empty() -> None:
     assert worker.run_once() is None
 
 
-def test_initial_import_validation_failure_marks_batch_failed_before_processing(
+def test_initial_import_validation_failure_is_left_for_lease_guarded_queue_failure(
     tmp_path: Path,
 ) -> None:
     class StageData:
@@ -247,17 +548,18 @@ def test_initial_import_validation_failure_marks_batch_failed_before_processing(
         stage_data,  # type: ignore[arg-type]
         object(),  # type: ignore[arg-type]
         work_root=tmp_path,
+        finalizer=NoStageFinalizer(),
     )
 
     with pytest.raises(RuntimeError, match="Cleaner Release does not match"):
         handler(_claimed_job())
 
-    assert stage_data.failed is not None
-    assert stage_data.failed[:2] == (7, 41)
-    assert stage_data.failed[3] is False
+    assert stage_data.failed is None
 
 
-def test_initial_import_missing_release_marks_linked_batch_failed(tmp_path: Path) -> None:
+def test_initial_import_missing_release_does_not_mutate_batch_outside_queue_transaction(
+    tmp_path: Path,
+) -> None:
     class StageData:
         def __init__(self) -> None:
             self.failed = None
@@ -271,14 +573,10 @@ def test_initial_import_missing_release_marks_linked_batch_failed(tmp_path: Path
         stage_data,  # type: ignore[arg-type]
         object(),  # type: ignore[arg-type]
         work_root=tmp_path,
+        finalizer=NoStageFinalizer(),
     )
 
     with pytest.raises(RuntimeError, match="requires cleaner_release_id"):
         handler(replace(_claimed_job(), cleaner_release_id=None))
 
-    assert stage_data.failed == (
-        7,
-        41,
-        "INITIAL_IMPORT requires cleaner_release_id",
-        False,
-    )
+    assert stage_data.failed is None

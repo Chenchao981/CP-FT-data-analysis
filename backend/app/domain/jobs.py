@@ -131,6 +131,7 @@ class Job:
     attempt_count: int = 0
     max_attempts: int = 3
     parent_job_id: int | None = None
+    finalize_protocol: str = "LEGACY"
 
 
 ALLOWED_JOB_TRANSITIONS: dict[JobStatus, set[JobStatus]] = {

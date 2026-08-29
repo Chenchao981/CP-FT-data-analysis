@@ -450,12 +450,38 @@ def test_cp_upload_snapshots_an_authorized_catalog_directory(
         )
     )
     service = StubStageService()
-    response = _client(service, catalog).post(
+    client = _client(service, catalog)
+    preview_response = client.get(
+        "/api/v1/engineering/cp/source-roots/JETECH_ENGINEERING/manifest-preview",
+        params={
+            "factory_code": "jetech",
+            "relative_path": "C146808.02",
+        },
+    )
+    assert preview_response.status_code == 200
+    preview = preview_response.json()
+    assert preview == {
+        "root_code": "JETECH_ENGINEERING",
+        "relative_path": "C146808.02",
+        "mode": "PATH_SIZE_MTIME_V1",
+        "recursive": True,
+        "file_count": 2,
+        "total_bytes": 6,
+        "sha": preview["sha"],
+        "allowed_suffixes": [".xls"],
+    }
+    assert len(preview["sha"]) == 64
+    assert str(source_root) not in preview_response.text
+    assert "files" not in preview
+
+    response = client.post(
         "/api/v1/engineering/cp/uploads",
         data={
             "factory_code": "jetech",
             "source_root_code": "JETECH_ENGINEERING",
             "source_relative_path": "C146808.02",
+            "source_manifest_mode": preview["mode"],
+            "source_manifest_sha256": preview["sha"],
         },
     )
 
@@ -468,8 +494,13 @@ def test_cp_upload_snapshots_an_authorized_catalog_directory(
     ]
     assert all(source not in item.path.parents for item in service.registered_files)
     assert all((tmp_path / "raw") in item.path.parents for item in service.registered_files)
+    assert {item.path.parent.name for item in service.registered_files} == {
+        "C146808.02"
+    }
     assert all(
         item.source_metadata["source_root_code"] == "JETECH_ENGINEERING"
+        and item.source_metadata["snapshot_selected_directory_name"]
+        == "C146808.02"
         and item.source_metadata["snapshot_copy"] is True
         for item in service.registered_files
     )
@@ -503,12 +534,22 @@ def test_ft_catalog_snapshot_accepts_only_direct_dc_files(
         )
     )
     service = StubStageService()
-    response = _client(service, catalog).post(
+    client = _client(service, catalog)
+    preview = client.get(
+        "/api/v1/production/ft/source-roots/RIYUEXIN_PRODUCTION/manifest-preview",
+        params={"factory_code": "riyuexin", "relative_path": "ft"},
+    ).json()
+    assert preview["recursive"] is False
+    assert preview["file_count"] == 1
+
+    response = client.post(
         "/api/v1/production/ft/uploads",
         data={
             "factory_code": "riyuexin",
             "source_root_code": "RIYUEXIN_PRODUCTION",
             "source_relative_path": "ft",
+            "source_manifest_mode": preview["mode"],
+            "source_manifest_sha256": preview["sha"],
         },
     )
 
@@ -593,7 +634,39 @@ def test_formal_catalog_enforces_file_count_quota(
         )
     )
 
-    response = _client(StubStageService(), catalog).post(
+    response = _client(StubStageService(), catalog).get(
+        "/api/v1/engineering/cp/source-roots/JT_ROOT/manifest-preview",
+        params={"factory_code": "jetech", "relative_path": "batch"},
+    )
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "FORMAL_SOURCE_FILE_LIMIT_EXCEEDED"
+
+
+def test_catalog_upload_requires_preview_confirmation_before_copy(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+    source_root = tmp_path / "source"
+    batch = source_root / "batch"
+    batch.mkdir(parents=True)
+    (batch / "one.xls").write_bytes(b"one")
+    catalog = SourceCatalog(
+        (
+            SourceRoot(
+                "JT_ROOT",
+                "JT root",
+                source_root,
+                "CP",
+                "JETECH",
+                (".xls",),
+                "FORMAL_IMPORT",
+                ("ENGINEERING",),
+            ),
+        )
+    )
+    service = StubStageService()
+
+    response = _client(service, catalog).post(
         "/api/v1/engineering/cp/uploads",
         data={
             "factory_code": "jetech",
@@ -601,8 +674,58 @@ def test_formal_catalog_enforces_file_count_quota(
             "source_relative_path": "batch",
         },
     )
+
     assert response.status_code == 422
-    assert response.json()["error"]["code"] == "FORMAL_SOURCE_FILE_LIMIT_EXCEEDED"
+    assert response.json()["error"]["code"] == "FORMAL_SOURCE_MANIFEST_REQUIRED"
+    assert service.registered_files == ()
+    assert not (tmp_path / "raw").exists()
+
+
+def test_catalog_upload_rejects_changed_manifest_before_copy_or_registration(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+    source_root = tmp_path / "source"
+    batch = source_root / "batch"
+    batch.mkdir(parents=True)
+    (batch / "one.xls").write_bytes(b"one")
+    catalog = SourceCatalog(
+        (
+            SourceRoot(
+                "JT_ROOT",
+                "JT root",
+                source_root,
+                "CP",
+                "JETECH",
+                (".xls",),
+                "FORMAL_IMPORT",
+                ("ENGINEERING",),
+            ),
+        )
+    )
+    service = StubStageService()
+    client = _client(service, catalog)
+    preview = client.get(
+        "/api/v1/engineering/cp/source-roots/JT_ROOT/manifest-preview",
+        params={"factory_code": "jetech", "relative_path": "batch"},
+    ).json()
+    (batch / "two.xls").write_bytes(b"two")
+
+    response = client.post(
+        "/api/v1/engineering/cp/uploads",
+        data={
+            "factory_code": "jetech",
+            "source_root_code": "JT_ROOT",
+            "source_relative_path": "batch",
+            "source_manifest_mode": preview["mode"],
+            "source_manifest_sha256": preview["sha"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "FORMAL_SOURCE_CHANGED"
+    assert service.registered_files == ()
+    assert not (tmp_path / "raw").exists()
 
 
 def test_production_ft_upload_keeps_riyueguang_separate(monkeypatch, tmp_path: Path) -> None:

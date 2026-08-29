@@ -50,6 +50,8 @@ def test_manifest_is_stable_and_detects_source_changes(tmp_path: Path) -> None:
     before = catalog.build_manifest("JIEQUN_TEST", "product-a")
     again = catalog.build_manifest("JIEQUN_TEST", "product-a")
     assert before.sha256 == again.sha256
+    assert before.matches_confirmation(mode=before.mode, sha256=before.sha256.upper())
+    assert not before.matches_confirmation(mode="OTHER", sha256=before.sha256)
     assert before.file_count == 1
     assert json.loads(before.as_json())["files"][0]["relative_path"] == "one.csv"
 

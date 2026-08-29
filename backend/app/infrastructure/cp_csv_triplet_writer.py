@@ -4,6 +4,7 @@ import csv
 import hashlib
 import json
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -13,6 +14,12 @@ from sqlalchemy import Engine, text
 from sqlalchemy.engine import Connection
 
 from app.infrastructure.existing_cleaner_runner import CleanerArtifact
+from app.infrastructure.initial_import_staging import (
+    insert_draft_dataset_version,
+    prepare_atomic_stage,
+    record_atomic_stage,
+)
+from app.infrastructure.sql_master_data_service import observe_product_crosswalk
 
 CP_MULTI_LOT_SPEC_BINDING_REQUIRED = "CP_MULTI_LOT_SPEC_BINDING_REQUIRED"
 
@@ -68,6 +75,7 @@ class CpCsvTriplet:
 class CpCanonicalImportResult:
     processing_run_id: int
     dataset_id: int
+    dataset_version_id: int
     dataset_version_no: int
     spec_set_id: int
     unit_count: int
@@ -109,6 +117,62 @@ def _artifact_paths(
 
 
 CP_PROCESS_COLUMNS = {"CONT", "SITE_NUM", "T_TIME", "TEST_NUM"}
+
+
+def _parameter_contract_sha256(triplet: CpCsvTriplet) -> str:
+    """Fingerprint the canonical parameter contract, not only the raw Spec file."""
+
+    payload = {
+        "schema_version": "CP_PARAMETER_CONTRACT_V1",
+        "non_parameter_columns": sorted(CP_PROCESS_COLUMNS),
+        "parameters": [
+            {
+                "name": item.name,
+                "unit": item.unit,
+                "raw_lsl": item.raw_lsl,
+                "raw_usl": item.raw_usl,
+                "test_condition": item.test_condition,
+            }
+            for item in triplet.spec_items
+        ],
+    }
+    encoded = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _stored_parameter_contract_matches(
+    rows: list[dict[str, Any]] | list[Any], triplet: CpCsvTriplet
+) -> bool:
+    if len(rows) != len(triplet.spec_items):
+        return False
+
+    def normalized(value: object) -> str | None:
+        if value is None:
+            return None
+        text_value = str(value).strip()
+        return text_value or None
+
+    for index, (row, item) in enumerate(zip(rows, triplet.spec_items, strict=True), start=1):
+        condition_text = None
+        try:
+            condition = json.loads(str(row["condition_json"] or "{}"))
+            condition_text = normalized(condition.get("text"))
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if (
+            int(row["sequence_no"]) != index
+            or str(row["raw_item_name"]) != item.name
+            or str(row["canonical_parameter_code"] or "") != item.name
+            or normalized(row["unit_code"]) != normalized(item.unit)
+            or normalized(row["lower_limit_raw"]) != normalized(item.raw_lsl)
+            or normalized(row["upper_limit_raw"]) != normalized(item.raw_usl)
+            or condition_text != normalized(item.test_condition)
+            or not bool(row["is_analysis_parameter"])
+        ):
+            return False
+    return True
 
 
 def _read_spec(path: Path) -> tuple[tuple[str, ...], tuple[CpSpecItem, ...]]:
@@ -358,33 +422,22 @@ class CpCsvTripletWriter:
         *,
         job_id: int,
         import_batch_id: int,
+        lease_token: str,
         artifacts: tuple[CleanerArtifact, ...],
+        finalize_summary: Mapping[str, Any],
     ) -> CpCanonicalImportResult:
         triplet = parse_cp_csv_triplet(artifacts)
         measurement_count = len(triplet.rows) * len(triplet.parameters)
+        single_lot_id = triplet.rows[0].lot_id
         with self._engine.begin() as connection:
-            context = (
-                connection.execute(
-                    text(
-                        "SELECT b.owner_user_id,b.business_domain,b.test_stage,b.factory_code,"
-                        "j.status AS job_status,j.cleaner_release_id,cr.output_contract_version,"
-                        "sf.source_file_id FROM ingestion.import_batch b "
-                        "JOIN ingestion.processing_job j ON j.import_batch_id=b.import_batch_id "
-                        "JOIN ingestion.cleaner_release cr ON cr.cleaner_release_id=j.cleaner_release_id "
-                        "CROSS APPLY(SELECT TOP(1) sfr.source_file_id FROM ingestion.import_batch_file ibf "
-                        "JOIN ingestion.source_file_receipt sfr ON sfr.receipt_id=ibf.receipt_id "
-                        "WHERE ibf.import_batch_id=b.import_batch_id ORDER BY ibf.ordinal_no) sf "
-                        "WHERE b.import_batch_id=:batch AND j.job_id=:job"
-                    ),
-                    {"batch": import_batch_id, "job": job_id},
-                )
-                .mappings()
-                .one_or_none()
+            preparation = prepare_atomic_stage(
+                connection,
+                job_id=job_id,
+                import_batch_id=import_batch_id,
+                lease_token=lease_token,
+                artifacts=artifacts,
             )
-            if context is None:
-                raise CpCsvTripletError("CP import job/batch context was not found")
-            if context["job_status"] != "RUNNING":
-                raise CpCsvTripletError("CP import job must be RUNNING")
+            context = preparation.context
             if context["test_stage"] != "CP":
                 raise CpCsvTripletError("CP writer received a non-CP upload task")
             if context["output_contract_version"] not in {
@@ -392,6 +445,21 @@ class CpCsvTripletWriter:
                 "CP_STANDARD_CSV_TRIPLET_V1",
             }:
                 raise CpCsvTripletError("CP Cleaner output contract is not supported")
+            if preparation.existing is not None:
+                existing = preparation.existing
+                if existing.spec_set_id is None:
+                    raise CpCsvTripletError(
+                        "CP staged Dataset Version has no explicit Spec binding"
+                    )
+                return CpCanonicalImportResult(
+                    processing_run_id=existing.processing_run_id,
+                    dataset_id=existing.dataset_id,
+                    dataset_version_id=existing.dataset_version_id,
+                    dataset_version_no=existing.dataset_version_no,
+                    spec_set_id=existing.spec_set_id,
+                    unit_count=existing.unit_count,
+                    measurement_count=existing.measurement_count,
+                )
 
             supplier_code = str(context["factory_code"]).strip().upper()
             supplier_names = {
@@ -425,6 +493,14 @@ class CpCsvTripletWriter:
                         "VALUES(:code,:name,1)",
                         {"code": triplet.product_name, "name": triplet.product_name},
                     )
+            if product_id is not None and triplet.product_name:
+                observe_product_crosswalk(
+                    connection,
+                    supplier_id=int(supplier_id),
+                    product_id=int(product_id),
+                    test_stage="CP",
+                    raw_product_code=triplet.product_name,
+                )
             program_code = str(context["output_contract_version"])
             program_id = connection.execute(
                 text(
@@ -446,14 +522,60 @@ class CpCsvTripletWriter:
                         "name": f"{supplier_name} CP Cleaner 标准输出",
                     },
                 )
-            version_code = f"SPEC-{triplet.spec_sha256[:16].upper()}"
-            program_version_id = connection.execute(
-                text(
-                    "SELECT program_version_id FROM mdm.test_program_version "
-                    "WHERE test_program_id=:program AND version_code=:version"
-                ),
-                {"program": program_id, "version": version_code},
-            ).scalar_one_or_none()
+            parameter_contract_sha256 = _parameter_contract_sha256(triplet)
+            compatible_version = None
+            version_candidates = (
+                connection.execute(
+                    text(
+                        "SELECT program_version_id,version_code "
+                        "FROM mdm.test_program_version WITH (UPDLOCK,HOLDLOCK) "
+                        "WHERE test_program_id=:program AND program_checksum=:checksum "
+                        "ORDER BY program_version_id"
+                    ),
+                    {"program": program_id, "checksum": triplet.spec_sha256},
+                )
+                .mappings()
+                .all()
+            )
+            for candidate in version_candidates:
+                candidate_items = (
+                    connection.execute(
+                        text(
+                            "SELECT sequence_no,raw_item_name,canonical_parameter_code,"
+                            "unit_code,lower_limit_raw,upper_limit_raw,condition_json,"
+                            "is_analysis_parameter "
+                            "FROM mdm.test_item_definition WITH (HOLDLOCK) "
+                            "WHERE program_version_id=:version ORDER BY sequence_no"
+                        ),
+                        {"version": int(candidate["program_version_id"])},
+                    )
+                    .mappings()
+                    .all()
+                )
+                if _stored_parameter_contract_matches(candidate_items, triplet):
+                    compatible_version = candidate
+                    break
+
+            version_code = (
+                str(compatible_version["version_code"])
+                if compatible_version is not None
+                else (
+                    f"SPEC-{triplet.spec_sha256[:16].upper()}-"
+                    f"PARAM-{parameter_contract_sha256[:12].upper()}"
+                )
+            )
+            program_version_id = (
+                int(compatible_version["program_version_id"])
+                if compatible_version is not None
+                else connection.execute(
+                    text(
+                        "SELECT program_version_id FROM mdm.test_program_version "
+                        "WITH (UPDLOCK,HOLDLOCK) "
+                        "WHERE test_program_id=:program AND version_code=:version"
+                    ),
+                    {"program": program_id, "version": version_code},
+                ).scalar_one_or_none()
+            )
             if program_version_id is None:
                 program_version_id = self._scalar(
                     connection,
@@ -466,7 +588,10 @@ class CpCsvTripletWriter:
                         "sha": triplet.spec_sha256,
                         "metadata": json.dumps(
                             {
-                                "first_batch_spec": True,
+                                "spec_binding_contract": "SINGLE_LOT_EXPLICIT_SPEC",
+                                "binding_scope": "DATASET_VERSION",
+                                "spec_sha256": triplet.spec_sha256,
+                                "parameter_contract_sha256": parameter_contract_sha256,
                                 "non_parameter_columns": sorted(CP_PROCESS_COLUMNS),
                             }
                         ),
@@ -501,14 +626,18 @@ class CpCsvTripletWriter:
                 )
             item_rows = connection.execute(
                 text(
-                    "SELECT test_item_id,raw_item_name FROM mdm.test_item_definition "
+                    "SELECT test_item_id,sequence_no,raw_item_name,canonical_parameter_code,"
+                    "unit_code,lower_limit_raw,upper_limit_raw,condition_json,"
+                    "is_analysis_parameter FROM mdm.test_item_definition "
                     "WHERE program_version_id=:version ORDER BY sequence_no"
                 ),
                 {"version": program_version_id},
             ).mappings().all()
+            if not _stored_parameter_contract_matches(item_rows, triplet):
+                raise CpCsvTripletError(
+                    "stored CP test items differ from the canonical parameter contract"
+                )
             item_ids = {str(row["raw_item_name"]): int(row["test_item_id"]) for row in item_rows}
-            if tuple(item_ids) != triplet.parameters:
-                raise CpCsvTripletError("stored CP test items differ from the Cleaner Spec")
 
             parser_format = f"{supplier_code}_CP_CSV_TRIPLET"
             parser_version = "1.1" if supplier_code == "HUAHONG" else "1.0"
@@ -540,11 +669,17 @@ class CpCsvTripletWriter:
                         "rules": json.dumps({"non_parameter_columns": sorted(CP_PROCESS_COLUMNS)}),
                     },
                 )
+            spec_source_ref = (
+                f"sha256:{triplet.spec_sha256}:{supplier_code}:"
+                f"PARAM:{parameter_contract_sha256[:16]}"
+            )
             spec_set_id = connection.execute(
                 text(
-                    "SELECT spec_set_id FROM mdm.spec_set WHERE test_stage='CP' AND source_ref=:source"
+                    "SELECT spec_set_id FROM mdm.spec_set WHERE test_stage='CP' "
+                    "AND source_ref=:source "
+                    "AND ((product_id=:product) OR (product_id IS NULL AND :product IS NULL))"
                 ),
-                {"source": f"sha256:{triplet.spec_sha256}:{supplier_code}"},
+                {"source": spec_source_ref, "product": product_id},
             ).scalar_one_or_none()
             if spec_set_id is None:
                 spec_set_id = self._scalar(
@@ -553,12 +688,18 @@ class CpCsvTripletWriter:
                     "OUTPUT INSERTED.spec_set_id VALUES(:product,'CP',:name,:version,'RELEASED','CLEANER_OUTPUT',:source,:metadata)",
                     {
                         "product": product_id,
-                        "name": f"{triplet.product_name or supplier_name} first-batch Spec",
+                        "name": (
+                            f"{triplet.product_name or supplier_name} "
+                            "single-Lot explicit Spec"
+                        ),
                         "version": version_code,
-                        "source": f"sha256:{triplet.spec_sha256}:{supplier_code}",
+                        "source": spec_source_ref,
                         "metadata": json.dumps(
                             {
-                                "selection_rule": "FIRST_BATCH",
+                                "selection_rule": "SINGLE_LOT_EXPLICIT_SPEC",
+                                "binding_scope": "DATASET_VERSION",
+                                "spec_sha256": triplet.spec_sha256,
+                                "parameter_contract_sha256": parameter_contract_sha256,
                                 "non_parameter_columns": sorted(CP_PROCESS_COLUMNS),
                             }
                         ),
@@ -599,7 +740,7 @@ class CpCsvTripletWriter:
                 "SYSUTCDATETIME(),SYSUTCDATETIME(),:metadata)",
                 {
                     "job": job_id,
-                    "source": context["source_file_id"],
+                    "source": preparation.source_file_id,
                     "parser": parser_profile_id,
                     "parser_version": parser_version,
                     "units": len(triplet.rows),
@@ -610,6 +751,7 @@ class CpCsvTripletWriter:
                             "business_domain": context["business_domain"],
                             "source_paths": triplet.source_paths,
                             "spec_set_id": spec_set_id,
+                            "atomic_finalize_summary": dict(finalize_summary),
                         },
                         ensure_ascii=False,
                     ),
@@ -725,75 +867,35 @@ class CpCsvTripletWriter:
                         "owner": context["owner_user_id"],
                     },
                 )
-            previous = connection.execute(
-                text(
-                    "SELECT dataset_version_id FROM dataset.dataset_version WITH (UPDLOCK,HOLDLOCK) "
-                    "WHERE dataset_id=:dataset AND status='PUBLISHED' AND is_current=1"
-                ),
-                {"dataset": dataset_id},
-            ).scalar_one_or_none()
-            version_no = int(
-                connection.execute(
-                    text(
-                        "SELECT ISNULL(MAX(version_no),0)+1 FROM dataset.dataset_version WITH (UPDLOCK,HOLDLOCK) "
-                        "WHERE dataset_id=:dataset"
-                    ),
-                    {"dataset": dataset_id},
-                ).scalar_one()
-            )
-            if previous is not None:
-                connection.execute(
-                    text(
-                        "UPDATE dataset.dataset_version SET status='SUPERSEDED',is_current=0 "
-                        "WHERE dataset_version_id=:previous"
-                    ),
-                    {"previous": previous},
-                )
-            version_id = self._scalar(
+            version_id, version_no = insert_draft_dataset_version(
                 connection,
-                "INSERT dataset.dataset_version(dataset_id,version_no,input_batch_id,canonical_model_version,status,"
-                "is_current,row_count,unit_count,measurement_count,published_by,published_at_utc,"
-                "supersedes_dataset_version_id,spec_set_id,metadata_json) OUTPUT INSERTED.dataset_version_id "
-                "VALUES(:dataset,:version,:batch,'1.0','PUBLISHED',1,:units,:units,:measurements,:owner,"
-                "SYSUTCDATETIME(),:previous,:spec,:metadata)",
-                {
-                    "dataset": dataset_id,
-                    "version": version_no,
-                    "batch": import_batch_id,
-                    "units": len(triplet.rows),
-                    "measurements": measurement_count,
-                    "owner": context["owner_user_id"],
-                    "previous": previous,
-                    "spec": spec_set_id,
-                    "metadata": json.dumps(
-                        {"spec_selection_rule": "FIRST_BATCH"}, ensure_ascii=False
-                    ),
-                },
-            )
-            connection.execute(
-                text(
-                    "INSERT dataset.dataset_version_run(dataset_version_id,processing_run_id,run_role,ordinal_no) "
-                    "VALUES(:version,:processing,'PRIMARY',1)"
+                dataset_id=int(dataset_id),
+                import_batch_id=import_batch_id,
+                unit_count=len(triplet.rows),
+                measurement_count=measurement_count,
+                spec_set_id=int(spec_set_id),
+                metadata_json=json.dumps(
+                    {
+                        "spec_selection_rule": "SINGLE_LOT_EXPLICIT_SPEC",
+                        "lot_id": single_lot_id,
+                        "spec_sha256": triplet.spec_sha256,
+                        "parameter_contract_sha256": parameter_contract_sha256,
+                    },
+                    ensure_ascii=False,
                 ),
-                {"version": version_id, "processing": processing_run_id},
             )
-            connection.execute(
-                text(
-                    "UPDATE ingestion.processing_run SET status='PUBLISHED',is_current=0 "
-                    "WHERE processing_run_id=:processing"
-                ),
-                {"processing": processing_run_id},
-            )
-            connection.execute(
-                text(
-                    "UPDATE ingestion.processing_artifact SET processing_run_id=:processing "
-                    "WHERE job_id=:job"
-                ),
-                {"processing": processing_run_id, "job": job_id},
+            record_atomic_stage(
+                connection,
+                job_id=job_id,
+                import_batch_id=import_batch_id,
+                processing_run_id=processing_run_id,
+                dataset_version_id=version_id,
+                preparation=preparation,
             )
         return CpCanonicalImportResult(
             processing_run_id=processing_run_id,
             dataset_id=int(dataset_id),
+            dataset_version_id=version_id,
             dataset_version_no=version_no,
             spec_set_id=int(spec_set_id),
             unit_count=len(triplet.rows),

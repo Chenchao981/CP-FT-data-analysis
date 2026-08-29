@@ -254,21 +254,41 @@ class SqlStageDataService:
             files,
         )
 
-    def worker_mark_processing(self, batch_id: int) -> None:
+    def worker_mark_processing(
+        self, batch_id: int, job_id: int, lease_token: str
+    ) -> None:
         with self._engine.begin() as connection:
             updated = connection.execute(
                 text(
-                    "UPDATE ingestion.import_batch SET status='PROCESSING' "
-                    "WHERE import_batch_id=:batch AND status='QUEUED'"
+                    "UPDATE b SET status='PROCESSING' FROM ingestion.import_batch b "
+                    "WHERE b.import_batch_id=:batch AND b.status='QUEUED' AND EXISTS("
+                    "SELECT 1 FROM ingestion.processing_job j WHERE j.job_id=:job "
+                    "AND j.import_batch_id=b.import_batch_id AND j.status='RUNNING' "
+                    "AND j.finalize_protocol='ATOMIC_V1' "
+                    "AND j.lease_token=CONVERT(uniqueidentifier,:lease_token) "
+                    "AND j.lease_expires_at_utc>=SYSUTCDATETIME())"
                 ),
-                {"batch": batch_id},
+                {"batch": batch_id, "job": job_id, "lease_token": lease_token},
             )
             if updated.rowcount != 1:
-                raise DomainError(
-                    "BATCH_STATE_CONFLICT",
-                    "上传任务已不在排队状态，Worker不能开始处理",
-                    409,
-                )
+                idempotent = connection.execute(
+                    text(
+                        "SELECT 1 FROM ingestion.import_batch b "
+                        "JOIN ingestion.processing_job j ON j.import_batch_id=b.import_batch_id "
+                        "WHERE b.import_batch_id=:batch AND b.status='PROCESSING' "
+                        "AND j.job_id=:job AND j.status='RUNNING' "
+                        "AND j.finalize_protocol='ATOMIC_V1' "
+                        "AND j.lease_token=CONVERT(uniqueidentifier,:lease_token) "
+                        "AND j.lease_expires_at_utc>=SYSUTCDATETIME()"
+                    ),
+                    {"batch": batch_id, "job": job_id, "lease_token": lease_token},
+                ).scalar_one_or_none()
+                if idempotent is None:
+                    raise DomainError(
+                        "BATCH_STATE_CONFLICT",
+                        "上传任务状态或Worker租约已变化，不能开始处理",
+                        409,
+                    )
 
     def mark_failed(
         self, batch_id: int, job_id: int, message: str, *, finish_job: bool = True
@@ -346,8 +366,28 @@ class SqlStageDataService:
                 {"batch": batch_id},
             )
 
-    def record_artifacts(self, job_id: int, artifacts, expires_at_utc) -> None:
+    def record_artifacts(
+        self,
+        job_id: int,
+        lease_token: str,
+        artifacts,
+        expires_at_utc,
+    ) -> None:
         with self._engine.begin() as connection:
+            lease_valid = connection.execute(
+                text(
+                    "SELECT 1 FROM ingestion.processing_job WITH (UPDLOCK,HOLDLOCK) "
+                    "WHERE job_id=:job AND status='RUNNING' "
+                    "AND finalize_protocol='ATOMIC_V1' "
+                    "AND lease_token=CONVERT(uniqueidentifier,:lease_token) "
+                    "AND lease_expires_at_utc>=SYSUTCDATETIME()"
+                ),
+                {"job": job_id, "lease_token": lease_token},
+            ).scalar_one_or_none()
+            if lease_valid is None:
+                raise DomainError(
+                    "JOB_LEASE_LOST", f"job {job_id} lease is no longer valid", 409
+                )
             for artifact in artifacts:
                 path = str(artifact.path)
                 connection.execute(

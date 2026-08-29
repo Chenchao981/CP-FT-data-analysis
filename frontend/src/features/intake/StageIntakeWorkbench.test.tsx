@@ -54,5 +54,5 @@ describe("StageIntakeWorkbench field actions", () => {
 
     await waitFor(() => expect(screen.getByLabelText("人工填写")).toBeInTheDocument());
     expect(screen.queryByLabelText("明确忽略")).not.toBeInTheDocument();
-  });
+  }, 15_000);
 });

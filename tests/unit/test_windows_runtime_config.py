@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
-
 
 ROOT = Path(__file__).resolve().parents[2]
 COMMON_SCRIPT = ROOT / "scripts" / "windows" / "TmsRuntime.Common.ps1"
@@ -176,3 +176,33 @@ def test_process_record_upsert_preserves_unprocessed_roles() -> None:
     )
 
     assert completed.stdout == "api:9,frontend:2,worker:3"
+
+
+def test_local_private_directory_works_in_powershell_core(tmp_path: Path) -> None:
+    pwsh = shutil.which("pwsh.exe")
+    if pwsh is None:
+        pytest.skip("PowerShell Core is unavailable")
+    private_directory = tmp_path / "private-state"
+    command = (
+        f". {_powershell_literal(LOCAL_COMMON_SCRIPT)}; "
+        f"Set-TmsLocalPrivateDirectory -Path {_powershell_literal(private_directory)}; "
+        f"if (-not (Test-Path -LiteralPath {_powershell_literal(private_directory)} "
+        "-PathType Container)) { throw 'private directory missing' }"
+    )
+
+    completed = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            command,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    assert completed.returncode == 0, completed.stderr

@@ -86,12 +86,20 @@ def main() -> None:
     )
     app.dependency_overrides[current_principal] = lambda: principal
     with TestClient(app) as client:
+        preview_response = client.get(
+            f"/api/v1/{args.domain}/cp/source-roots/G0_CP_SOURCE/manifest-preview",
+            params={"factory_code": args.factory, "relative_path": "."},
+        )
+        preview_response.raise_for_status()
+        preview = preview_response.json()
         response = client.post(
             f"/api/v1/{args.domain}/cp/uploads",
             data={
                 "factory_code": args.factory,
                 "source_root_code": "G0_CP_SOURCE",
                 "source_relative_path": ".",
+                "source_manifest_mode": preview["mode"],
+                "source_manifest_sha256": preview["sha"],
                 "remark": "CP multi-company Route A verification",
             },
         )
@@ -107,6 +115,7 @@ def main() -> None:
                     SqlStageDataService(engine),
                     CpCsvTripletWriter(engine),
                     FtXlsxScatterWriter(engine),
+                    finalizer=queue,
                 )
             },
             worker_id=f"{socket.gethostname()}-cp-multi-company-verification",

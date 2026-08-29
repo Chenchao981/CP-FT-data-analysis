@@ -1,7 +1,7 @@
 # TMS v0.9 生产就绪收口开发计划
 
 - 计划日期：2026-08-29
-- 计划状态：执行中
+- 计划状态：收口验证中；实现已推进到 `sql2014_0018`，最终全量与发布哈希 `FINAL_VERIFICATION_PENDING`
 - 目标版本：TMS v1.0 Core
 - 适用仓库：`F:\CP-FT数据分析`
 - 目标环境：Windows Server 2019 + SQL Server 2014 SP3（正式环境仍须现场复验）
@@ -26,12 +26,24 @@
 ### 2.1 已确认事实
 
 - 当前唯一正式明细链是 `test.test_run -> test.unit_result -> test.measurement`；快速分析和临时 Workspace 不得写入该链。
-- 仓库数据库版本为 `sql2014_0014`，开发库 `TMS_G0_DEV` 已按该版本验证。
+- 仓库唯一 Alembic head 和开发库 `TMS_G0_DEV` 均为 `sql2014_0018`；0015 原子 finalize、0016 Worker 运维、0017 管理/crosswalk、0018 A5 生命周期已经在开发库顺序升级验证。
 - 现有本机入口能启动 API、Route A Worker 和 React 前端；真实日月新 FT 已跑通上传、SQL Queue、Cleaner、Canonical、Dataset Current 和分析图表。
-- 2026-08-28 基线证据为：后端 206 项测试通过、前端 34 项测试通过、前端生产构建通过。
+- 2026-08-28 的后端 206 项、前端 34 项是计划启动前历史基线；0018 候选已经明显扩展测试集，最终合并后的测试总数、耗时和发布包 SHA 以 `docs/development/TMS_v1.0_Regression_Test_Report_2026-08-29.md` 的 `FINAL_VERIFICATION_PENDING` 回填项为准。
 - 日月新/日月光缺 Lot 已具备“暂停 -> 文件级补录 -> 同 Release 恢复 Job -> 正式发布”的审计闭环。
 - CP 和 FT 保持两个独立程序合同；菜单固定为工程 CP、工程 FT、量产 CP、量产 FT，不增加自动类型猜测。
 - 新洁能的业务背景要求系统能够支持多晶圆厂/封测厂协同、功率器件多产品平台、车规质量追溯与生产周期数字化；SAP、MES、QMS 的自动集成只有在接口和主数据责任明确后才进入生产范围。
+
+### 2.1.1 2026-08-29 执行快照
+
+| 计划项 | 当前事实 | 完成边界 |
+|---|---|---|
+| M1 数据安全 | Source Catalog、Lot-Spec、NULL Yield、全部来源血缘、staged/atomic finalize 已实现；7 个事务边界故障注入通过 | 专项完成；最终全量待回填 |
+| M2 工程师闭环 | Dataset Current、服务端分页/筛选、Job 详情、深链和四入口已实现 | 专项完成；最终浏览器回归待回填 |
+| M3 质量/领导视图 | 质量 KPI、未知占比、下钻、产品 crosswalk 和 SAP/MES/QMS 合同已实现 | 专项完成；企业主数据批准属于外部门 |
+| M4 运维/生命周期 | Export/Archive/Reprocess、Worker registry、双 Cleanup、备份恢复与发布工具已实现 | 开发库/DryRun 完成；目标机执行属于 G3 |
+| M5-M7 | 真实 CP/FT、Quick PAT、空库 Migration 和 A5 回滚证据已取得 | 最终全量、浏览器、release hash、提交推送 `FINAL_VERIFICATION_PENDING` |
+
+开发库正式事实在升级和回滚验证前后保持 139 Test Run、291,127 Unit Result、5,578,114 Measurement、10 个 Published Current Dataset Version。G3 测试服务器和 G4 生产分批均未执行。
 
 ### 2.2 本计划采用的假设
 
@@ -171,7 +183,7 @@
 | G3 | 测试服务器小组试用 | 1 个小组、有限产品/Lot | HTTPS、服务账号、备份恢复、业务 UAT | 重大安全/数据/稳定性问题 |
 | G4 | 生产分批 | 先单厂家/单阶段，再扩围 | 连续运行、业务签字、监控告警 | 触发批准的回滚阈值 |
 
-当前会话至少完成 G0-G2；G3-G4 必须使用目标环境和正式授权，不以本机结果替代。
+本次仓库收口目标是完成 G0-G2；最终 Gate 以日期化报告中的最后一次全量结果为准。G3-G4 必须使用目标环境和正式授权，不以本机结果替代，也不得因开发库通过而写成生产上线。
 
 ### M7：最终回归、报告与交付
 
@@ -249,3 +261,5 @@
 - 提交只包含安全源码、Migration、测试与文档，且已推送到批准的远端分支。
 
 生产上线完成还必须额外满足：G3-G4、HTTPS、正式账号、备份恢复、持续运行、业务 UAT 和正式签字全部通过。
+
+截至 2026-08-29 文档生成时，最终仓库交付状态仍为 `FINAL_VERIFICATION_PENDING`；待最后一次后端/前端/浏览器/发布包验证和安全提交完成后，由 Core 完成报告给出最终 PASS/FAIL。G3/G4 当前明确未执行。

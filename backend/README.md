@@ -2,6 +2,8 @@
 
 > 正式数据执行主线为 Route A；一次性PAT使用隔离的Quick Analysis Workspace。两条通道共享SQL队列和Worker，但只有正式导入写入Canonical。
 
+当前仓库唯一 Alembic head 为 `sql2014_0018`。开发库 `TMS_G0_DEV` 已完成现有库升级和 Schema 验证；其他环境必须在线核对数据库、服务器和 Revision，不能根据仓库文件名推断已升级。
+
 ## 开发环境
 
 ```powershell
@@ -51,6 +53,7 @@ Import-TmsRuntimeConfig -Path (Join-Path $PWD '.env.runtime.ps1')
 - `GET /api/v1/contracts/cleaner-adapters`
 - `POST /api/v1/jobs`
 - `GET /api/v1/jobs/{job_id}`
+- `GET /api/v1/jobs/{job_id}/details`
 - `POST /api/v1/jobs/{job_id}/transitions`
 - `POST /api/v1/cleaners/huahong/inspect`
 - `POST /api/v1/datasets`
@@ -59,6 +62,11 @@ Import-TmsRuntimeConfig -Path (Join-Path $PWD '.env.runtime.ps1')
 - `POST /api/v1/datasets/{dataset_id}/versions/{version_no}/publish`
 - `GET /api/v1/datasets/{dataset_id}/versions/{version_no}/summary`
 - `GET /api/v1/datasets/{dataset_id}/versions/{version_no}/charts`
+- `GET /api/v1/catalog/datasets/current`
+- `GET /api/v1/{engineering|production}/{cp|ft}/uploads/page`
+- `GET /api/v1/{engineering|production}/{cp|ft}/results/page`
+- `GET /api/v1/{engineering|production}/{cp|ft}/source-roots`
+- `GET /api/v1/{engineering|production}/{cp|ft}/source-roots/{root_code}/manifest-preview`
 - `POST /api/v1/enrichments`
 - `GET /api/v1/enrichments/batches/{import_batch_id}`
 - `GET /api/v1/enrichments/fields/{CP|FT}`
@@ -68,9 +76,22 @@ Import-TmsRuntimeConfig -Path (Join-Path $PWD '.env.runtime.ps1')
 - `GET /api/v1/quick-analysis/sessions`
 - `GET /api/v1/quick-analysis/sessions/{analysis_session_id}`
 - `GET /api/v1/quick-analysis/sessions/{analysis_session_id}/download`
+- `GET /api/v1/management/quality-summary`
+- `GET /api/v1/master-data/product-crosswalks`
+- `POST /api/v1/master-data/product-crosswalks/{crosswalk_id}/{approve|reject}`
+- `GET /api/v1/operations/consistency`
+- `GET /api/v1/operations/workers`
+- `POST /api/v1/operations/workers/{worker_id}/{drain|resume}`
+- `POST /api/v1/lifecycle/exports`
+- `GET /api/v1/lifecycle/exports/{job_id}`
+- `GET /api/v1/lifecycle/exports/{job_id}/artifacts/{artifact_id}/download`
+- `POST /api/v1/lifecycle/datasets/{dataset_id}/archive`
+- `POST /api/v1/lifecycle/datasets/{dataset_id}/reprocess`
 - `/api/docs`
 
 Job Service默认使用进程内实现；Route A 联调和部署必须设置 `TMS_JOB_REPOSITORY=sql`。SQL Repository支持原子领取、租约、心跳、超时恢复、幂等键和最大重试次数。
+
+正式入库使用 `INITIAL_IMPORT + ATOMIC_V1` staged/finalize 合同。Writer完成准备态事实、Dataset Version、全部来源映射和 finalize intent 后，服务在一个事务中切换 Run/Dataset Current、结果摘要、Batch、Job 和 intent。租约中断可以直接重放 staged intent，不重复运行Cleaner。
 
 Quick Analysis通过`TMS_SOURCE_ROOTS_JSON`配置管理员受控根目录。浏览器和API只使用`source_root_code + relative_path`，不接受任意绝对路径。P0仅支持杰群统一CSV目录PAT；结果写入`TMS_QUICK_WORK_ROOT`并按`TMS_QUICK_RESULT_TTL_HOURS`登记过期时间。
 
@@ -86,6 +107,16 @@ Import-TmsRuntimeConfig -Path (Join-Path $PWD '.env.runtime.ps1')
 ```
 
 清理器只允许删除`TMS_QUICK_WORK_ROOT/<job_id>`这个精确子目录，遇到目录逃逸或符号链接会标记`BLOCKED`。Session、Job、Manifest、SHA和`governance.audit_log`记录不会删除。进程中断后停留在`CLEANING`的任务默认30分钟后允许恢复，可用`TMS_QUICK_CLEANUP_STALE_MINUTES`调整。
+
+正式导出 Artifact 使用独立 Formal Cleanup，不与 Quick Workspace 混用。先以 DryRun 预览：
+
+```powershell
+. .\scripts\windows\TmsRuntime.Common.ps1
+Import-TmsRuntimeConfig -Path (Join-Path $PWD '.env.runtime.ps1')
+& .\.conda-env\python.exe scripts\run_formal_artifact_cleanup.py --dry-run
+```
+
+只有显式审批后才使用 `--delete`。Formal Cleanup 只处理 `TMS_WORK_ROOT/<job_id>` 规范直接子目录，并再次检查 Job 终态、TTL、lease、永久 Artifact、路径逃逸与 reparse point；数据库审计和业务事实不删除。
 
 开发库可用小型合成过期文件复验完整清理链；脚本完成后会移除全部合成记录：
 
@@ -124,6 +155,8 @@ Canonical写入分两步：`SourceFileRepository.register()`先登记来源和�
 
 Dataset发布链要求先建立Dataset Version并显式关联Processing Run。DQ Gate会检查Run状态、输入批次血缘、重复Source、Dataset身份范围及未关闭的阻断DQ问题；只有Gate为PASS且发布用户有效时，Publisher才会在一个事务中切换当前版本和当前Processing Run。结果摘要接口返回Lot、Wafer、Die、Pass/Fail、Yield、Measurement和Bin分布。
 
+最新版 Cleaner 导出、显式重清洗和逻辑归档是三种不同动作：导出只创建临时 Artifact，不改 Canonical；重清洗通过兼容的最新已发布 Cleaner 创建新 Dataset Version；归档退出 Current View 但保留 Source、Batch、Job、Run 和 `test.*`。三种动作均受 RBAC、Owner、理由、幂等和审计约束，TMS 不删除 FTP/NAS 原始源。
+
 真实SQL Server集成验证脚本：
 
 ```powershell
@@ -139,6 +172,8 @@ Dataset发布链要求先建立Dataset Version并显式关联Processing Run。DQ
 $env:PYTHONPATH = "$PWD\backend"
 & .\.conda-env\python.exe -m pytest -q tests
 ```
+
+前端、Migration、真实样本、浏览器和发布包的最终回归结果统一记录在 `docs/development/TMS_v1.0_Regression_Test_Report_2026-08-29.md`。本地测试不能替代目标 SQL Server SP3、正式服务账号 ACL、HTTPS、备份恢复和业务 UAT。
 
 真实数据库与现有华虹 Cleaner 的 Route A Worker 验证：
 

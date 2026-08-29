@@ -17,6 +17,7 @@ ALL_PERMISSIONS = frozenset(
         "RULE_GOVERN",
         "DQ_WAIVE_ERROR",
         "AUDIT_READ",
+        "MANAGEMENT_READ",
         "USER_ADMIN",
     }
 )

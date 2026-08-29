@@ -80,12 +80,20 @@ def main() -> None:
     app.dependency_overrides[current_principal] = lambda: principal
 
     with TestClient(app) as client:
+        preview_response = client.get(
+            f"/api/v1/{args.domain}/ft/source-roots/G0_FT_SOURCE/manifest-preview",
+            params={"factory_code": args.factory, "relative_path": "."},
+        )
+        preview_response.raise_for_status()
+        preview = preview_response.json()
         response = client.post(
             f"/api/v1/{args.domain}/ft/uploads",
             data={
                 "factory_code": args.factory,
                 "source_root_code": "G0_FT_SOURCE",
                 "source_relative_path": ".",
+                "source_manifest_mode": preview["mode"],
+                "source_manifest_sha256": preview["sha"],
                 "remark": f"{args.factory} FT Route A verification",
             },
         )
@@ -101,6 +109,7 @@ def main() -> None:
                     SqlStageDataService(engine),
                     CpCsvTripletWriter(engine),
                     FtXlsxScatterWriter(engine),
+                    finalizer=queue,
                 )
             },
             worker_id=f"{socket.gethostname()}-{args.factory}-ft-verification",

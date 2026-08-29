@@ -75,6 +75,7 @@ def main() -> None:
                 stage_data,
                 CpCsvTripletWriter(engine),
                 FtXlsxScatterWriter(engine),
+                finalizer=queue,
             )
         },
         worker_id=f"{socket.gethostname()}-route-a-backfill",

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 from pathlib import Path
 
 import pytest
 from app.infrastructure.cp_csv_triplet_writer import (
     CP_MULTI_LOT_SPEC_BINDING_REQUIRED,
     CpCsvTripletError,
+    CpCsvTripletWriter,
     CpMultiLotSpecBindingRequired,
     parse_cp_csv_triplet,
 )
@@ -61,6 +63,22 @@ def test_parse_cp_triplet_reconciles_single_lot_cleaned_yield_and_spec(
     assert parsed.rows[0].logical_key == "CP:L1:1:10:20:1"
     assert parsed.rows[1].values[0] == ""
     assert parsed.pass_count == 1
+
+
+def test_cp_writer_uses_atomic_draft_stage_without_first_batch_or_current_publish() -> None:
+    source = inspect.getsource(CpCsvTripletWriter.write)
+    module_source = inspect.getsource(
+        __import__(CpCsvTripletWriter.__module__, fromlist=["*"])
+    )
+
+    assert "prepare_atomic_stage" in source
+    assert "insert_draft_dataset_version" in source
+    assert "record_atomic_stage" in source
+    assert "PUBLISHED" not in source
+    assert "SUPERSEDED" not in source
+    assert "SINGLE_LOT_EXPLICIT_SPEC" in module_source
+    assert "FIRST_BATCH" not in module_source
+    assert "AND ((product_id=:product) OR (product_id IS NULL" in module_source
 
 
 def test_parse_cp_triplet_rejects_multiple_lots_without_explicit_spec_binding(

@@ -13,12 +13,20 @@ from app.domain.jobs import (
     JobType,
     TransitionJobRequest,
 )
+from app.domain.m2_queries import M2QueryService
 
 router = APIRouter()
 
 
 def service(request: Request) -> JobService:
     return request.app.state.job_service
+
+
+def m2_query_service(request: Request) -> M2QueryService:
+    instance = getattr(request.app.state, "m2_query_service", None)
+    if instance is None:
+        raise DomainError("DATABASE_NOT_CONFIGURED", "任务明细服务尚未连接数据库", 503)
+    return instance
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -55,6 +63,15 @@ def get_job(
     if hasattr(instance, "get_for_principal"):
         return asdict(instance.get_for_principal(job_id, principal))
     return asdict(instance.get(job_id))
+
+
+@router.get("/{job_id}/details")
+def get_job_details(
+    job_id: int,
+    request: Request,
+    principal: Principal = Depends(require_permission("DATASET_READ")),
+) -> dict:
+    return asdict(m2_query_service(request).get_job_details(principal, job_id))
 
 
 @router.post("/{job_id}/transitions")

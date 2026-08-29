@@ -7,6 +7,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+from app.core.errors import DomainError
 from app.domain.cleaner_registry import CleanerRegistry
 from app.domain.jobs import Job, JobStatus, JobType, WorkerJobQueue
 from app.domain.quick_analysis import QuickAnalysisService
@@ -29,7 +30,11 @@ from app.infrastructure.sql_cleaner_registry import SqlCleanerRegistry
 from app.infrastructure.sql_stage_data_service import SqlStageDataService
 
 logger = logging.getLogger(__name__)
-JobHandler = Callable[[Job], None]
+JobHandler = Callable[[Job], Job | None]
+
+
+class RetryableInitialImportFinalizeError(RuntimeError):
+    """A Finalizer infrastructure failure that must preserve a STAGED import."""
 
 
 class QuickPatHandler:
@@ -145,115 +150,126 @@ class RouteAInitialImportHandler:
         ft_writer: FtXlsxScatterWriter | None = None,
         runner: ExistingCleanerRunner | None = None,
         work_root: str | Path | None = None,
+        finalizer=None,
     ) -> None:
         self._registry = registry
         self._stage_data = stage_data
         self._cp_writer = cp_writer
         self._ft_writer = ft_writer
         self._runner = runner or ExistingCleanerRunner()
+        self._finalizer = finalizer
         self._work_root = Path(
             work_root or os.getenv("TMS_WORK_ROOT", r"F:\CP-FT数据分析\data\work")
         )
 
-    def __call__(self, job: Job) -> None:
+    def __call__(self, job: Job) -> Job:
         if job.import_batch_id is None:
             raise RuntimeError("INITIAL_IMPORT requires import_batch_id")
+        if job.cleaner_release_id is None:
+            raise RuntimeError("INITIAL_IMPORT requires cleaner_release_id")
+        if not job.lease_token:
+            raise RuntimeError("INITIAL_IMPORT requires an active Worker lease")
+        if job.finalize_protocol != "ATOMIC_V1":
+            raise RuntimeError("INITIAL_IMPORT requires finalize_protocol=ATOMIC_V1")
+        if self._finalizer is None:
+            raise RuntimeError("INITIAL_IMPORT Atomic Finalizer is not configured")
         try:
-            if job.cleaner_release_id is None:
-                raise RuntimeError("INITIAL_IMPORT requires cleaner_release_id")
-            batch = self._stage_data.worker_batch_info(job.import_batch_id)
-            if not batch.files:
-                raise RuntimeError(
-                    f"upload task {job.import_batch_id} has no input files"
-                )
-            release = self._registry.get_released(job.cleaner_release_id)
-            expected_factory = batch.factory_code.strip().upper()
-            aliases = {
-                "HH": "HUAHONG",
-                "华虹": "HUAHONG",
-                "JT": "JETECH",
-                "捷特": "JETECH",
-                "立昂微": "LION",
-                "国宇": "GUOYU",
-                "国宇FRD": "GUOYU",
-                "日月新": "RIYUEXIN",
-                "ASE": "RIYUEGUANG",
-                "日月光": "RIYUEGUANG",
-            }
-            expected_factory = aliases.get(expected_factory, expected_factory)
-            if (
-                release.test_stage != batch.test_stage
-                or release.factory_code != expected_factory
-            ):
-                raise RuntimeError(
-                    "Cleaner Release does not match upload task: "
-                    f"{release.test_stage}/{release.factory_code} != "
-                    f"{batch.test_stage}/{expected_factory}"
-                )
-            inputs = [Path(item.storage_uri) for item in batch.files]
-            lot_overrides = {
-                Path(item.original_file_name).name: item.lot_id_override
-                for item in batch.files
-                if item.lot_id_override
-            }
-            expected_sha256 = tuple(item.expected_sha256 for item in batch.files)
-            output_root = (
-                self._work_root / str(job.job_id) / f"attempt-{job.attempt_count}"
+            staged = self._finalizer.finalize_staged_initial_import_if_present(
+                job_id=job.job_id,
+                lease_token=job.lease_token,
             )
-            self._stage_data.worker_mark_processing(job.import_batch_id)
-            result = self._runner.run_release(
-                release=release,
-                inputs=inputs,
-                output_root=output_root,
-                lot_overrides=lot_overrides if batch.test_stage == "FT" else None,
-                expected_sha256=expected_sha256,
-            )
-            summary = summarize_existing_cleaner_result(result)
-            expires = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=24)
-            self._stage_data.record_artifacts(job.job_id, result.artifacts, expires)
-            if batch.test_stage == "CP":
-                canonical = self._cp_writer.write(
-                    job_id=job.job_id,
-                    import_batch_id=job.import_batch_id,
-                    artifacts=result.artifacts,
-                )
-                summary.update(
-                    {
-                        "dataset_id": canonical.dataset_id,
-                        "dataset_version_no": canonical.dataset_version_no,
-                    }
-                )
-            elif batch.test_stage == "FT":
-                if self._ft_writer is None:
-                    raise RuntimeError("FT Canonical Writer is not configured")
-                canonical = self._ft_writer.write(
-                    job_id=job.job_id,
-                    import_batch_id=job.import_batch_id,
-                    artifacts=result.artifacts,
-                )
-                summary.update(
-                    {
-                        "dataset_id": canonical.dataset_id,
-                        "dataset_version_no": canonical.dataset_version_no,
-                    }
-                )
-            self._stage_data.archive_previous_results(job.import_batch_id)
-            self._stage_data.record_result(
-                job.import_batch_id,
-                job.job_id,
-                summary,
-                finish_job=False,
-            )
-        except CleanerInputRequired:
+        except DomainError:
             raise
         except Exception as exc:
-            self._stage_data.mark_failed(
-                job.import_batch_id,
-                job.job_id,
-                str(exc),
-                finish_job=False,
+            raise RetryableInitialImportFinalizeError(
+                "STAGED Initial Import recovery probe failed; preserve the Job for retry"
+            ) from exc
+        if staged is not None:
+            return staged
+        batch = self._stage_data.worker_batch_info(job.import_batch_id)
+        if not batch.files:
+            raise RuntimeError(f"upload task {job.import_batch_id} has no input files")
+        release = self._registry.get_released(job.cleaner_release_id)
+        expected_factory = batch.factory_code.strip().upper()
+        aliases = {
+            "HH": "HUAHONG",
+            "华虹": "HUAHONG",
+            "JT": "JETECH",
+            "捷特": "JETECH",
+            "立昂微": "LION",
+            "国宇": "GUOYU",
+            "国宇FRD": "GUOYU",
+            "日月新": "RIYUEXIN",
+            "ASE": "RIYUEGUANG",
+            "日月光": "RIYUEGUANG",
+        }
+        expected_factory = aliases.get(expected_factory, expected_factory)
+        if (
+            release.test_stage != batch.test_stage
+            or release.factory_code != expected_factory
+        ):
+            raise RuntimeError(
+                "Cleaner Release does not match upload task: "
+                f"{release.test_stage}/{release.factory_code} != "
+                f"{batch.test_stage}/{expected_factory}"
             )
+        inputs = [Path(item.storage_uri) for item in batch.files]
+        lot_overrides = {
+            Path(item.original_file_name).name: item.lot_id_override
+            for item in batch.files
+            if item.lot_id_override
+        }
+        expected_sha256 = tuple(item.expected_sha256 for item in batch.files)
+        output_root = self._work_root / str(job.job_id) / f"attempt-{job.attempt_count}"
+        self._stage_data.worker_mark_processing(
+            job.import_batch_id, job.job_id, job.lease_token
+        )
+        result = self._runner.run_release(
+            release=release,
+            inputs=inputs,
+            output_root=output_root,
+            lot_overrides=lot_overrides if batch.test_stage == "FT" else None,
+            expected_sha256=expected_sha256,
+        )
+        summary = summarize_existing_cleaner_result(result)
+        expires = datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=24)
+        self._stage_data.record_artifacts(
+            job.job_id, job.lease_token, result.artifacts, expires
+        )
+        if batch.test_stage == "CP":
+            canonical = self._cp_writer.write(
+                job_id=job.job_id,
+                import_batch_id=job.import_batch_id,
+                lease_token=job.lease_token,
+                artifacts=result.artifacts,
+                finalize_summary=summary,
+            )
+        elif batch.test_stage == "FT":
+            if self._ft_writer is None:
+                raise RuntimeError("FT Canonical Writer is not configured")
+            canonical = self._ft_writer.write(
+                job_id=job.job_id,
+                import_batch_id=job.import_batch_id,
+                lease_token=job.lease_token,
+                artifacts=result.artifacts,
+                finalize_summary=summary,
+            )
+        else:
+            raise RuntimeError(f"unsupported formal test stage: {batch.test_stage}")
+        try:
+            return self._finalizer.finalize_initial_import(
+                job_id=job.job_id,
+                lease_token=job.lease_token,
+                processing_run_id=canonical.processing_run_id,
+                dataset_version_id=canonical.dataset_version_id,
+                summary=summary,
+            )
+        except DomainError:
             raise
+        except Exception as exc:
+            raise RetryableInitialImportFinalizeError(
+                "Initial Import Finalizer failed after STAGED write; preserve the Job for retry"
+            ) from exc
 
 
 class DatabaseJobWorker:
@@ -307,48 +323,87 @@ class DatabaseJobWorker:
             daemon=True,
         )
         thread.start()
+
+        def finish_or_release(
+            target_status: JobStatus,
+            *,
+            error_code: str | None = None,
+            error_message: str | None = None,
+        ) -> Job | None:
+            try:
+                return self._queue.finish_leased(
+                    job.job_id,
+                    job.lease_token or "",
+                    target_status,
+                    error_code=error_code,
+                    error_message=error_message,
+                )
+            except DomainError as exc:
+                if exc.code != "JOB_LEASE_LOST":
+                    raise
+                logger.warning(
+                    "Worker terminal write skipped because its lease was lost",
+                    extra={"job_id": job.job_id, "target_status": target_status.value},
+                )
+                return None
+
         try:
             try:
                 handler = self._handlers[job.job_type]
             except KeyError as exc:
                 raise RuntimeError(f"no Worker handler for {job.job_type}") from exc
-            handler(job)
+            handled_job = handler(job)
+            if handled_job is not None:
+                if handled_job.job_id != job.job_id or handled_job.status != JobStatus.SUCCESS:
+                    raise RuntimeError(
+                        "Worker handler returned an invalid terminal Job result"
+                    )
+                stop.set()
+                thread.join(timeout=2)
+                return handled_job
             if heartbeat_error:
                 raise RuntimeError(f"Worker heartbeat failed: {heartbeat_error[-1]}")
-            return self._queue.finish_leased(
-                job.job_id,
-                job.lease_token,
-                JobStatus.SUCCESS,
-            )
+            return finish_or_release(JobStatus.SUCCESS)
         except CleanerInputRequired as exc:
             logger.info(
                 "Route A job needs user input",
                 extra={"job_id": job.job_id, "field_code": exc.field_code},
             )
-            return self._queue.pause_leased_for_input(
-                job.job_id,
-                job.lease_token,
-                field_code=exc.field_code,
-                files=exc.files,
-                message=exc.message,
-            )
+            try:
+                return self._queue.pause_leased_for_input(
+                    job.job_id,
+                    job.lease_token,
+                    field_code=exc.field_code,
+                    files=exc.files,
+                    message=exc.message,
+                )
+            except DomainError as pause_error:
+                if pause_error.code != "JOB_LEASE_LOST":
+                    raise
+                logger.warning(
+                    "Worker input pause skipped because its lease was lost",
+                    extra={"job_id": job.job_id},
+                )
+                return None
         except CpMultiLotSpecBindingRequired as exc:
             logger.warning(
                 "Route A CP job rejected because per-Lot Spec binding is absent",
                 extra={"job_id": job.job_id},
             )
-            return self._queue.finish_leased(
-                job.job_id,
-                job.lease_token,
+            return finish_or_release(
                 JobStatus.FAILED,
                 error_code=CP_MULTI_LOT_SPEC_BINDING_REQUIRED,
                 error_message=str(exc)[-2000:],
             )
+        except RetryableInitialImportFinalizeError:
+            logger.exception(
+                "Atomic Initial Import Finalizer failed; leaving STAGED Job leased for retry",
+                extra={"job_id": job.job_id},
+            )
+            return None
         except Exception as exc:
             logger.exception("Route A job failed", extra={"job_id": job.job_id})
-            return self._queue.finish_leased(
-                job.job_id,
-                job.lease_token,
+            return finish_or_release(
                 JobStatus.FAILED,
                 error_code="WORKER_EXECUTION_FAILED",
                 error_message=str(exc)[-2000:],

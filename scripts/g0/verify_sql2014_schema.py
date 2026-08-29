@@ -26,13 +26,17 @@ EXPECTED_VIEWS = {
     "analytics.v_current_measurement",
 }
 EXPECTED_TABLES = {
+    "ingestion.initial_import_finalize_intent",
     "ingestion.processing_job",
     "ingestion.processing_input_request",
     "ingestion.processing_run",
+    "ingestion.processing_run_input_file",
+    "ingestion.worker_instance",
     "ingestion.format_profile",
     "ingestion.cleaner_release",
     "ingestion.field_enrichment",
     "ingestion.processing_artifact",
+    "ingestion.lifecycle_job_target",
     "test.test_run",
     "test.unit_result",
     "test.measurement",
@@ -67,7 +71,7 @@ def main() -> None:
         cursor = connection.cursor()
         cursor.execute("SELECT version_num FROM alembic_version")
         revision = cursor.fetchone()[0]
-        assert revision == "sql2014_0014", revision
+        assert revision == "sql2014_0018", revision
 
         cursor.execute("SELECT name FROM sys.schemas")
         schemas = {row[0] for row in cursor.fetchall()}
@@ -76,6 +80,46 @@ def main() -> None:
         cursor.execute("SELECT SCHEMA_NAME(schema_id) + '.' + name FROM sys.tables")
         tables = {row[0] for row in cursor.fetchall()}
         assert not (EXPECTED_TABLES - tables), EXPECTED_TABLES - tables
+
+        cursor.execute(
+            "SELECT name FROM sys.columns "
+            "WHERE object_id=OBJECT_ID('dataset.dataset')"
+        )
+        dataset_columns = {row[0] for row in cursor.fetchall()}
+        required_lifecycle_columns = {
+            "lifecycle_status",
+            "archived_at_utc",
+            "archived_by_user_id",
+            "archive_reason",
+            "lifecycle_row_version",
+        }
+        assert not (required_lifecycle_columns - dataset_columns), (
+            required_lifecycle_columns - dataset_columns
+        )
+
+        cursor.execute(
+            "SELECT name FROM sys.columns "
+            "WHERE object_id=OBJECT_ID('ingestion.lifecycle_job_target')"
+        )
+        lifecycle_target_columns = {row[0] for row in cursor.fetchall()}
+        assert lifecycle_target_columns == {
+            "job_id",
+            "dataset_id",
+            "target_dataset_version_id",
+            "action_type",
+            "requested_by_user_id",
+            "request_reason",
+            "created_at_utc",
+            "row_version",
+        }, lifecycle_target_columns
+        cursor.execute(
+            "SELECT definition FROM sys.check_constraints "
+            "WHERE parent_object_id=OBJECT_ID('ingestion.processing_artifact') "
+            "AND name='CK_processing_artifact_physical_status'"
+        )
+        artifact_status_check = cursor.fetchone()
+        assert artifact_status_check is not None
+        assert "DELETING" in artifact_status_check[0]
 
         cursor.execute("SELECT SCHEMA_NAME(schema_id) + '.' + name FROM sys.views")
         views = {row[0] for row in cursor.fetchall()}
@@ -118,6 +162,33 @@ def main() -> None:
         assert cursor.fetchone()[0] == 1
 
         cursor.execute(
+            "SELECT name FROM sys.columns "
+            "WHERE object_id=OBJECT_ID('ingestion.worker_instance')"
+        )
+        worker_columns = {row[0] for row in cursor.fetchall()}
+        required_worker_columns = {
+            "worker_id",
+            "worker_kind",
+            "state",
+            "desired_state",
+            "started_at_utc",
+            "last_seen_at_utc",
+            "stopped_at_utc",
+            "database_name",
+            "schema_revision",
+            "host_fingerprint",
+            "control_updated_at_utc",
+            "row_version",
+        }
+        assert worker_columns == required_worker_columns, worker_columns
+        cursor.execute(
+            "SELECT COUNT(*) FROM sys.indexes "
+            "WHERE object_id=OBJECT_ID('ingestion.worker_instance') "
+            "AND name IN('IX_worker_instance_health','IX_worker_instance_control')"
+        )
+        assert cursor.fetchone()[0] == 2
+
+        cursor.execute(
             "SELECT name FROM sys.columns WHERE object_id=OBJECT_ID('ingestion.processing_job')"
         )
         job_columns = {row[0] for row in cursor.fetchall()}
@@ -131,10 +202,62 @@ def main() -> None:
             "max_attempts",
             "analysis_session_id",
             "parent_job_id",
+            "finalize_protocol",
         }
         assert not (required_job_columns - job_columns), (
             required_job_columns - job_columns
         )
+
+        cursor.execute(
+            "SELECT name FROM sys.columns "
+            "WHERE object_id=OBJECT_ID('ingestion.processing_run_input_file')"
+        )
+        run_input_columns = {row[0] for row in cursor.fetchall()}
+        required_run_input_columns = {
+            "processing_run_id",
+            "import_batch_file_id",
+            "lineage_basis",
+            "created_at_utc",
+        }
+        assert run_input_columns == required_run_input_columns, run_input_columns
+        cursor.execute(
+            "SELECT COUNT(*) FROM sys.indexes "
+            "WHERE object_id=OBJECT_ID('ingestion.processing_run_input_file') "
+            "AND name='IX_processing_run_input_file_batch_file'"
+        )
+        assert cursor.fetchone()[0] == 1
+
+        cursor.execute(
+            "SELECT name FROM sys.columns "
+            "WHERE object_id=OBJECT_ID('ingestion.initial_import_finalize_intent')"
+        )
+        finalize_intent_columns = {row[0] for row in cursor.fetchall()}
+        required_finalize_intent_columns = {
+            "job_id",
+            "import_batch_id",
+            "processing_run_id",
+            "dataset_version_id",
+            "input_manifest_sha256",
+            "input_manifest_json",
+            "status",
+            "staged_attempt_count",
+            "staged_at_utc",
+            "finalized_at_utc",
+            "finalized_lease_token",
+            "aborted_at_utc",
+            "abort_error_code",
+            "abort_error_message",
+            "row_version",
+        }
+        assert finalize_intent_columns == required_finalize_intent_columns, (
+            finalize_intent_columns
+        )
+        cursor.execute(
+            "SELECT COUNT(*) FROM sys.indexes "
+            "WHERE object_id=OBJECT_ID('ingestion.initial_import_finalize_intent') "
+            "AND name='IX_initial_import_finalize_recovery'"
+        )
+        assert cursor.fetchone()[0] == 1
 
         cursor.execute(
             "SELECT name FROM sys.columns "

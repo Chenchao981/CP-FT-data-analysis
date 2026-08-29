@@ -11,11 +11,13 @@ interface LoadForm { dataset_id: number; version_no: number }
 
 export interface AnalyticsWorkbenchProps {
   initialSelection?: DatasetSelection;
+  onSelectionChange?: (datasetId: number, versionNo: number) => void;
 }
 
 const BIN_COLORS = ["#2d9d78", "#d64545", "#f0a429", "#7b61a8", "#247ba0", "#8d6e63", "#607d8b"];
 
-export function AnalyticsWorkbench({ initialSelection }: AnalyticsWorkbenchProps) {
+export function AnalyticsWorkbench({ initialSelection, onSelectionChange }: AnalyticsWorkbenchProps) {
+  const [loadForm] = Form.useForm<LoadForm>();
   const [selection, setSelection] = useState<DatasetSelection | undefined>(initialSelection);
   const [lotId, setLotId] = useState<string>();
   const [waferId, setWaferId] = useState<string>();
@@ -27,6 +29,15 @@ export function AnalyticsWorkbench({ initialSelection }: AnalyticsWorkbenchProps
     enabled: Boolean(selection),
   });
   const data = query.data;
+  useEffect(() => {
+    setSelection(initialSelection);
+    setLotId(undefined);
+    setWaferId(undefined);
+    setSourceId(undefined);
+    setParameter(undefined);
+    loadForm.resetFields();
+    if (initialSelection) loadForm.setFieldsValue({ dataset_id: initialSelection.datasetId, version_no: initialSelection.versionNo });
+  }, [initialSelection?.datasetId, initialSelection?.versionNo, loadForm]);
   useEffect(() => {
     if (data?.test_stage === "FT" && !parameter && data.parameter_options.length) {
       setParameter(data.parameter_options[0].name);
@@ -154,6 +165,7 @@ export function AnalyticsWorkbench({ initialSelection }: AnalyticsWorkbenchProps
 
       <Card className="analytics-filter-card">
         <Form<LoadForm>
+          form={loadForm}
           layout="inline"
           initialValues={initialSelection ? { dataset_id: initialSelection.datasetId, version_no: initialSelection.versionNo } : undefined}
           onFinish={(values) => {
@@ -162,6 +174,7 @@ export function AnalyticsWorkbench({ initialSelection }: AnalyticsWorkbenchProps
             setSourceId(undefined);
             setParameter(undefined);
             setSelection({ datasetId: values.dataset_id, versionNo: values.version_no });
+            onSelectionChange?.(values.dataset_id, values.version_no);
           }}
         >
           <Form.Item label="Dataset编号" name="dataset_id" rules={[{ required: true }]}><InputNumber min={1} precision={0} /></Form.Item>

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 
 from app.api.auth import router as auth_router
+from app.api.catalog import router as catalog_router
 from app.api.cleaners import router as cleaners_router
 from app.api.contracts import router as contracts_router
 from app.api.datasets import router as datasets_router
@@ -13,8 +15,14 @@ from app.api.enrichments import router as enrichments_router
 from app.api.health import router as health_router
 from app.api.input_requests import router as input_requests_router
 from app.api.jobs import router as jobs_router
+from app.api.lifecycle import router as lifecycle_router
+from app.api.management import router as management_router
+from app.api.master_data import router as master_data_router
+from app.api.operations import router as operations_router
 from app.api.quick_analysis import router as quick_analysis_router
-from app.api.stage_data import _upload_root, router as stage_data_router
+from app.api.stage_data import _upload_root
+from app.api.stage_data import router as stage_data_router
+from app.api.worker_operations import router as worker_operations_router
 from app.core.config import get_settings
 from app.core.errors import DomainError
 from app.core.exception_handlers import domain_error_handler, validation_error_handler
@@ -24,6 +32,7 @@ from app.domain.jobs import InMemoryJobService
 from app.domain.quick_analysis import InMemoryQuickAnalysisService
 from app.domain.quick_capacity import QuickCapacityPolicy
 from app.infrastructure.database import get_engine
+from app.infrastructure.formal_artifact_files import ManagedJobPathPolicy
 from app.infrastructure.source_catalog import SourceCatalog
 from app.infrastructure.sql_auth_service import SqlAuthService
 from app.infrastructure.sql_cleaner_registry import SqlCleanerRegistry
@@ -33,8 +42,16 @@ from app.infrastructure.sql_input_request_service import (
     SqlProcessingInputRequestService,
 )
 from app.infrastructure.sql_job_service import SqlJobService
+from app.infrastructure.sql_lifecycle_service import SqlLifecycleService
+from app.infrastructure.sql_m2_query_service import SqlM2QueryService
+from app.infrastructure.sql_management_service import SqlManagementService
+from app.infrastructure.sql_master_data_service import SqlMasterDataService
+from app.infrastructure.sql_operations_service import SqlOperationsService
 from app.infrastructure.sql_quick_analysis_service import SqlQuickAnalysisService
 from app.infrastructure.sql_stage_data_service import SqlStageDataService
+from app.infrastructure.sql_worker_operations_service import (
+    SqlWorkerOperationsService,
+)
 
 
 def create_app() -> FastAPI:
@@ -44,7 +61,7 @@ def create_app() -> FastAPI:
     database_configured = bool(os.getenv("TMS_DATABASE_URL"))
     application = FastAPI(
         title="TMS CP/FT Data Platform",
-        version="0.4.1",
+        version="1.0.0",
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
     )
@@ -83,6 +100,38 @@ def create_app() -> FastAPI:
         if database_configured and settings.job_repository == "sql"
         else InMemoryQuickAnalysisService(capacity=quick_capacity)
     )
+    application.state.operations_service = (
+        SqlOperationsService(get_engine(), environment=settings.environment)
+        if database_configured
+        else None
+    )
+    application.state.m2_query_service = (
+        SqlM2QueryService(get_engine()) if database_configured else None
+    )
+    application.state.management_service = (
+        SqlManagementService(get_engine()) if database_configured else None
+    )
+    application.state.master_data_service = (
+        SqlMasterDataService(get_engine()) if database_configured else None
+    )
+    application.state.worker_operations_service = (
+        SqlWorkerOperationsService(get_engine()) if database_configured else None
+    )
+    application.state.lifecycle_service = (
+        SqlLifecycleService(
+            get_engine(),
+            ManagedJobPathPolicy(
+                Path(
+                    os.getenv(
+                        "TMS_WORK_ROOT",
+                        r"F:\CP-FT数据分析\data\work",
+                    )
+                )
+            ),
+        )
+        if database_configured
+        else None
+    )
     application.state.quick_capacity_policy = quick_capacity
     source_catalog = SourceCatalog.from_environment()
     source_catalog.assert_storage_separate(_upload_root())
@@ -100,6 +149,9 @@ def create_app() -> FastAPI:
         datasets_router, prefix="/api/v1/datasets", tags=["datasets"]
     )
     application.include_router(
+        catalog_router, prefix="/api/v1/catalog", tags=["catalog"]
+    )
+    application.include_router(
         enrichments_router, prefix="/api/v1/enrichments", tags=["enrichments"]
     )
     application.include_router(stage_data_router, prefix="/api/v1", tags=["stage-data"])
@@ -108,6 +160,21 @@ def create_app() -> FastAPI:
     )
     application.include_router(
         quick_analysis_router, prefix="/api/v1", tags=["quick-analysis"]
+    )
+    application.include_router(
+        operations_router, prefix="/api/v1", tags=["operations"]
+    )
+    application.include_router(
+        worker_operations_router, prefix="/api/v1", tags=["worker-operations"]
+    )
+    application.include_router(
+        management_router, prefix="/api/v1", tags=["management"]
+    )
+    application.include_router(
+        master_data_router, prefix="/api/v1", tags=["master-data"]
+    )
+    application.include_router(
+        lifecycle_router, prefix="/api/v1", tags=["lifecycle"]
     )
     return application
 

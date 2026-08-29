@@ -86,6 +86,9 @@ class SourceManifest:
             self.as_payload(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
         )
 
+    def matches_confirmation(self, *, mode: str, sha256: str) -> bool:
+        return self.mode == mode and self.sha256 == sha256.lower()
+
 
 class SourceCatalog:
     """Resolve only administrator-configured server roots and their descendants."""
