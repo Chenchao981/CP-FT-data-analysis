@@ -6,9 +6,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_a5_lifecycle_migration_is_sql2014_safe_and_fail_closed() -> None:
-    sql = (
-        ROOT / "db" / "alembic" / "sql" / "0018_a5_lifecycle_sql2014.sql"
-    ).read_text(encoding="utf-8-sig")
+    sql = (ROOT / "db" / "alembic" / "sql" / "0018_a5_lifecycle_sql2014.sql").read_text(
+        encoding="utf-8-sig"
+    )
 
     assert "SET XACT_ABORT ON" in sql
     assert "COL_LENGTH(N'dataset.dataset', N'lifecycle_status') IS NULL" in sql
@@ -33,11 +33,7 @@ def test_a5_lifecycle_migration_is_sql2014_safe_and_fail_closed() -> None:
 
 def test_a5_lifecycle_alembic_wrapper_follows_0017_and_is_irreversible() -> None:
     wrapper = (
-        ROOT
-        / "db"
-        / "alembic"
-        / "versions"
-        / "sql2014_0018_a5_lifecycle.py"
+        ROOT / "db" / "alembic" / "versions" / "sql2014_0018_a5_lifecycle.py"
     ).read_text(encoding="utf-8-sig")
 
     assert 'revision = "sql2014_0018"' in wrapper
@@ -46,12 +42,12 @@ def test_a5_lifecycle_alembic_wrapper_follows_0017_and_is_irreversible() -> None
     assert "irreversible_downgrade()" in wrapper
 
 
-def test_sql2014_verifier_tracks_a5_head_and_lifecycle_contract() -> None:
-    verifier = (
-        ROOT / "scripts" / "g0" / "verify_sql2014_schema.py"
-    ).read_text(encoding="utf-8-sig")
+def test_sql2014_verifier_tracks_current_head_and_a5_lifecycle_contract() -> None:
+    verifier = (ROOT / "scripts" / "g0" / "verify_sql2014_schema.py").read_text(
+        encoding="utf-8-sig"
+    )
 
-    assert 'assert revision == "sql2014_0018"' in verifier
+    assert 'assert revision == "sql2014_0019"' in verifier
     assert '"ingestion.lifecycle_job_target"' in verifier
     assert '"lifecycle_status"' in verifier
     assert 'assert "DELETING" in artifact_status_check[0]' in verifier

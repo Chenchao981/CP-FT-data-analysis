@@ -195,26 +195,25 @@ def _save_uploads(
         seen_names.add(normalized_name)
         validated.append((uploaded, original))
 
-    target = (
-        _upload_root()
-        / business_domain.lower()
-        / test_stage.lower()
-        / uuid4().hex
-    )
+    target = _upload_root() / business_domain.lower() / test_stage.lower() / uuid4().hex
     target.mkdir(parents=True, exist_ok=False)
     stored: list[StoredUpload] = []
-    for uploaded, original in validated:
-        destination = target / original
-        digest = hashlib.sha256()
-        size = 0
-        with destination.open("xb") as output:
-            while chunk := uploaded.file.read(1024 * 1024):
-                size += len(chunk)
-                digest.update(chunk)
-                output.write(chunk)
-        stored.append(
-            StoredUpload(original, destination.resolve(), size, digest.hexdigest())
-        )
+    try:
+        for uploaded, original in validated:
+            destination = target / original
+            digest = hashlib.sha256()
+            size = 0
+            with destination.open("xb") as output:
+                while chunk := uploaded.file.read(1024 * 1024):
+                    size += len(chunk)
+                    digest.update(chunk)
+                    output.write(chunk)
+            stored.append(
+                StoredUpload(original, destination.resolve(), size, digest.hexdigest())
+            )
+    except Exception:
+        shutil.rmtree(target, ignore_errors=True)
+        raise
     return tuple(stored)
 
 
@@ -226,9 +225,7 @@ def _positive_limit(name: str, default: int) -> int:
 
 
 def _upload_root() -> Path:
-    raw = os.getenv(
-        "TMS_UPLOAD_ROOT", r"F:\CP-FT数据分析\data\raw"
-    ).strip()
+    raw = os.getenv("TMS_UPLOAD_ROOT", r"F:\CP-FT数据分析\data\raw").strip()
     if not raw:
         raise RuntimeError("TMS_UPLOAD_ROOT must be a non-empty absolute path")
     unresolved = Path(raw).expanduser()
@@ -253,6 +250,32 @@ def _managed_upload_path(value: str) -> Path:
             409,
         )
     return path
+
+
+def _cleanup_unregistered_uploads(
+    stored: tuple[StoredUpload, ...], business_domain: str, test_stage: str
+) -> None:
+    """Remove only the fresh request snapshot when DB registration rolls back."""
+
+    if not stored:
+        return
+    scope_root = (
+        _upload_root() / business_domain.lower() / test_stage.lower()
+    ).resolve()
+    targets: set[Path] = set()
+    for item in stored:
+        path = item.path.resolve()
+        try:
+            relative = path.relative_to(scope_root)
+        except ValueError:
+            continue
+        if not relative.parts:
+            continue
+        target = (scope_root / relative.parts[0]).resolve()
+        if target.parent == scope_root:
+            targets.add(target)
+    for target in targets:
+        shutil.rmtree(target, ignore_errors=True)
 
 
 def _snapshot_catalog_directory(
@@ -295,12 +318,7 @@ def _snapshot_catalog_directory(
             "正式入库快照空间不足，请联系管理员清理或扩容",
             507,
         )
-    target = (
-        upload_root
-        / business_domain.lower()
-        / test_stage.lower()
-        / uuid4().hex
-    )
+    target = upload_root / business_domain.lower() / test_stage.lower() / uuid4().hex
     target.mkdir(parents=True, exist_ok=False)
     selected_directory_name = selected.name.strip()
     if not selected_directory_name:
@@ -592,9 +610,18 @@ def upload_stage_data(
         stored = _save_uploads(
             domain, stage, files or [], FACTORY_ALLOWED_SUFFIXES[factory]
         )
-    batch_id = service(request).register_upload(
-        principal, domain, stage, factory, stored, remark.strip() if remark else None
-    )
+    try:
+        batch_id = service(request).register_upload(
+            principal,
+            domain,
+            stage,
+            factory,
+            stored,
+            remark.strip() if remark else None,
+        )
+    except Exception:
+        _cleanup_unregistered_uploads(stored, domain, stage)
+        raise
     registry_factory = REGISTRY_FACTORY_CODES[factory]
     release = cleaner_registry(request).latest_released(stage, registry_factory)
     job = _queue_initial_import(
@@ -689,9 +716,7 @@ def list_stage_uploads_page(
         allowed_statuses=UPLOAD_PAGE_STATUSES,
     )
     return asdict(
-        m2_query_service(request).list_uploads_page(
-            principal, domain, stage, filters
-        )
+        m2_query_service(request).list_uploads_page(principal, domain, stage, filters)
     )
 
 
@@ -724,9 +749,7 @@ def list_stage_results_page(
         allowed_statuses=RESULT_PAGE_STATUSES,
     )
     return asdict(
-        m2_query_service(request).list_results_page(
-            principal, domain, stage, filters
-        )
+        m2_query_service(request).list_results_page(principal, domain, stage, filters)
     )
 
 

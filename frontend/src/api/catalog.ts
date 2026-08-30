@@ -23,6 +23,9 @@ export interface CurrentDatasetRow {
   owner_login: string;
   owner_name: string;
   cleaner_version: string | null;
+  can_edit_product: boolean;
+  can_export: boolean;
+  can_reprocess: boolean;
   can_archive: boolean;
 }
 

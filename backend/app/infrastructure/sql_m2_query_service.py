@@ -26,15 +26,20 @@ from app.domain.m2_queries import (
     StageResultPageItem,
     StageUploadPageItem,
 )
+from app.infrastructure.sql_visibility import (
+    batch_read_scope_sql,
+    can_manage_sql,
+    current_dataset_read_scope_sql,
+    formal_result_read_scope_sql,
+    visibility_parameters,
+)
 
 
 def _iso(value: Any) -> str | None:
     if value is None:
         return None
     if not isinstance(value, datetime):
-        raise DomainError(
-            "M2_QUERY_CONTRACT_INVALID", "查询结果时间字段无效", 503
-        )
+        raise DomainError("M2_QUERY_CONTRACT_INVALID", "查询结果时间字段无效", 503)
     if value.tzinfo is None:
         value = value.replace(tzinfo=UTC)
     else:
@@ -48,28 +53,7 @@ def _like(value: str) -> str:
 
 
 def _scope_parameters(principal: Principal) -> dict[str, object]:
-    return {
-        "user_id": principal.user_id,
-        "is_admin": "SYSTEM_ADMIN" in principal.roles,
-    }
-
-
-_CURRENT_DATA_READ_GRANT = """
-EXISTS(
-    SELECT 1
-    FROM iam.user_role scope_ur
-    JOIN iam.role scope_r
-      ON scope_r.role_id=scope_ur.role_id AND scope_r.active=1
-    JOIN iam.data_scope_grant scope_g
-      ON scope_g.role_id=scope_ur.role_id AND scope_g.user_id IS NULL
-    WHERE scope_ur.user_id=:user_id
-      AND scope_g.scope_type='GLOBAL'
-      AND scope_g.scope_key=N'TMS_CURRENT_DATA'
-      AND scope_g.permission_mode='READ'
-      AND (scope_g.expires_at_utc IS NULL
-           OR scope_g.expires_at_utc>SYSUTCDATETIME())
-)
-"""
+    return visibility_parameters(principal)
 
 
 def _safe_error_message(value: Any) -> str | None:
@@ -191,8 +175,7 @@ class SqlM2QueryService:
         base_where = (
             " WHERE b.business_domain=:business_domain "
             "AND b.test_stage=:test_stage "
-            "AND (:is_admin=1 OR b.owner_user_id=:user_id)"
-            + where
+            "AND " + batch_read_scope_sql(batch_alias="b") + where
         )
         base_from = (
             " FROM ingestion.import_batch b "
@@ -213,10 +196,13 @@ class SqlM2QueryService:
                     text(
                         "SELECT b.import_batch_id,ibf.ordinal_no,r.receipt_id,"
                         "r.source_file_id,r.original_file_name,s.file_size,"
+                        "r.is_duplicate_receipt,"
                         "b.factory_code,b.started_at_utc,b.completed_at_utc,"
                         "u.login_name,u.display_name,b.status,latest.job_id "
                         "AS latest_job_id,latest.error_code,latest.error_message,"
-                        "latest.queue_age_seconds"
+                        "latest.queue_age_seconds,CASE WHEN "
+                        + can_manage_sql(owner_column="b.owner_user_id")
+                        + " THEN 1 ELSE 0 END AS can_manage"
                         + base_from
                         + "OUTER APPLY(SELECT TOP (1) j.job_id,j.error_code,"
                         "j.error_message,CASE WHEN j.status='QUEUED' AND "
@@ -263,17 +249,18 @@ class SqlM2QueryService:
         base = (
             " FROM ingestion.processing_result_summary s "
             "JOIN ingestion.import_batch b ON b.import_batch_id=s.import_batch_id "
+            "JOIN iam.app_user u ON u.user_id=b.owner_user_id "
             "WHERE b.business_domain=:business_domain "
             "AND b.test_stage=:test_stage "
-            "AND (:is_admin=1 OR b.owner_user_id=:user_id OR "
-            + _CURRENT_DATA_READ_GRANT
-            + ")"
+            "AND "
+            + formal_result_read_scope_sql(summary_alias="s", batch_alias="b")
             + where
         )
         with self._engine.connect() as connection:
             total = int(
-                connection.execute(text("SELECT COUNT_BIG(*)" + base), parameters)
-                .scalar_one()
+                connection.execute(
+                    text("SELECT COUNT_BIG(*)" + base), parameters
+                ).scalar_one()
             )
             rows = (
                 connection.execute(
@@ -282,7 +269,11 @@ class SqlM2QueryService:
                         "s.data_name,s.product_name,s.lot_id,s.wafer_count,"
                         "s.factory_code,s.test_item_count,s.unit_count,"
                         "s.pass_count,s.yield_rate,s.status,s.data_type,"
-                        "s.dataset_id,s.dataset_version_no,s.created_at_utc"
+                        "s.dataset_id,s.dataset_version_no,s.created_at_utc,"
+                        "u.login_name,u.display_name,"
+                        "CASE WHEN "
+                        + can_manage_sql(owner_column="b.owner_user_id")
+                        + " THEN 1 ELSE 0 END AS can_manage"
                         + base
                         + " ORDER BY s.result_summary_id DESC "
                         "OFFSET :offset ROWS FETCH NEXT :page_size ROWS ONLY"
@@ -329,15 +320,17 @@ class SqlM2QueryService:
         parameters.setdefault("wafer_id", None)
         base = _CURRENT_DATASET_FROM + (
             " WHERE dv.status='PUBLISHED' AND dv.is_current=1 "
-            "AND (:is_admin=1 OR d.owner_user_id=:user_id OR "
-            + _CURRENT_DATA_READ_GRANT
-            + ")"
+            "AND "
+            + current_dataset_read_scope_sql(
+                dataset_alias="d", version_alias="dv", batch_alias="b"
+            )
             + where
         )
         with self._engine.connect() as connection:
             total = int(
-                connection.execute(text("SELECT COUNT_BIG(*)" + base), parameters)
-                .scalar_one()
+                connection.execute(
+                    text("SELECT COUNT_BIG(*)" + base), parameters
+                ).scalar_one()
             )
             rows = (
                 connection.execute(
@@ -368,9 +361,7 @@ class SqlM2QueryService:
                 .one_or_none()
             )
             if row is None:
-                raise DomainError(
-                    "JOB_NOT_FOUND", "任务不存在或无权访问", 404
-                )
+                raise DomainError("JOB_NOT_FOUND", "任务不存在或无权访问", 404)
             link_rows = (
                 connection.execute(
                     text(_JOB_LINKS_SQL),
@@ -380,14 +371,18 @@ class SqlM2QueryService:
                 .all()
             )
             chain = (
-                connection.execute(
-                    text(_JOB_PUBLISH_CHAIN_SQL), {"job_id": job_id}
-                )
+                connection.execute(text(_JOB_PUBLISH_CHAIN_SQL), {"job_id": job_id})
                 .mappings()
                 .one_or_none()
             )
+            can_manage = bool(row["can_manage"])
+            chain = self._visible_publish_chain(chain, can_manage=can_manage)
             source_rows: list[Mapping[str, Any]] = []
-            if chain is not None and chain["processing_run_id"] is not None:
+            if (
+                can_manage
+                and chain is not None
+                and chain["processing_run_id"] is not None
+            ):
                 source_rows = (
                     connection.execute(
                         text(_JOB_RUN_SOURCE_LINEAGE_SQL),
@@ -396,7 +391,7 @@ class SqlM2QueryService:
                     .mappings()
                     .all()
                 )
-            if not source_rows and row["import_batch_id"] is not None:
+            if can_manage and not source_rows and row["import_batch_id"] is not None:
                 source_rows = (
                     connection.execute(
                         text(_JOB_BATCH_SOURCE_LINEAGE_SQL),
@@ -428,9 +423,21 @@ class SqlM2QueryService:
             run=run,
             dataset=dataset,
             timeline=self._timeline(row, chain),
-            actions=self._available_actions(principal, row, dataset),
+            actions=self._available_actions(
+                principal, row, dataset, can_manage=can_manage
+            ),
             sources=tuple(self._source_lineage(item) for item in source_rows),
         )
+
+    @staticmethod
+    def _visible_publish_chain(
+        chain: Mapping[str, Any] | None, *, can_manage: bool
+    ) -> Mapping[str, Any] | None:
+        if chain is None or can_manage:
+            return chain
+        if str(chain["version_status"]) == "PUBLISHED" and bool(chain["is_current"]):
+            return chain
+        return None
 
     @staticmethod
     def _upload_item(row: Mapping[str, Any]) -> StageUploadPageItem:
@@ -454,6 +461,9 @@ class SqlM2QueryService:
             error_message=_safe_error_message(row["error_message"]),
             action_required=("LOT_ID" if str(row["status"]) == "NEEDS_INPUT" else None),
             queue_age_seconds=_optional_int(row["queue_age_seconds"]),
+            is_duplicate_receipt=bool(row["is_duplicate_receipt"]),
+            can_manage=bool(row["can_manage"]),
+            can_download_source=bool(row["can_manage"]),
         )
 
     @staticmethod
@@ -470,12 +480,17 @@ class SqlM2QueryService:
             test_item_count=_optional_int(row["test_item_count"]),
             unit_count=_optional_int(row["unit_count"]),
             pass_count=_optional_int(row["pass_count"]),
-            yield_rate=(float(row["yield_rate"]) if row["yield_rate"] is not None else None),
+            yield_rate=(
+                float(row["yield_rate"]) if row["yield_rate"] is not None else None
+            ),
             status=str(row["status"]),
             data_type=str(row["data_type"]),
             dataset_id=_optional_int(row["dataset_id"]),
             dataset_version_no=_optional_int(row["dataset_version_no"]),
             created_at_utc=_iso(row["created_at_utc"]) or "",
+            can_manage=bool(row["can_manage"]),
+            uploader_login=str(row["login_name"]),
+            uploader_name=str(row["display_name"]),
         )
 
     @staticmethod
@@ -496,7 +511,9 @@ class SqlM2QueryService:
             status=str(row["status"]),
             unit_count=_optional_int(row["unit_count"]),
             pass_count=_optional_int(row["pass_count"]),
-            yield_rate=(float(row["yield_rate"]) if row["yield_rate"] is not None else None),
+            yield_rate=(
+                float(row["yield_rate"]) if row["yield_rate"] is not None else None
+            ),
             source_file_count=int(row["source_file_count"] or 0),
             processed_at_utc=_iso(row["processed_at_utc"]) or "",
             owner_login=str(row["owner_login"]),
@@ -506,6 +523,9 @@ class SqlM2QueryService:
                 if row.get("cleaner_version") is not None
                 else None
             ),
+            can_edit_product=bool(row["can_edit_product"]),
+            can_export=bool(row["can_export"]),
+            can_reprocess=bool(row["can_reprocess"]),
             can_archive=bool(row["can_archive"]),
         )
 
@@ -670,32 +690,41 @@ class SqlM2QueryService:
         principal: Principal,
         job: Mapping[str, Any],
         dataset: DatasetSummary | None,
+        *,
+        can_manage: bool,
     ) -> tuple[AvailableAction, ...]:
         actions: list[AvailableAction] = []
         if (
-            job["source_file_count"]
+            can_manage
+            and job["source_file_count"]
             and job["import_batch_id"] is not None
             and principal.can("DATASET_READ")
         ):
-            actions.append(
-                AvailableAction("DOWNLOAD_SOURCE", "查看源文件", True, None)
-            )
-        if dataset is not None and dataset.status == "PUBLISHED":
+            actions.append(AvailableAction("DOWNLOAD_SOURCE", "查看源文件", True, None))
+        if (
+            dataset is not None
+            and dataset.status == "PUBLISHED"
+            and (can_manage or dataset.is_current)
+        ):
             actions.append(AvailableAction("VIEW_RESULT", "查看结果", True, None))
-        if principal.can("TASK_CREATE") and job["import_batch_id"] is not None:
+        if (
+            can_manage
+            and principal.can("TASK_CREATE")
+            and job["import_batch_id"] is not None
+        ):
             if str(job["batch_status"]) == "NEEDS_INPUT":
                 actions.append(
                     AvailableAction("RESOLVE_LOT_INPUT", "补录 Lot", True, None)
                 )
-            elif (
-                str(job["batch_status"]) in {"FAILED", "PROCESSED"}
-                and str(job["status"]) in {"FAILED", "SUCCESS"}
-            ):
+            elif str(job["batch_status"]) in {"FAILED", "PROCESSED"} and str(
+                job["status"]
+            ) in {"FAILED", "SUCCESS"}:
                 actions.append(
                     AvailableAction("REPROCESS_BATCH", "重新处理", True, None)
                 )
         if (
-            principal.can("TASK_RETRY")
+            can_manage
+            and principal.can("TASK_RETRY")
             and str(job["job_type"]) != "INITIAL_IMPORT"
             and str(job["status"]) in {"QUEUED", "RUNNING"}
         ):
@@ -721,6 +750,9 @@ SELECT d.dataset_id,dv.dataset_version_id,dv.version_no,
        COALESCE(pr.finished_at_utc,dv.published_at_utc) AS processed_at_utc,
        owner_user.login_name AS owner_login,owner_user.display_name AS owner_name,
        cr.cleaner_version,
+       CASE WHEN :is_admin=1 OR d.owner_user_id=:user_id THEN 1 ELSE 0 END AS can_edit_product,
+       CASE WHEN :is_admin=1 OR d.owner_user_id=:user_id THEN 1 ELSE 0 END AS can_export,
+       CASE WHEN :is_admin=1 OR d.owner_user_id=:user_id THEN 1 ELSE 0 END AS can_reprocess,
        CASE WHEN :is_admin=1 OR d.owner_user_id=:user_id THEN 1 ELSE 0 END AS can_archive
 """
 
@@ -792,8 +824,13 @@ SELECT j.job_id,j.source_file_id,j.import_batch_id,j.analysis_session_id,
          AS queue_age_seconds,
        CASE WHEN j.import_batch_id IS NOT NULL THEN
          (SELECT COUNT_BIG(*) FROM ingestion.import_batch_file ibf
-          WHERE ibf.import_batch_id=j.import_batch_id)
+         WHERE ibf.import_batch_id=j.import_batch_id)
          WHEN j.source_file_id IS NOT NULL THEN 1 ELSE 0 END AS source_file_count,
+       CASE WHEN :is_admin=1 OR b.owner_user_id=:user_id
+              OR ws.owner_user_id=:user_id
+              OR (b.import_batch_id IS NULL AND ws.analysis_session_id IS NULL
+                  AND j.requested_by_user_id=:user_id)
+            THEN 1 ELSE 0 END AS can_manage,
        cr.cleaner_code,cr.cleaner_version,cr.code_checksum,
        b.batch_name,b.business_domain,b.test_stage,b.factory_code,
        b.status AS batch_status
@@ -808,8 +845,7 @@ WHERE j.job_id=:job_id AND (
     :is_admin=1 OR b.owner_user_id=:user_id OR ws.owner_user_id=:user_id OR
     (b.import_batch_id IS NULL AND ws.analysis_session_id IS NULL
      AND j.requested_by_user_id=:user_id) OR
-    (j.import_batch_id IS NOT NULL AND
-""" + _CURRENT_DATA_READ_GRANT + """)
+    (j.import_batch_id IS NOT NULL AND b.business_domain='PRODUCTION')
 )
 """
 
@@ -827,8 +863,7 @@ WHERE (j.job_id=:parent_job_id OR j.parent_job_id=:job_id)
   AND (:is_admin=1 OR b.owner_user_id=:user_id OR ws.owner_user_id=:user_id OR
       (b.import_batch_id IS NULL AND ws.analysis_session_id IS NULL
        AND j.requested_by_user_id=:user_id) OR
-      (j.import_batch_id IS NOT NULL AND
-""" + _CURRENT_DATA_READ_GRANT + """))
+      (j.import_batch_id IS NOT NULL AND b.business_domain='PRODUCTION'))
 ORDER BY j.job_id
 """
 

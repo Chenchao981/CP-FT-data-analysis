@@ -48,6 +48,9 @@ class StageUploadRow:
     error_code: str | None = None
     error_message: str | None = None
     action_required: Literal["LOT_ID"] | None = None
+    is_duplicate_receipt: bool = False
+    can_manage: bool = False
+    can_download_source: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +61,7 @@ class BatchFileInfo:
     source_file_id: int
     expected_sha256: str | None
     lot_id_override: str | None = None
+    is_duplicate_receipt: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +70,7 @@ class BatchInfo:
     factory_code: str
     status: str
     files: tuple[BatchFileInfo, ...]
+    can_manage: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +100,9 @@ class StageResultRow:
     dataset_id: int | None
     dataset_version_no: int | None
     created_at_utc: str
+    can_manage: bool = False
+    uploader_login: str = ""
+    uploader_name: str = ""
 
 
 class StageDataService(Protocol):

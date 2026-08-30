@@ -41,9 +41,9 @@ def main() -> None:
                     text("SELECT version_num FROM alembic_version")
                 ).scalar_one()
             )
-            if database != "TMS_G0_DEV" or revision != "sql2014_0018":
+            if database != "TMS_G0_DEV" or revision != "sql2014_0019":
                 raise RuntimeError(
-                    f"expected TMS_G0_DEV/sql2014_0018, got {database}/{revision}"
+                    f"expected TMS_G0_DEV/sql2014_0019, got {database}/{revision}"
                 )
             owner_id = int(
                 connection.execute(
@@ -169,9 +169,7 @@ def main() -> None:
                 {"session": session_id},
             )
 
-        service = SqlQuickCleanupService(
-            engine, QuickArtifactFileCleaner(work_root)
-        )
+        service = SqlQuickCleanupService(engine, QuickArtifactFileCleaner(work_root))
         preview = service.run_due(limit=100, dry_run=True)
         preview_item = next(
             item for item in preview if item.analysis_session_id == session_id
@@ -187,13 +185,17 @@ def main() -> None:
             raise AssertionError(f"physical cleanup failed: {result}")
 
         with engine.connect() as connection:
-            session = connection.execute(
-                text(
-                    "SELECT status,cleanup_status,cleanup_attempt_count,cleaned_at_utc "
-                    "FROM workspace.analysis_session WHERE analysis_session_id=:session"
-                ),
-                {"session": session_id},
-            ).mappings().one()
+            session = (
+                connection.execute(
+                    text(
+                        "SELECT status,cleanup_status,cleanup_attempt_count,cleaned_at_utc "
+                        "FROM workspace.analysis_session WHERE analysis_session_id=:session"
+                    ),
+                    {"session": session_id},
+                )
+                .mappings()
+                .one()
+            )
             artifact_states = {
                 str(row[0])
                 for row in connection.execute(
@@ -204,14 +206,18 @@ def main() -> None:
                     {"job": job_id},
                 ).all()
             }
-            audits = connection.execute(
-                text(
-                    "SELECT audit_id,after_json FROM governance.audit_log "
-                    "WHERE operation='QUICK_ARTIFACT_CLEANUP' "
-                    "AND entity_type='workspace.analysis_session' AND entity_id=:entity"
-                ),
-                {"entity": str(session_id)},
-            ).mappings().all()
+            audits = (
+                connection.execute(
+                    text(
+                        "SELECT audit_id,after_json FROM governance.audit_log "
+                        "WHERE operation='QUICK_ARTIFACT_CLEANUP' "
+                        "AND entity_type='workspace.analysis_session' AND entity_id=:entity"
+                    ),
+                    {"entity": str(session_id)},
+                )
+                .mappings()
+                .all()
+            )
             audit_ids = [int(row["audit_id"]) for row in audits]
             after_facts = {
                 "test_run": int(
@@ -237,8 +243,7 @@ def main() -> None:
             or session["cleaned_at_utc"] is None
             or artifact_states != {"DELETED"}
             or len(audits) != 1
-            or json.loads(str(audits[0]["after_json"]))["cleanup_status"]
-            != "CLEANED"
+            or json.loads(str(audits[0]["after_json"]))["cleanup_status"] != "CLEANED"
             or after_facts != before_facts
         ):
             raise AssertionError(
@@ -251,7 +256,7 @@ def main() -> None:
                 {
                     "verification": "PASS",
                     "database": "TMS_G0_DEV",
-                    "revision": "sql2014_0018",
+                    "revision": "sql2014_0019",
                     "dry_run_file_count": preview_item.discovered_file_count,
                     "stale_cleaning_recovery": "PASS",
                     "cleanup_status": result.cleanup_status,
@@ -288,9 +293,7 @@ def main() -> None:
                     )
                 if job_id is not None:
                     connection.execute(
-                        text(
-                            "DELETE ingestion.processing_artifact WHERE job_id=:job"
-                        ),
+                        text("DELETE ingestion.processing_artifact WHERE job_id=:job"),
                         {"job": job_id},
                     )
                     connection.execute(

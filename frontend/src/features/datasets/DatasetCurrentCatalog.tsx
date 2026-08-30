@@ -98,6 +98,7 @@ const URL_FILTER_KEYS = [...FILTER_KEYS, "import_batch_id", "from_utc", "to_utc"
 export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOpenAnalytics, onOpenComparison, onOpenJob }: DatasetCurrentCatalogProps) {
   const { user, can } = useAuth();
   const canExport = can("EXPORT_DATA");
+  const canEditProduct = can("TASK_CREATE");
   const canReprocess = can("TASK_CREATE");
   const isSystemAdmin = Boolean(user?.roles.includes("SYSTEM_ADMIN"));
   const queryClient = useQueryClient();
@@ -273,9 +274,9 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
       render: (_, row) => <Space size={0} wrap>
         <Button type="link" size="small" icon={<BarChartOutlined />} onClick={() => onOpenAnalytics(row.dataset_id, row.version_no)}>分析</Button>
         {row.job_id != null && <Button type="link" size="small" icon={<UnorderedListOutlined />} onClick={() => onOpenJob(row.job_id!)}>Job #{row.job_id}</Button>}
-        {canReprocess && row.can_archive && <Button type="link" size="small" onClick={() => { productForm.setFieldsValue({ action: "FILL", value_text: row.product_name ?? undefined, reason: "补充或纠正正式数据产品业务信息" }); setProductTarget(row); }}>{row.product_name ? "修正产品" : "补录产品"}</Button>}
-        {canExport && <Button type="link" size="small" icon={<DownloadOutlined />} onClick={() => openLifecycleAction("EXPORT", row)}>导出最新</Button>}
-        {canReprocess && <Button type="link" size="small" icon={<SyncOutlined />} onClick={() => openLifecycleAction("REPROCESS", row)}>显式重处理</Button>}
+        {canEditProduct && row.can_edit_product && <Button type="link" size="small" onClick={() => { productForm.setFieldsValue({ action: "FILL", value_text: row.product_name ?? undefined, reason: "补充或纠正正式数据产品业务信息" }); setProductTarget(row); }}>{row.product_name ? "修正产品" : "补录产品"}</Button>}
+        {canExport && row.can_export && <Button type="link" size="small" icon={<DownloadOutlined />} onClick={() => openLifecycleAction("EXPORT", row)}>导出最新</Button>}
+        {canReprocess && row.can_reprocess && <Button type="link" size="small" icon={<SyncOutlined />} onClick={() => openLifecycleAction("REPROCESS", row)}>显式重处理</Button>}
         {row.can_archive && <Button type="link" danger size="small" icon={<DeleteOutlined />} title="仅 Dataset Owner 或 SYSTEM_ADMIN 可创建" onClick={() => openLifecycleAction("ARCHIVE", row)}>逻辑归档</Button>}
       </Space>,
     },
@@ -300,6 +301,7 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
         <Typography.Text><strong>导出最新</strong>：由后端选择最新 Cleaner 生成有 TTL 的临时 Artifact；不调用 Canonical Importer，不创建或切换 Dataset Version，不改动人工补录。</Typography.Text>
         <Typography.Text><strong>显式重处理</strong>：生成新 Dataset Version，只有全量校验成功后才原子切换 Current；失败时旧 Current 仍可用。</Typography.Text>
         <Typography.Text><strong>逻辑归档</strong>：仅 Owner / SYSTEM_ADMIN 可执行；不删除 FTP/NAS 原始文件、Source Receipt，也不影响其他 Owner 的同 Lot 数据。{isSystemAdmin ? "当前账户具有 SYSTEM_ADMIN 角色。" : "是否为 Dataset Owner 由后端行级授权最终判定。"}</Typography.Text>
+        <Typography.Text><strong>共享边界</strong>：量产 Current 可供全员查询和分析；导出、补录、重处理与归档只在后端逐行授权时显示。</Typography.Text>
       </Space>}
     />
     <Card
@@ -316,7 +318,7 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
           <Col xs={24} sm={12} lg={6}><Form.Item label="Wafer" name="wafer_id"><Input allowClear placeholder="Wafer ID" /></Form.Item></Col>
           <Col xs={24} sm={12} lg={6}><Form.Item label="上传任务" name="import_batch_id"><InputNumber min={1} precision={0} className="full-width" placeholder="Batch 编号" /></Form.Item></Col>
           <Col xs={24} sm={12} lg={6}><Form.Item label="Cleaner 版本" name="cleaner_version"><Input allowClear /></Form.Item></Col>
-          {isSystemAdmin && <Col xs={24} sm={12} lg={6}><Form.Item label="上传账号" name="owner_login"><Input allowClear /></Form.Item></Col>}
+          <Col xs={24} sm={12} lg={6}><Form.Item label="上传账号" name="owner_login"><Input allowClear /></Form.Item></Col>
           <Col xs={24} sm={12} lg={6}><Form.Item label="厂家" name="factory_code"><Select allowClear showSearch placeholder="全部厂家" options={Object.entries(factoryNames).map(([value, label]) => ({ value, label }))} /></Form.Item></Col>
           <Col xs={12} sm={6} lg={3}><Form.Item label="业务域" name="business_domain"><Select allowClear options={[{ label: "工程", value: "ENGINEERING" }, { label: "量产", value: "PRODUCTION" }]} /></Form.Item></Col>
           <Col xs={12} sm={6} lg={3}><Form.Item label="阶段" name="test_stage"><Select allowClear options={[{ label: "CP", value: "CP" }, { label: "FT", value: "FT" }]} /></Form.Item></Col>

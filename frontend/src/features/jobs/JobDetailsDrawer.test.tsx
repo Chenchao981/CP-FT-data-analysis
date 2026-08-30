@@ -193,6 +193,19 @@ describe("JobDetailsDrawer", () => {
     expect(screen.queryByText("Worker 在线")).not.toBeInTheDocument();
   }, 15_000);
 
+  it("does not infer a management action when the backend disables it", async () => {
+    renderDrawer({
+      ...details,
+      actions: [{ code: "REPROCESS_BATCH", label: "重新处理", enabled: false, reason: "仅上传人可以重新处理" }],
+    });
+
+    const action = await screen.findByRole("button", { name: "重新处理" });
+    expect(action).toBeDisabled();
+    expect(action).toHaveAttribute("title", "仅上传人可以重新处理");
+    fireEvent.click(action);
+    expect(reprocessStageBatch).not.toHaveBeenCalled();
+  }, 15_000);
+
   it("renders nullable or omitted optional details without a blank drawer", async () => {
     renderDrawer({ job: { status: "SUCCESS" }, children: null, timeline: null, actions: null });
 

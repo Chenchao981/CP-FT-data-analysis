@@ -116,13 +116,11 @@ def main() -> None:
     identity = check_database()
     if identity["database"] != "TMS_G0_DEV":
         raise RuntimeError("This rollback verification is restricted to TMS_G0_DEV")
-    if identity["schema_revision"] != "sql2014_0018":
-        raise RuntimeError("sql2014_0018 is required")
+    if identity["schema_revision"] != "sql2014_0019":
+        raise RuntimeError("sql2014_0019 is required")
 
     engine = get_engine()
-    work_root = Path(
-        os.getenv("TMS_WORK_ROOT", str(ROOT / "data" / "work"))
-    ).absolute()
+    work_root = Path(os.getenv("TMS_WORK_ROOT", str(ROOT / "data" / "work"))).absolute()
     reason = "G2 rollback-only explicit reprocess verification"
     external_key = f"g2-reprocess-rollback-{uuid4().hex}"
 
@@ -200,9 +198,13 @@ def main() -> None:
                 or cleaner_contract.original_input_contract
                 != cleaner_contract.selected_input_contract
             ):
-                raise RuntimeError("Reprocess selected an incompatible Cleaner contract")
+                raise RuntimeError(
+                    "Reprocess selected an incompatible Cleaner contract"
+                )
             if _facts(connection) != baseline:
-                raise RuntimeError("Queueing reprocess changed Canonical facts or Current")
+                raise RuntimeError(
+                    "Queueing reprocess changed Canonical facts or Current"
+                )
             details = SqlM2QueryService(  # type: ignore[arg-type]
                 bound_engine
             ).get_job_details(principal, receipt.job_id)
@@ -223,8 +225,7 @@ def main() -> None:
     with engine.connect() as connection:
         restored_status = connection.execute(
             text(
-                "SELECT status FROM ingestion.import_batch "
-                "WHERE import_batch_id=:batch"
+                "SELECT status FROM ingestion.import_batch WHERE import_batch_id=:batch"
             ),
             {"batch": batch_id},
         ).scalar_one()

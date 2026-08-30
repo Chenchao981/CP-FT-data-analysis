@@ -34,6 +34,9 @@ export interface StageUploadRow {
   completion_time_utc: string | null;
   uploader_login: string;
   uploader_name: string;
+  is_duplicate_receipt: boolean;
+  can_manage: boolean;
+  can_download_source: boolean;
   status: string;
   latest_job_id: number | null;
   error_code: string | null;
@@ -77,6 +80,9 @@ export interface StageResultRow {
   lot_id: string | null;
   wafer_count: number | null;
   factory_code: string;
+  uploader_login: string;
+  uploader_name: string;
+  can_manage: boolean;
   test_item_count: number | null;
   unit_count: number | null;
   pass_count: number | null;

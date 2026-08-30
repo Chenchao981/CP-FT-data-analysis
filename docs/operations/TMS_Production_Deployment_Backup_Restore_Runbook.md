@@ -61,7 +61,7 @@ New-Item -ItemType Directory -Force .\artifacts\releases | Out-Null
 .\scripts\windows\test_tms_migration_readiness.ps1 `
   -SqlInstance 'SQLPROD01' -Database 'NCE_TMS' `
   -AllowedDatabases 'NCE_TMS' -Phase PreMigration `
-  -ExpectedSchemaRevision 'sql2014_0018'
+  -ExpectedSchemaRevision 'sql2014_0019'
 
 .\scripts\windows\backup_tms_database.ps1 `
   -SqlInstance 'SQLPROD01' -Database 'NCE_TMS' `
@@ -79,7 +79,7 @@ New-Item -ItemType Directory -Force .\artifacts\releases | Out-Null
 .\scripts\windows\test_tms_migration_readiness.ps1 `
   -SqlInstance 'SQLPROD01' -Database 'NCE_TMS' `
   -AllowedDatabases 'NCE_TMS' -Phase PostMigration `
-  -ExpectedSchemaRevision 'sql2014_0018' -Execute
+  -ExpectedSchemaRevision 'sql2014_0019' -Execute
 ```
 
 Post-check 必须确认 schema revision 精确匹配，且 Dataset Current/Processing Run Current 无非 `PUBLISHED` current 和重复 current。
@@ -91,7 +91,7 @@ Post-check 必须确认 schema revision 精确匹配，且 Dataset Current/Proce
   -SqlInstance 'SQLUAT01' -Database 'NCE_TMS_MIGRATION_TEST' `
   -AllowedTestDatabases 'NCE_TMS_MIGRATION_TEST' `
   -ProductionDatabases 'NCE_TMS' `
-  -ExpectedSchemaRevision 'sql2014_0018'
+  -ExpectedSchemaRevision 'sql2014_0019'
 ```
 
 先审核 DryRun，再加 `-Execute`。执行时先验证库存在且 `sys.tables` 为空，再使用 Integrated Security 运行 `alembic upgrade head`，最后执行精确 schema/current consistency 检查。失败后不自动修补或删库，由 DBA 保留证据并重建新的空库再测。
@@ -108,7 +108,7 @@ Post-check 必须确认 schema revision 精确匹配，且 Dataset Current/Proce
   -ProductionDatabases 'NCE_TMS' `
   -BackupPath 'E:\SQLBackup\NCE_TMS_before_v1_0.bak' `
   -RestoreDataDirectory 'F:\SQLData\TMSRestore' `
-  -ExpectedSchemaRevision 'sql2014_0018'
+  -ExpectedSchemaRevision 'sql2014_0019'
 ```
 
 审核 DryRun 输出后才可加 `-Execute`。脚本先做 `VERIFYONLY CHECKSUM` 和 `FILELISTONLY`，为每个逻辑文件生成明确 `MOVE`目标，拒绝任何已存在的目标库/数据文件，恢复后自动执行 schema/current consistency 检查。恢复成功、查询可读且检查无异常后，将演练时间、备份 SHA256、恢复库名和检查输出归档。

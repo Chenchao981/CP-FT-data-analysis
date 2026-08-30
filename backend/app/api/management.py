@@ -37,7 +37,7 @@ def quality_summary(
     product_name: str | None = Query(default=None, min_length=1, max_length=200),
     lot_id: str | None = Query(default=None, min_length=1, max_length=128),
     recent_limit: int = Query(default=20, ge=1, le=100),
-    _principal: Principal = Depends(require_permission("MANAGEMENT_READ")),  # noqa: B008
+    principal: Principal = Depends(require_permission("MANAGEMENT_READ")),  # noqa: B008
 ) -> dict:
     upper = _as_utc(to_utc or datetime.now(UTC))
     lower = _as_utc(from_utc or (upper - timedelta(days=30)))
@@ -55,6 +55,7 @@ def quality_summary(
         )
     return asdict(
         service(request).quality_summary(
+            principal=principal,
             from_utc=lower,
             to_utc=upper,
             business_domain=business_domain,

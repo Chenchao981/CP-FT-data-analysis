@@ -72,6 +72,9 @@ const row: CurrentDatasetRow = {
   owner_login: "owner",
   owner_name: "Dataset Owner",
   cleaner_version: "1.2.3",
+  can_edit_product: true,
+  can_export: true,
+  can_reprocess: true,
   can_archive: true,
 };
 
@@ -317,23 +320,84 @@ describe("DatasetCurrentCatalog", () => {
     expect(document.body).toHaveTextContent("不删除 FTP/NAS 原始文件");
   }, 15_000);
 
-  it("hides Owner-only archive and product correction when the row scope denies them", async () => {
-    vi.mocked(listCurrentDatasets).mockResolvedValue({ items: [{ ...row, can_archive: false }], total: 1, page: 1, page_size: 20 });
+  it("hides every management action for a shared production row while preserving analysis", async () => {
+    vi.mocked(listCurrentDatasets).mockResolvedValue({
+      items: [{
+        ...row,
+        can_edit_product: false,
+        can_export: false,
+        can_reprocess: false,
+        can_archive: false,
+      }],
+      total: 1,
+      page: 1,
+      page_size: 20,
+    });
     renderCatalog();
 
     const product = await screen.findByText("NCE-IGBT");
     const dataRow = product.closest("tr")!;
     expect(within(dataRow).queryByRole("button", { name: /逻辑归档/ })).not.toBeInTheDocument();
     expect(within(dataRow).queryByRole("button", { name: /修正产品/ })).not.toBeInTheDocument();
+    expect(within(dataRow).queryByRole("button", { name: /导出最新/ })).not.toBeInTheDocument();
+    expect(within(dataRow).queryByRole("button", { name: /显式重处理/ })).not.toBeInTheDocument();
+    expect(within(dataRow).getByRole("button", { name: /分析$/ })).toBeInTheDocument();
+    expect(document.body).toHaveTextContent("量产 Current 可供全员查询和分析");
   });
 
-  it("shows the uploader-account filter only to SYSTEM_ADMIN", async () => {
+  it("uses each backend row capability only for its matching action", async () => {
+    const denied = {
+      can_edit_product: false,
+      can_export: false,
+      can_reprocess: false,
+      can_archive: false,
+    };
+    vi.mocked(listCurrentDatasets).mockResolvedValue({
+      items: [
+        { ...row, ...denied, dataset_id: 21, dataset_version_id: 211, product_name: "EDIT-ONLY", can_edit_product: true },
+        { ...row, ...denied, dataset_id: 22, dataset_version_id: 221, product_name: "EXPORT-ONLY", can_export: true },
+        { ...row, ...denied, dataset_id: 23, dataset_version_id: 231, product_name: "REPROCESS-ONLY", can_reprocess: true },
+        { ...row, ...denied, dataset_id: 24, dataset_version_id: 241, product_name: "ARCHIVE-ONLY", can_archive: true },
+      ],
+      total: 4,
+      page: 1,
+      page_size: 20,
+    });
     renderCatalog();
-    await screen.findByText("NCE-IGBT");
-    expect(screen.queryByLabelText("上传账号")).not.toBeInTheDocument();
-    cleanup();
 
-    vi.mocked(useAuth).mockReturnValue(authFor(["DATASET_READ", "EXPORT_DATA", "TASK_CREATE"], ["SYSTEM_ADMIN"]));
+    const editRow = (await screen.findByText("EDIT-ONLY")).closest("tr")!;
+    expect(within(editRow).getByRole("button", { name: /修正产品/ })).toBeInTheDocument();
+    expect(within(editRow).queryByRole("button", { name: /导出最新|显式重处理|逻辑归档/ })).not.toBeInTheDocument();
+
+    const exportRow = screen.getByText("EXPORT-ONLY").closest("tr")!;
+    expect(within(exportRow).getByRole("button", { name: /导出最新/ })).toBeInTheDocument();
+    expect(within(exportRow).queryByRole("button", { name: /修正产品|显式重处理|逻辑归档/ })).not.toBeInTheDocument();
+
+    const reprocessRow = screen.getByText("REPROCESS-ONLY").closest("tr")!;
+    expect(within(reprocessRow).getByRole("button", { name: /显式重处理/ })).toBeInTheDocument();
+    expect(within(reprocessRow).queryByRole("button", { name: /修正产品|导出最新|逻辑归档/ })).not.toBeInTheDocument();
+
+    const archiveRow = screen.getByText("ARCHIVE-ONLY").closest("tr")!;
+    expect(within(archiveRow).getByRole("button", { name: /逻辑归档/ })).toBeInTheDocument();
+    expect(within(archiveRow).queryByRole("button", { name: /修正产品|导出最新|显式重处理/ })).not.toBeInTheDocument();
+  }, 15_000);
+
+  it.each([
+    ["Owner", ["DATA_OWNER"]],
+    ["SYSTEM_ADMIN", ["SYSTEM_ADMIN"]],
+  ])("shows all allowed management actions for %s", async (_label, roles) => {
+    vi.mocked(useAuth).mockReturnValue(authFor(["DATASET_READ", "EXPORT_DATA", "TASK_CREATE"], roles));
+    renderCatalog();
+
+    const dataRow = (await screen.findByText("NCE-IGBT")).closest("tr")!;
+    expect(within(dataRow).getByRole("button", { name: /修正产品/ })).toBeInTheDocument();
+    expect(within(dataRow).getByRole("button", { name: /导出最新/ })).toBeInTheDocument();
+    expect(within(dataRow).getByRole("button", { name: /显式重处理/ })).toBeInTheDocument();
+    expect(within(dataRow).getByRole("button", { name: /逻辑归档/ })).toBeInTheDocument();
+  });
+
+  it("offers the uploader-account filter to every current-data reader", async () => {
+    vi.mocked(useAuth).mockReturnValue(authFor(["DATASET_READ"], ["READER"]));
     renderCatalog();
     expect(await screen.findByLabelText("上传账号")).toBeInTheDocument();
   });

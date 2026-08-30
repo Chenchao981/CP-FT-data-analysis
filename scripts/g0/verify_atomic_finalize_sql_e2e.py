@@ -46,7 +46,7 @@ def _setup_stage(engine, token: str) -> dict[str, Any]:
             raise RuntimeError(
                 f"destructive E2E is restricted to TMS_G0_DEV: {identity}"
             )
-        if identity["revision"] != "sql2014_0018":
+        if identity["revision"] != "sql2014_0019":
             raise RuntimeError(f"unexpected schema revision: {identity['revision']}")
         owner = (
             connection.execute(
@@ -536,10 +536,7 @@ def main() -> None:
             _assert_finalized(engine, recovery_ids)
         finally:
             _cleanup(engine, recovery_ids)
-        print(
-            "atomic_finalize_sql_rollback=PASS "
-            f"fault_points={len(completed)}"
-        )
+        print(f"atomic_finalize_sql_rollback=PASS fault_points={len(completed)}")
         print("atomic_finalize_staged_recovery=PASS cleaner_rerun=0")
         print("atomic_finalize_sql_cleanup=PASS")
     finally:

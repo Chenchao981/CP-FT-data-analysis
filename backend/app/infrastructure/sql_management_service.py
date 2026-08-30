@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import Engine, text
 
 from app.core.errors import DomainError
+from app.domain.auth import Principal
 from app.domain.management import (
     FailBinSummary,
     QualityBreakdown,
@@ -15,8 +16,13 @@ from app.domain.management import (
     QualityManagementSummary,
     QualityTrendPoint,
 )
+from app.infrastructure.sql_visibility import (
+    batch_read_scope_sql,
+    current_dataset_read_scope_sql,
+    visibility_parameters,
+)
 
-_CURRENT_SCOPE_CTE = """
+_CURRENT_SCOPE_CTE = f"""
 WITH current_scope AS (
     SELECT DISTINCT
         dv.dataset_version_id,dv.dataset_id,dv.version_no,dv.input_batch_id,
@@ -41,8 +47,9 @@ WITH current_scope AS (
         ORDER BY fe.enrichment_id DESC
     ) product_enrichment
     WHERE dv.status='PUBLISHED' AND dv.is_current=1
+      AND {current_dataset_read_scope_sql(dataset_alias="d", version_alias="dv", batch_alias="b")}
       AND dv.published_at_utc>=:from_utc AND dv.published_at_utc<:to_utc
-      {filters}
+      {{filters}}
 ), scoped_units AS (
     SELECT cs.dataset_version_id,cs.dataset_id,cs.version_no,cs.input_batch_id,
            cs.published_at_utc,cs.product_name,cs.business_domain,cs.test_stage,
@@ -107,6 +114,7 @@ class SqlManagementService:
     def quality_summary(
         self,
         *,
+        principal: Principal,
         from_utc: datetime,
         to_utc: datetime,
         business_domain: str | None = None,
@@ -135,6 +143,7 @@ class SqlManagementService:
                 "to_utc": _naive_utc(to_utc),
                 "recent_limit": recent_limit,
             }
+            | visibility_parameters(principal)
         )
         cte = _CURRENT_SCOPE_CTE.format(filters=filters)
         try:
@@ -418,10 +427,15 @@ GROUP BY su.dataset_id,su.version_no,su.input_batch_id
 ORDER BY published_at_utc DESC,su.dataset_id DESC;
 """
 
-_FAILED_JOB_SQL = """
+_FAILED_JOB_SQL = (
+    """
 SELECT COUNT_BIG(*) FROM ingestion.processing_job j
 JOIN ingestion.import_batch b ON b.import_batch_id=j.import_batch_id
 WHERE j.status='FAILED' AND COALESCE(j.finished_at_utc,j.requested_at_utc)>=:from_utc
   AND COALESCE(j.finished_at_utc,j.requested_at_utc)<:to_utc
+  AND """
+    + batch_read_scope_sql(batch_alias="b")
+    + """
   {filters};
 """
+)

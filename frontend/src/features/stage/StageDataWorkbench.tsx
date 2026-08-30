@@ -22,6 +22,16 @@ const stageDescription: Record<TestStage, string> = {
   CP: "选择晶圆厂并上传对应CP源文件后，系统自动调用该厂现有清洗程序并形成Wafer分析数据。",
   FT: "选择日月新或日月光并提交已验收的FT DC XLSX，系统按各自格式严格校验后形成产品/Lot分析数据。",
 };
+const visibilityDescription: Record<BusinessDomain, { message: string; description: string }> = {
+  ENGINEERING: {
+    message: "工程数据仅上传人本人可见",
+    description: "工程上传记录、清洗结果和分析均按上传人隔离；下载、补录和重新处理等动作由服务端逐条授权。",
+  },
+  PRODUCTION: {
+    message: "量产正式结果面向全员共享查询",
+    description: "不同人员可以重复上传并创建彼此独立的 Batch 和分析结果；原始文件下载、补录和重新处理仍由服务端逐条授权。",
+  },
+};
 const size = (value: number) => value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(2)} MB`;
 const needsLotInput = (row: StageUploadRow) => row.status === "NEEDS_INPUT" || row.action_required === "LOT_ID";
 
@@ -306,6 +316,7 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
     { title: "完成时间", dataIndex: "completion_time_utc", width: 175, render: formatUtcDateTime },
     { title: "上传账号", dataIndex: "uploader_login", width: 120 },
     { title: "上传人", dataIndex: "uploader_name", width: 110 },
+    { title: "重复来源", dataIndex: "is_duplicate_receipt", width: 145, render: (value: boolean) => value ? <Tag color="warning">相同内容已上传</Tag> : <Tag>首次接收</Tag> },
     { title: "状态", dataIndex: "status", width: 100, fixed: "right", render: (_, row) => {
       const displayStatus = needsLotInput(row) ? "NEEDS_INPUT" : row.status;
       return <Tag color={statusColor[displayStatus]}>{statusName[displayStatus] ?? displayStatus}</Tag>;
@@ -315,14 +326,15 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
       const awaitingLot = needsLotInput(row);
       const ordinaryFailure = row.status === "FAILED" && !awaitingLot;
       return <Space size={0} wrap>
-        <Button type="link" size="small" icon={<DownloadOutlined />} onClick={() => void handleDownload(row)}>下载</Button>
-        {firstRow && awaitingLot && can("TASK_CREATE") && <Button type="link" size="small" icon={<FormOutlined />} onClick={() => setLotBatchId(row.import_batch_id)}>补录批次号</Button>}
+        {row.can_download_source && <Button type="link" size="small" icon={<DownloadOutlined />} onClick={() => void handleDownload(row)}>下载</Button>}
+        {firstRow && awaitingLot && row.can_manage && <Button type="link" size="small" icon={<FormOutlined />} onClick={() => setLotBatchId(row.import_batch_id)}>补录批次号</Button>}
         {firstRow && ordinaryFailure && <Button type="link" size="small" icon={<InfoCircleOutlined />} onClick={() => setFailureRow(row)}>失败详情</Button>}
-        {firstRow && ordinaryFailure && can("TASK_CREATE") && isFormalFactory(testStage, row.factory_code) && <Popconfirm title="重新处理该批次？" description="系统会使用现有源文件重新运行清洗程序。" onConfirm={() => reprocessMutation.mutate(row.import_batch_id)}><Button type="link" size="small" icon={<RedoOutlined />} loading={reprocessMutation.isPending && reprocessMutation.variables === row.import_batch_id}>重新处理</Button></Popconfirm>}
+        {firstRow && ordinaryFailure && row.can_manage && isFormalFactory(testStage, row.factory_code) && <Popconfirm title="重新处理该批次？" description="系统会使用现有源文件重新运行清洗程序。" onConfirm={() => reprocessMutation.mutate(row.import_batch_id)}><Button type="link" size="small" icon={<RedoOutlined />} loading={reprocessMutation.isPending && reprocessMutation.variables === row.import_batch_id}>重新处理</Button></Popconfirm>}
       </Space>;
     } },
   ];
   const resultColumns: ColumnsType<StageResultRow> = [
+    { title: "Batch", dataIndex: "import_batch_id", width: 95, fixed: "left", render: (value) => `#${value}` },
     { title: "名称", dataIndex: "data_name", width: 180, fixed: "left" },
     { title: "产品名称", dataIndex: "product_name", width: 180, render: (v) => v || "—" },
     { title: "批号", dataIndex: "lot_id", width: 160, render: (v) => v || "—" },
@@ -334,11 +346,12 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
     { title: "良率", dataIndex: "yield_rate", width: 100, render: (v: number | null) => v == null ? "—" : `${(v * 100).toFixed(2)}%` },
     { title: "状态", dataIndex: "status", width: 100, render: (v) => <Tag color="success">{statusName[v] ?? v}</Tag> },
     { title: "Data Type", dataIndex: "data_type", width: 105 },
+    { title: "上传人", key: "uploader", width: 170, ellipsis: true, render: (_, row) => `${row.uploader_name}（${row.uploader_login}）` },
     { title: "处理时间", dataIndex: "created_at_utc", width: 175, render: formatUtcDateTime },
     { title: "操作", key: "actions", width: 270, fixed: "right", render: (_, row) => <Space size={0}>
       {row.dataset_id && row.dataset_version_no && can("DATASET_READ") && <Button type="link" size="small" icon={<BarChartOutlined />} onClick={() => onOpenAnalytics?.(row.dataset_id!, row.dataset_version_no!)}>数据分析</Button>}
       {row.job_id && <Button type="link" size="small" icon={<UnorderedListOutlined />} onClick={() => onOpenJob?.(row.job_id!)}>Job详情</Button>}
-      {can("TASK_CREATE") && isFormalFactory(testStage, row.factory_code) && <Popconfirm title="重新处理该批次？" description="将重跑现有清洗程序并归档旧结果。" onConfirm={() => reprocessMutation.mutate(row.import_batch_id)}><Button type="link" size="small" icon={<RedoOutlined />} loading={reprocessMutation.isPending && reprocessMutation.variables === row.import_batch_id}>重新处理</Button></Popconfirm>}
+      {row.can_manage && isFormalFactory(testStage, row.factory_code) && <Popconfirm title="重新处理该批次？" description="将重跑现有清洗程序并归档旧结果。" onConfirm={() => reprocessMutation.mutate(row.import_batch_id)}><Button type="link" size="small" icon={<RedoOutlined />} loading={reprocessMutation.isPending && reprocessMutation.variables === row.import_batch_id}>重新处理</Button></Popconfirm>}
     </Space> },
   ];
   const metrics = useMemo(() => ({
@@ -358,6 +371,7 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
   return <div className="workbench production-workbench">
     {contextHolder}
     <div className="page-heading"><div><Typography.Text type="secondary">{domainName[businessDomain]}数据 / {testStage}数据</Typography.Text><Typography.Title level={2}>{testStage}数据</Typography.Title><Typography.Text type="secondary">{stageDescription[testStage]}</Typography.Text></div><Space><Button icon={<ReloadOutlined />} onClick={() => void refresh()}>刷新</Button>{can("TASK_CREATE") && <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => { setFiles([]); setInputMode("UPLOAD"); setSourceRootCode(undefined); setSourceRelativePath("."); setOpen(true); }}>上传数据</Button>}</Space></div>
+    <Alert showIcon type={businessDomain === "ENGINEERING" ? "info" : "success"} className="review-alert" message={visibilityDescription[businessDomain].message} description={visibilityDescription[businessDomain].description} />
     <Row gutter={[16, 16]} className="production-stats"><Col flex="1 1 170px"><Card><Statistic title="查询上传记录" value={metrics.total} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="当前页处理中" value={metrics.processing} valueStyle={{ color: "#1677ff" }} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="查询清洗结果" value={metrics.processed} valueStyle={{ color: "#3f8600" }} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="当前页待补录" value={metrics.needsInput} valueStyle={{ color: metrics.needsInput ? "#d46b08" : undefined }} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="当前页失败" value={metrics.failed} valueStyle={{ color: metrics.failed ? "#cf1322" : undefined }} /></Card></Col></Row>
     <Card className="review-filter-card">
       <Form<StageFilterFormValues> form={filterForm} layout="vertical" onFinish={(values) => updateSearchParams((next) => {
@@ -389,11 +403,12 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
     {(uploads.isError || results.isError) && <Alert type="error" showIcon message={`${testStage}数据加载失败`} description={(uploads.error ?? results.error)?.message} />}
     {downloadError && <Alert type="error" showIcon closable message="源文件下载失败" description={downloadError} onClose={() => setDownloadError(undefined)} style={{ marginBottom: 16 }} />}
     <Card className="production-table-card"><Tabs activeKey={activeTab} onChange={(tab) => updateSearchParams((next) => { if (tab === "result") next.set("tab", "result"); else next.delete("tab"); })} items={[
-      { key: "source", label: "原始文件", children: <Table rowKey={(r) => `${r.import_batch_id}-${r.sequence_no}`} columns={uploadColumns} dataSource={uploads.data?.items ?? []} loading={uploads.isLoading} scroll={{ x: 1820 }} pagination={{ current: uploads.data?.page ?? uploadPage.page, pageSize: uploads.data?.page_size ?? uploadPage.pageSize, total: uploads.data?.total ?? 0, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (total) => `共 ${total} 条` }} onChange={(pagination) => updateSearchParams((next) => { next.set("upload_page", String(pagination.current ?? 1)); next.set("upload_page_size", String(pagination.pageSize ?? 20)); })} /> },
-      { key: "result", label: "清洗结果", children: <Table rowKey="result_summary_id" columns={resultColumns} dataSource={results.data?.items ?? []} loading={results.isLoading} scroll={{ x: 1600 }} pagination={{ current: results.data?.page ?? resultPage.page, pageSize: results.data?.page_size ?? resultPage.pageSize, total: results.data?.total ?? 0, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (total) => `共 ${total} 条` }} onChange={(pagination) => updateSearchParams((next) => { next.set("result_page", String(pagination.current ?? 1)); next.set("result_page_size", String(pagination.pageSize ?? 20)); })} /> },
+      { key: "source", label: "原始文件", children: <Table rowKey={(r) => `${r.import_batch_id}-${r.sequence_no}`} columns={uploadColumns} dataSource={uploads.data?.items ?? []} loading={uploads.isLoading} scroll={{ x: 1980 }} pagination={{ current: uploads.data?.page ?? uploadPage.page, pageSize: uploads.data?.page_size ?? uploadPage.pageSize, total: uploads.data?.total ?? 0, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (total) => `共 ${total} 条` }} onChange={(pagination) => updateSearchParams((next) => { next.set("upload_page", String(pagination.current ?? 1)); next.set("upload_page_size", String(pagination.pageSize ?? 20)); })} /> },
+      { key: "result", label: "清洗结果", children: <Table rowKey="result_summary_id" columns={resultColumns} dataSource={results.data?.items ?? []} loading={results.isLoading} scroll={{ x: 1900 }} pagination={{ current: results.data?.page ?? resultPage.page, pageSize: results.data?.page_size ?? resultPage.pageSize, total: results.data?.total ?? 0, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (total) => `共 ${total} 条` }} onChange={(pagination) => updateSearchParams((next) => { next.set("result_page", String(pagination.current ?? 1)); next.set("result_page_size", String(pagination.pageSize ?? 20)); })} /> },
     ]} /></Card>
     <Modal title={`提交${domainName[businessDomain]}${testStage}数据`} open={open} width={820} onCancel={() => !mutation.isPending && setOpen(false)} onOk={() => form.submit()} okText="提交后台清洗" confirmLoading={mutation.isPending} okButtonProps={{ disabled: inputMode === "CATALOG" && (!sourceManifest.data || confirmedManifestSha !== sourceManifest.data.sha) }} destroyOnHidden>
       <Alert showIcon type="info" message={`上传身份：${user?.display_name}（${user?.login_name}）`} description="系统从当前登录账号自动记录上传人，无需填写。" />
+      {businessDomain === "PRODUCTION" && <Alert showIcon type="success" message="量产数据允许重复上传" description="即使文件内容或 Lot 与既有记录相同，本次提交仍会创建独立 Batch，并保留本次上传人与分析结果。" style={{ marginTop: 12 }} />}
       <Form form={form} layout="vertical" initialValues={{ factory_code: defaultFactory }} onFinish={(values) => mutation.mutate(values)} className="cp-upload-form">
         <Form.Item label="业务分类"><Space><Tag color="blue">{domainName[businessDomain]}</Tag><Tag color="cyan">{testStage}数据</Tag></Space></Form.Item>
         <Form.Item label={testStage === "CP" ? "晶圆厂" : "封测厂"} name="factory_code" rules={[{ required: true }]}><Select options={formalFactoryOptions[testStage]} /></Form.Item>

@@ -166,12 +166,18 @@ def test_field_catalog_is_stage_specific() -> None:
     assert ft_lot["can_ignore"] is False
     assert all("can_ignore" in item for item in cp.json())
     assert all("can_ignore" in item for item in ft.json())
-    assert next(item for item in cp.json() if item["field_code"] == "PRODUCT_CODE")[
-        "can_ignore"
-    ] is True
-    assert next(item for item in ft.json() if item["field_code"] == "SUPPLIER_CODE")[
-        "can_ignore"
-    ] is True
+    assert (
+        next(item for item in cp.json() if item["field_code"] == "PRODUCT_CODE")[
+            "can_ignore"
+        ]
+        is True
+    )
+    assert (
+        next(item for item in ft.json() if item["field_code"] == "SUPPLIER_CODE")[
+            "can_ignore"
+        ]
+        is True
+    )
 
 
 @pytest.mark.parametrize("batch_status", ("NEEDS_INPUT", "QUEUED", "PROCESSING"))
@@ -184,17 +190,13 @@ def test_direct_lot_enrichment_rejects_controlled_or_active_states(
         else "LOT_ENRICHMENT_BATCH_ACTIVE"
     )
     with pytest.raises(DomainError) as captured:
-        _assert_direct_lot_enrichment_allowed(
-            batch_status, has_open_lot_request=False
-        )
+        _assert_direct_lot_enrichment_allowed(batch_status, has_open_lot_request=False)
     assert captured.value.code == expected_code
 
 
 def test_direct_lot_enrichment_rejects_open_request_even_if_status_drifted() -> None:
     with pytest.raises(DomainError) as captured:
-        _assert_direct_lot_enrichment_allowed(
-            "FAILED", has_open_lot_request=True
-        )
+        _assert_direct_lot_enrichment_allowed("FAILED", has_open_lot_request=True)
     assert captured.value.code == "LOT_INPUT_RESOLUTION_REQUIRED"
 
 
@@ -202,6 +204,4 @@ def test_direct_lot_enrichment_rejects_open_request_even_if_status_drifted() -> 
 def test_direct_lot_enrichment_policy_allows_inactive_batch_without_open_request(
     batch_status: str,
 ) -> None:
-    _assert_direct_lot_enrichment_allowed(
-        batch_status, has_open_lot_request=False
-    )
+    _assert_direct_lot_enrichment_allowed(batch_status, has_open_lot_request=False)

@@ -29,7 +29,7 @@ from app.infrastructure.sql_m2_query_service import SqlM2QueryService
 from app.infrastructure.sql_management_service import SqlManagementService
 
 EXPECTED_DATABASE = "TMS_G0_DEV"
-EXPECTED_SCHEMA_REVISION = "sql2014_0018"
+EXPECTED_SCHEMA_REVISION = "sql2014_0019"
 DETAIL_PAGE_SIZE = 50
 CATALOG_PAGE_SIZE = 2
 _ALLOWED_RESULTS = frozenset({"PASS", "FAIL", "UNKNOWN", "ABORT"})
@@ -173,9 +173,7 @@ class CatalogSnapshot:
 
     @property
     def distinct_lots(self) -> tuple[str, ...]:
-        return tuple(
-            sorted({row[4] for row in self.rows if row[4] is not None})
-        )
+        return tuple(sorted({row[4] for row in self.rows if row[4] is not None}))
 
     @property
     def digest(self) -> str:
@@ -496,17 +494,13 @@ def _verify_current_catalog(service: Any, snapshot: CatalogSnapshot) -> dict[str
         filter_page_count += pages
         _assert_catalog_items(filtered, expected)
         actual = {_catalog_item_key(item) for item in filtered}
-        exact_owners = {
-            key for key, members in expected.items() if lot_id in members
-        }
+        exact_owners = {key for key, members in expected.items() if lot_id in members}
         compatible_owners = {
             key
             for key, members in expected.items()
             if any(lot_id.casefold() in member.casefold() for member in members)
         }
-        if not exact_owners.issubset(actual) or not actual.issubset(
-            compatible_owners
-        ):
+        if not exact_owners.issubset(actual) or not actual.issubset(compatible_owners):
             raise VerificationError(
                 "CURRENT_CATALOG_LOT_FILTER_MISMATCH",
                 "Current Catalog 逐 Lot 筛选未命中对应 Canonical 成员",
@@ -976,6 +970,7 @@ def _verify_quality_summary(
     to_utc: datetime,
 ) -> dict[str, Any]:
     summary = service.quality_summary(
+        principal=DEVELOPMENT_PRINCIPAL,
         from_utc=from_utc,
         to_utc=to_utc,
         test_stage=stage,

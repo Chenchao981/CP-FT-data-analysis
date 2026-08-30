@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from app.domain.auth import Principal
+
 
 @dataclass(frozen=True, slots=True)
 class QualityKpis:
@@ -95,6 +97,7 @@ class ManagementService(Protocol):
     def quality_summary(
         self,
         *,
+        principal: Principal,
         from_utc: datetime,
         to_utc: datetime,
         business_domain: str | None = None,

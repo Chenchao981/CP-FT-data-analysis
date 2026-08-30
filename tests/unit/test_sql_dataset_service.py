@@ -6,7 +6,11 @@ from typing import Any
 import pytest
 from app.core.errors import DomainError
 from app.domain.auth import Principal
-from app.domain.datasets import DatasetComparisonRequest
+from app.domain.datasets import (
+    DatasetComparisonRequest,
+    DqGateResult,
+    PublishDatasetVersionRequest,
+)
 from app.infrastructure.sql_dataset_service import SqlDatasetService
 
 _SYSTEM_ADMIN = Principal(
@@ -35,9 +39,10 @@ class Mappings:
 
 
 class Result:
-    def __init__(self, *, rows=None, scalar=None) -> None:
+    def __init__(self, *, rows=None, scalar=None, rowcount: int = 0) -> None:
         self.rows = rows or []
         self.scalar = scalar
+        self.rowcount = rowcount
 
     def mappings(self):
         return Mappings(self.rows)
@@ -62,6 +67,7 @@ class GateConnection:
         version_status="VALIDATING",
         is_current=False,
         owner_user_id=7,
+        business_domain="PRODUCTION",
     ) -> None:
         self.run_status = run_status
         self.lineage = lineage
@@ -69,15 +75,20 @@ class GateConnection:
         self.version_status = version_status
         self.is_current = is_current
         self.owner_user_id = owner_user_id
+        self.business_domain = business_domain
 
     def execute(self, statement, parameters=None):
         sql = str(statement)
         if "FROM dataset.dataset_version dv" in sql and "d.supplier_id" in sql:
             parameters = parameters or {}
-            if "iam.data_scope_grant" in sql and not (
+            if "access_b.business_domain='PRODUCTION'" in sql and not (
                 bool(parameters.get("is_admin"))
                 or parameters.get("user_id") == self.owner_user_id
-                or (self.version_status == "PUBLISHED" and self.is_current)
+                or (
+                    self.business_domain == "PRODUCTION"
+                    and self.version_status == "PUBLISHED"
+                    and self.is_current
+                )
             ):
                 return Result(rows=[])
             return Result(
@@ -129,6 +140,155 @@ class Engine:
     @contextmanager
     def begin(self):
         yield self.connection
+
+
+class PublishConnection:
+    def __init__(
+        self,
+        *,
+        previous_version_id: int | None,
+        previous_run_has_other_current: bool = False,
+    ) -> None:
+        self.previous_version_id = previous_version_id
+        self.previous_run_has_other_current = previous_run_has_other_current
+        self.statements: list[tuple[str, dict[str, object]]] = []
+
+    def execute(self, statement, parameters=None):
+        sql = " ".join(str(statement).split())
+        parameters = parameters or {}
+        self.statements.append((sql, parameters))
+        if sql.startswith("SELECT COUNT(*) FROM dataset.dataset_version_run"):
+            return Result(scalar=1)
+        if sql.startswith("SELECT status FROM iam.app_user"):
+            return Result(scalar="ACTIVE")
+        if sql.startswith("SELECT dataset_version_id FROM dataset.dataset_version"):
+            return Result(scalar=self.previous_version_id)
+        if sql.startswith("SELECT pr.processing_run_id,pr.status,pr.is_current"):
+            return Result(
+                rows=[
+                    {
+                        "processing_run_id": 70,
+                        "status": "PUBLISHED",
+                        "is_current": True,
+                        "has_other_current": self.previous_run_has_other_current,
+                    }
+                ]
+            )
+        if sql.startswith("UPDATE dataset.dataset_version SET status='SUPERSEDED'"):
+            return Result(rowcount=1)
+        if sql.startswith("UPDATE pr SET pr.status='SUPERSEDED'"):
+            return Result(rowcount=0 if self.previous_run_has_other_current else 1)
+        if sql.startswith("UPDATE pr SET pr.status='PUBLISHED'"):
+            return Result(rowcount=1)
+        if sql.startswith("UPDATE dataset.dataset_version SET status='PUBLISHED'"):
+            return Result(
+                rows=[
+                    {
+                        "dataset_version_id": 5,
+                        "dataset_id": 1,
+                        "version_no": 2,
+                        "input_batch_id": 8,
+                        "canonical_model_version": "1.0",
+                        "status": "PUBLISHED",
+                        "is_current": True,
+                    }
+                ],
+                rowcount=1,
+            )
+        raise AssertionError(sql)
+
+
+class PublishService(SqlDatasetService):
+    def _version_context(self, connection, dataset_id, version_no, **kwargs):
+        return {
+            "dataset_version_id": 5,
+            "dataset_id": dataset_id,
+            "version_no": version_no,
+            "input_batch_id": 8,
+            "canonical_model_version": "1.0",
+            "status": "DRAFT",
+            "is_current": False,
+        }
+
+    def _evaluate(self, connection, dataset_id, version_no, **kwargs):
+        return DqGateResult(
+            dataset_id=dataset_id,
+            version_no=version_no,
+            status="PASS",
+            run_count=1,
+            unit_count=10,
+            measurement_count=100,
+            reasons=(),
+        )
+
+
+def test_manual_publish_allows_same_source_to_remain_current_in_another_dataset() -> (
+    None
+):
+    connection = PublishConnection(previous_version_id=None)
+    service = PublishService(Engine(connection))  # type: ignore[arg-type]
+
+    result = service.publish(
+        1,
+        2,
+        PublishDatasetVersionRequest(published_by=7),
+    )
+
+    assert result.is_current is True
+    statements = [sql for sql, _ in connection.statements]
+    assert not any("status='SUPERSEDED'" in sql for sql in statements)
+    assert not any("source_file_id=prior.source_file_id" in sql for sql in statements)
+
+
+def test_manual_publish_reprocess_supersedes_only_same_dataset_previous_runs() -> None:
+    connection = PublishConnection(previous_version_id=4)
+    service = PublishService(Engine(connection))  # type: ignore[arg-type]
+
+    service.publish(
+        1,
+        2,
+        PublishDatasetVersionRequest(published_by=7),
+    )
+
+    previous_select, select_parameters = next(
+        (sql, parameters)
+        for sql, parameters in connection.statements
+        if sql.startswith("SELECT pr.processing_run_id,pr.status,pr.is_current")
+    )
+    assert "dvr.dataset_version_id=:previous_id" in previous_select
+    assert "source_file_id" not in previous_select
+    assert select_parameters == {"previous_id": 4}
+    demotion_sql, demotion_parameters = next(
+        (sql, parameters)
+        for sql, parameters in connection.statements
+        if sql.startswith("UPDATE pr SET pr.status='SUPERSEDED'")
+    )
+    assert "dvr.dataset_version_id=:previous_id" in demotion_sql
+    assert "source_file_id" not in demotion_sql
+    assert demotion_parameters == {"previous_id": 4}
+
+
+def test_manual_publish_keeps_run_current_if_another_dataset_still_uses_it() -> None:
+    connection = PublishConnection(
+        previous_version_id=4,
+        previous_run_has_other_current=True,
+    )
+    service = PublishService(Engine(connection))  # type: ignore[arg-type]
+
+    result = service.publish(
+        1,
+        2,
+        PublishDatasetVersionRequest(published_by=7),
+    )
+
+    assert result.is_current is True
+    demotion_sql = next(
+        sql
+        for sql, _ in connection.statements
+        if sql.startswith("UPDATE pr SET pr.status='SUPERSEDED'")
+    )
+    assert "NOT EXISTS" in demotion_sql
+    assert "other_dv.status='PUBLISHED'" in demotion_sql
 
 
 class FtChartConnection:
@@ -216,9 +376,8 @@ class FtMultiLotSpecConnection:
                     "metadata_json": '{"source_id":"SOURCE-RUN-B"}',
                 },
             ]
-            if (
-                "(:lot_id IS NULL OR tr.lot_id=:lot_id)" in sql
-                and parameters.get("lot_id")
+            if "(:lot_id IS NULL OR tr.lot_id=:lot_id)" in sql and parameters.get(
+                "lot_id"
             ):
                 rows = [row for row in rows if row["lot_id"] == parameters["lot_id"]]
             return Result(rows=rows)
@@ -317,6 +476,7 @@ class SummaryConnection:
         version_status: str = "PUBLISHED",
         is_current: bool = True,
         owner_user_id: int = 7,
+        business_domain: str = "PRODUCTION",
     ) -> None:
         self.units = units
         self.passes = passes
@@ -324,15 +484,20 @@ class SummaryConnection:
         self.version_status = version_status
         self.is_current = is_current
         self.owner_user_id = owner_user_id
+        self.business_domain = business_domain
 
     def execute(self, statement, parameters=None):
         sql = str(statement)
         if "COUNT(DISTINCT dvr.processing_run_id)" in sql:
             parameters = parameters or {}
-            if "iam.data_scope_grant" in sql and not (
+            if "access_b.business_domain='PRODUCTION'" in sql and not (
                 bool(parameters.get("is_admin"))
                 or parameters.get("user_id") == self.owner_user_id
-                or (self.version_status == "PUBLISHED" and self.is_current)
+                or (
+                    self.business_domain == "PRODUCTION"
+                    and self.version_status == "PUBLISHED"
+                    and self.is_current
+                )
             ):
                 return Result(rows=[])
             return Result(
@@ -366,12 +531,14 @@ class DatasetAccessConnection:
         current_version_no: int = 3,
         owner_user_id: int = 7,
         has_current_version: bool = True,
+        business_domain: str = "PRODUCTION",
     ) -> None:
         self.statements: list[str] = []
         self.executed: list[tuple[str, dict[str, object]]] = []
         self.current_version_no = current_version_no
         self.owner_user_id = owner_user_id
         self.has_current_version = has_current_version
+        self.business_domain = business_domain
 
     def execute(self, statement, parameters=None):
         sql = str(statement)
@@ -383,7 +550,11 @@ class DatasetAccessConnection:
                 parameters.get("user_id") == self.owner_user_id
             ):
                 return Result(scalar=1)
-            if "iam.data_scope_grant" not in sql or not self.has_current_version:
+            if (
+                "access_b.business_domain='PRODUCTION'" not in sql
+                or not self.has_current_version
+                or self.business_domain != "PRODUCTION"
+            ):
                 return Result(scalar=None)
             requested_version = parameters.get("access_version_no")
             return Result(
@@ -502,9 +673,7 @@ class DetailConnection:
         if sql.startswith("SELECT COUNT_BIG(*)"):
             return Result(scalar=3)
         if "SELECT ur.unit_id,ur.logical_unit_key" in sql:
-            assert (
-                "OFFSET :offset ROWS FETCH NEXT :page_size ROWS ONLY" in sql
-            )
+            assert "OFFSET :offset ROWS FETCH NEXT :page_size ROWS ONLY" in sql
             if int(parameters["offset"]) >= 3:
                 return Result(rows=[])
             return Result(
@@ -765,7 +934,7 @@ def test_dataset_summary_excludes_unknown_units_from_yield_denominator() -> None
     assert result.yield_rate == pytest.approx(0.9)
 
 
-def test_manager_global_read_scope_only_allows_the_requested_current_version() -> None:
+def test_non_owner_production_read_only_allows_the_requested_current_version() -> None:
     connection = DatasetAccessConnection()
     service = SqlDatasetService(Engine(connection))  # type: ignore[arg-type]
     manager = Principal(
@@ -784,12 +953,30 @@ def test_manager_global_read_scope_only_allows_the_requested_current_version() -
 
     assert historical_error.value.code == "DATASET_ACCESS_DENIED"
     assert error.value.code == "DATASET_ACCESS_DENIED"
-    assert "scope_g.scope_key=N'TMS_CURRENT_DATA'" in connection.statements[0]
+    assert "access_b.business_domain='PRODUCTION'" in connection.statements[0]
     assert "access_dv.version_no=:access_version_no" in connection.statements[0]
     assert "access_dv.status='PUBLISHED'" in connection.statements[0]
     assert "access_dv.is_current=1" in connection.statements[0]
     assert connection.executed[0][1]["access_version_no"] == 3
-    assert "iam.data_scope_grant" not in connection.statements[2]
+    assert "access_b.business_domain='PRODUCTION'" not in connection.statements[2]
+
+
+def test_non_owner_engineering_current_is_denied() -> None:
+    service = SqlDatasetService(  # type: ignore[arg-type]
+        Engine(DatasetAccessConnection(business_domain="ENGINEERING"))
+    )
+    viewer = Principal(
+        8,
+        "production.viewer",
+        "Production Viewer",
+        ("MANAGER_VIEWER",),
+        frozenset({"DATASET_READ"}),
+    )
+
+    with pytest.raises(DomainError) as error:
+        service.assert_dataset_access(17, viewer, "READ", version_no=3)
+
+    assert error.value.code == "DATASET_ACCESS_DENIED"
 
 
 @pytest.mark.parametrize(
@@ -820,7 +1007,7 @@ def test_owner_and_admin_keep_historical_version_read_access(
     service.assert_dataset_access(17, principal, "READ", version_no=2)
 
 
-def test_dataset_list_grant_branch_requires_a_current_published_version() -> None:
+def test_dataset_list_production_branch_requires_a_current_published_version() -> None:
     connection = DatasetAccessConnection()
     manager = Principal(
         8,
@@ -834,7 +1021,7 @@ def test_dataset_list_grant_branch_requires_a_current_published_version() -> Non
 
     assert result[0].dataset_id == 17
     sql = connection.statements[0]
-    assert "scope_g.scope_key=N'TMS_CURRENT_DATA'" in sql
+    assert "access_b.business_domain='PRODUCTION'" in sql
     assert "access_dv.status='PUBLISHED'" in sql
     assert "access_dv.is_current=1" in sql
 
@@ -920,7 +1107,9 @@ def test_cp_compare_fails_closed_when_spec_set_identity_conflicts() -> None:
         SqlDatasetService(Engine(connection)).compare(request)  # type: ignore[arg-type]
 
     assert error.value.code == "ANALYSIS_SPEC_INCOMPATIBLE"
-    assert all("COUNT_BIG(*) AS unit_count" not in sql for sql, _ in connection.executed)
+    assert all(
+        "COUNT_BIG(*) AS unit_count" not in sql for sql, _ in connection.executed
+    )
 
 
 def test_cp_compare_uses_known_yield_and_normalized_parameter_contract() -> None:
@@ -1087,9 +1276,7 @@ def test_compare_rejects_non_reconciling_status_aggregates() -> None:
             }
         },
     )
-    request = DatasetComparisonRequest(
-        datasets=[{"dataset_id": 1, "version_no": 1}]
-    )
+    request = DatasetComparisonRequest(datasets=[{"dataset_id": 1, "version_no": 1}])
 
     with pytest.raises(DomainError) as error:
         SqlDatasetService(Engine(connection)).compare(request)  # type: ignore[arg-type]

@@ -14,6 +14,10 @@ from app.domain.input_requests import (
     ProcessingInputRequestSummary,
     ResolveLotInputRequests,
 )
+from app.infrastructure.sql_visibility import (
+    batch_owner_scope_sql,
+    visibility_parameters,
+)
 
 
 class SqlProcessingInputRequestService:
@@ -21,8 +25,11 @@ class SqlProcessingInputRequestService:
         self._engine = engine
 
     @staticmethod
-    def _scope() -> str:
-        return "(:is_admin=1 OR b.owner_user_id=:user_id)"
+    def _scope(access_mode: str) -> str:
+        normalized = access_mode.strip().upper()
+        if normalized in {"READ", "WRITE"}:
+            return batch_owner_scope_sql(batch_alias="b")
+        raise ValueError("input request access mode must be READ or WRITE")
 
     def list_open(
         self,
@@ -41,15 +48,13 @@ class SqlProcessingInputRequestService:
                         "WHERE j.import_batch_id=b.import_batch_id "
                         "ORDER BY j.requested_at_utc DESC,j.job_id DESC) latest "
                         "WHERE b.import_batch_id=:batch AND b.business_domain=:domain "
-                        "AND b.test_stage=:stage AND "
-                        + self._scope()
+                        "AND b.test_stage=:stage AND " + self._scope("READ")
                     ),
-                    {
+                    visibility_parameters(principal)
+                    | {
                         "batch": import_batch_id,
                         "domain": business_domain,
                         "stage": test_stage,
-                        "user_id": principal.user_id,
-                        "is_admin": "SYSTEM_ADMIN" in principal.roles,
                     },
                 )
                 .mappings()
@@ -81,9 +86,7 @@ class SqlProcessingInputRequestService:
             )
         prompt = str(rows[0]["prompt"]) if rows else "当前没有待补录的批次号"
         latest_job_id = (
-            int(batch["latest_job_id"])
-            if batch["latest_job_id"] is not None
-            else None
+            int(batch["latest_job_id"]) if batch["latest_job_id"] is not None else None
         )
         return ProcessingInputRequestSummary(
             import_batch_id=int(batch["import_batch_id"]),
@@ -109,14 +112,14 @@ class SqlProcessingInputRequestService:
         import_batch_id: int,
         request: ResolveLotInputRequests,
     ) -> LotResolutionResult:
-        resolutions = {item.input_request_id: item.lot_id for item in request.resolutions}
+        resolutions = {
+            item.input_request_id: item.lot_id for item in request.resolutions
+        }
         parameters: dict[str, Any] = {
             "batch": import_batch_id,
             "domain": business_domain,
             "stage": test_stage,
-            "user_id": principal.user_id,
-            "is_admin": "SYSTEM_ADMIN" in principal.roles,
-        }
+        } | visibility_parameters(principal)
         request_names = []
         for index, request_id in enumerate(resolutions):
             name = f"request_{index}"
@@ -130,8 +133,7 @@ class SqlProcessingInputRequestService:
                         "b.test_stage,b.factory_code "
                         "FROM ingestion.import_batch b WITH (UPDLOCK,HOLDLOCK) "
                         "WHERE b.import_batch_id=:batch AND b.business_domain=:domain "
-                        "AND b.test_stage=:stage AND "
-                        + self._scope()
+                        "AND b.test_stage=:stage AND " + self._scope("WRITE")
                     ),
                     parameters,
                 )
@@ -209,7 +211,9 @@ class SqlProcessingInputRequestService:
                 )
             if statuses != {"OPEN"}:
                 raise DomainError(
-                    "INPUT_REQUEST_STATE_CONFLICT", "补录请求状态不一致，请刷新后重试", 409
+                    "INPUT_REQUEST_STATE_CONFLICT",
+                    "补录请求状态不一致，请刷新后重试",
+                    409,
                 )
             if str(batch["status"]) != "NEEDS_INPUT" or any(
                 str(row["job_status"]) != "NEEDS_INPUT" for row in rows

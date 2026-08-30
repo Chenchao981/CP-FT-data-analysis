@@ -44,7 +44,9 @@ def parse_args() -> argparse.Namespace:
 def _fact_counts(connection) -> dict[str, int]:
     return {
         "test_run": int(
-            connection.execute(text("SELECT COUNT_BIG(*) FROM test.test_run")).scalar_one()
+            connection.execute(
+                text("SELECT COUNT_BIG(*) FROM test.test_run")
+            ).scalar_one()
         ),
         "unit_result": int(
             connection.execute(
@@ -122,7 +124,9 @@ def main() -> None:
     with engine.connect() as connection:
         database = str(connection.execute(text("SELECT DB_NAME()")).scalar_one())
         revision = str(
-            connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            connection.execute(
+                text("SELECT version_num FROM alembic_version")
+            ).scalar_one()
         )
         before = _fact_counts(connection)
         admin_id, analyst_id = _principal_ids(connection)
@@ -131,8 +135,8 @@ def main() -> None:
             f"refusing E2E against unexpected database {database!r}; "
             f"expected {args.expected_database!r}"
         )
-    if revision != "sql2014_0018":
-        raise RuntimeError(f"sql2014_0018 is required, database is {revision}")
+    if revision != "sql2014_0019":
+        raise RuntimeError(f"sql2014_0019 is required, database is {revision}")
 
     auth = SqlAuthService(engine)
     admin = auth.principal_for_user(admin_id)
@@ -267,15 +271,21 @@ def main() -> None:
                 .mappings()
                 .all()
             )
-            job_input = connection.execute(
-                text(
-                    "SELECT source_file_id,import_batch_id,analysis_session_id,status "
-                    "FROM ingestion.processing_job WHERE job_id=:job"
-                ),
-                {"job": job_id},
-            ).mappings().one()
+            job_input = (
+                connection.execute(
+                    text(
+                        "SELECT source_file_id,import_batch_id,analysis_session_id,status "
+                        "FROM ingestion.processing_job WHERE job_id=:job"
+                    ),
+                    {"job": job_id},
+                )
+                .mappings()
+                .one()
+            )
         if after != before:
-            raise AssertionError(f"formal test facts changed: before={before}, after={after}")
+            raise AssertionError(
+                f"formal test facts changed: before={before}, after={after}"
+            )
         artifact_roles = {str(row["artifact_role"]) for row in artifact_rows}
         if artifact_roles != {"pat_report", "pat_summary", "source_manifest"}:
             raise AssertionError(f"unexpected artifact roles: {artifact_roles}")

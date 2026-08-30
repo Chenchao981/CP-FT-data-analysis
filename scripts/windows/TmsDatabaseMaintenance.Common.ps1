@@ -204,26 +204,77 @@ SELECT
      ) duplicate_dataset) AS duplicate_dataset_current,
     (SELECT COUNT_BIG(*) FROM ingestion.processing_run
       WHERE is_current=1 AND status<>'PUBLISHED') AS invalid_run_current,
-    (SELECT COUNT_BIG(*) FROM (
-        SELECT source_file_id FROM ingestion.processing_run
-        WHERE is_current=1 GROUP BY source_file_id HAVING COUNT_BIG(*)>1
-     ) duplicate_run) AS duplicate_run_current;
+    (SELECT COUNT_BIG(*) FROM dataset.dataset_version dv
+      WHERE dv.status='PUBLISHED' AND dv.is_current=1
+        AND NOT EXISTS(
+            SELECT 1 FROM dataset.dataset_version_run dvr
+            WHERE dvr.dataset_version_id=dv.dataset_version_id
+        )) AS current_dataset_without_run,
+    (SELECT COUNT_BIG(*) FROM dataset.dataset_version dv
+      WHERE dv.status='PUBLISHED' AND dv.is_current=1
+        AND EXISTS(
+            SELECT 1 FROM dataset.dataset_version_run dvr
+            JOIN ingestion.processing_run pr
+              ON pr.processing_run_id=dvr.processing_run_id
+            WHERE dvr.dataset_version_id=dv.dataset_version_id
+              AND (pr.status<>'PUBLISHED' OR pr.is_current<>1)
+        )) AS current_dataset_run_mismatch,
+    (SELECT COUNT_BIG(*) FROM ingestion.processing_run pr
+      WHERE pr.status IN('PUBLISHED','SUPERSEDED')
+        AND NOT EXISTS(
+            SELECT 1 FROM dataset.dataset_version_run dvr
+            JOIN dataset.dataset_version dv
+              ON dv.dataset_version_id=dvr.dataset_version_id
+            WHERE dvr.processing_run_id=pr.processing_run_id
+              AND dv.status='PUBLISHED' AND dv.is_current=1
+        )
+        AND (pr.status<>'SUPERSEDED' OR pr.is_current<>0)
+    ) AS run_without_current_dataset_state_mismatch;
 '@ -TrustServerCertificate:$TrustServerCertificate
     $row = $issues.Rows[0]
-    $total = (
-        [int64]$row.invalid_dataset_current +
-        [int64]$row.duplicate_dataset_current +
-        [int64]$row.invalid_run_current +
-        [int64]$row.duplicate_run_current
+    $invalidDatasetCurrent = [int64]$row.invalid_dataset_current
+    $duplicateDatasetCurrent = [int64]$row.duplicate_dataset_current
+    $invalidRunCurrent = [int64]$row.invalid_run_current
+    $currentDatasetWithoutRun = [int64]$row.current_dataset_without_run
+    $currentDatasetRunMismatch = [int64]$row.current_dataset_run_mismatch
+    $runWithoutCurrentDatasetStateMismatch = (
+        [int64]$row.run_without_current_dataset_state_mismatch
     )
+    $datasetCurrentIssues = (
+        $invalidDatasetCurrent +
+        $duplicateDatasetCurrent +
+        $currentDatasetWithoutRun +
+        $currentDatasetRunMismatch
+    )
+    $processingRunCurrentIssues = (
+        $invalidRunCurrent +
+        $runWithoutCurrentDatasetStateMismatch
+    )
+    $total = $datasetCurrentIssues + $processingRunCurrentIssues
     if ($total -ne 0) {
-        throw "Dataset Current consistency check failed with $total issue groups/rows."
+        throw (
+            "Dataset Current consistency check failed: total=$total; " +
+            "invalid_dataset_current=$invalidDatasetCurrent; " +
+            "duplicate_dataset_current=$duplicateDatasetCurrent; " +
+            "invalid_run_current=$invalidRunCurrent; " +
+            "current_dataset_without_run=$currentDatasetWithoutRun; " +
+            "current_dataset_run_mismatch=$currentDatasetRunMismatch; " +
+            "run_without_current_dataset_state_mismatch=" +
+            "$runWithoutCurrentDatasetStateMismatch."
+        )
     }
     return [PSCustomObject]@{
         Database = $Database
         SchemaRevision = $actualRevision
-        DatasetCurrentIssues = 0
-        ProcessingRunCurrentIssues = 0
+        InvalidDatasetCurrentIssues = $invalidDatasetCurrent
+        DuplicateDatasetCurrentIssues = $duplicateDatasetCurrent
+        InvalidProcessingRunCurrentIssues = $invalidRunCurrent
+        CurrentDatasetWithoutRunIssues = $currentDatasetWithoutRun
+        CurrentDatasetRunMismatchIssues = $currentDatasetRunMismatch
+        RunWithoutCurrentDatasetStateMismatchIssues = $runWithoutCurrentDatasetStateMismatch
+        DatasetCurrentIssues = $datasetCurrentIssues
+        ProcessingRunCurrentIssues = $processingRunCurrentIssues
+        TotalIssues = $total
         Status = 'CONSISTENT'
     }
 }

@@ -130,7 +130,9 @@ def _admin(connection: Connection) -> Principal:
         .one_or_none()
     )
     if row is None:
-        raise RuntimeError("An active SYSTEM_ADMIN is required for this controlled test")
+        raise RuntimeError(
+            "An active SYSTEM_ADMIN is required for this controlled test"
+        )
     return Principal(
         user_id=int(row["user_id"]),
         login_name=str(row["login_name"]),
@@ -147,13 +149,11 @@ def main() -> None:
     identity = check_database()
     if identity["database"] != "TMS_G0_DEV":
         raise RuntimeError("This rollback verification is restricted to TMS_G0_DEV")
-    if identity["schema_revision"] != "sql2014_0018":
-        raise RuntimeError("sql2014_0018 is required")
+    if identity["schema_revision"] != "sql2014_0019":
+        raise RuntimeError("sql2014_0019 is required")
 
     engine = get_engine()
-    work_root = Path(
-        os.getenv("TMS_WORK_ROOT", str(ROOT / "data" / "work"))
-    ).absolute()
+    work_root = Path(os.getenv("TMS_WORK_ROOT", str(ROOT / "data" / "work"))).absolute()
     archive_key = f"g2-archive-rollback-{uuid4().hex}"
     lease_token = str(uuid4())
 
@@ -178,9 +178,13 @@ def main() -> None:
                 ).scalar_one()
             )
             if before_views[0] != 1 or any(value < 1 for value in before_views):
-                raise RuntimeError("Selected Dataset is not fully visible in Current views")
+                raise RuntimeError(
+                    "Selected Dataset is not fully visible in Current views"
+                )
             if before_summaries < 1:
-                raise RuntimeError("Selected Dataset has no processed result projection")
+                raise RuntimeError(
+                    "Selected Dataset has no processed result projection"
+                )
 
             bound = _RollbackEngine(connection)
             lifecycle = SqlLifecycleService(
@@ -224,7 +228,9 @@ def main() -> None:
                 },
             ).one()
             if tuple(archived) != ("ARCHIVED", "ARCHIVED", False, "SUCCESS"):
-                raise RuntimeError(f"Unexpected logical archive state: {tuple(archived)}")
+                raise RuntimeError(
+                    f"Unexpected logical archive state: {tuple(archived)}"
+                )
             run_drift = int(
                 connection.execute(
                     text(
@@ -238,7 +244,9 @@ def main() -> None:
                 ).scalar_one()
             )
             if run_drift != 0:
-                raise RuntimeError("Archived Processing Run did not leave Current state")
+                raise RuntimeError(
+                    "Archived Processing Run did not leave Current state"
+                )
             if _current_view_counts(connection, version_id) != (0, 0, 0, 0):
                 raise RuntimeError("Logical archive remained visible in Current views")
             if _fact_counts(connection)[:3] != before_facts[:3]:

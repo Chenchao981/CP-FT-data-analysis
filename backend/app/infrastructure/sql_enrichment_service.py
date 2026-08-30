@@ -9,6 +9,11 @@ from sqlalchemy import Engine, text
 from app.core.errors import DomainError
 from app.domain.auth import Principal
 from app.domain.enrichments import CreateFieldEnrichmentRequest, FieldEnrichmentRecord
+from app.infrastructure.sql_visibility import (
+    batch_read_scope_sql,
+    batch_write_scope_sql,
+    visibility_parameters,
+)
 
 
 def _record(row: Mapping[str, Any]) -> FieldEnrichmentRecord:
@@ -51,8 +56,13 @@ class SqlFieldEnrichmentService:
         self._engine = engine
 
     @staticmethod
-    def _access_scope() -> str:
-        return "(owner_user_id=:user_id OR EXISTS(SELECT 1 FROM iam.user_role ur JOIN iam.role r ON r.role_id=ur.role_id WHERE ur.user_id=:user_id AND r.role_code='SYSTEM_ADMIN'))"
+    def _access_scope(access_mode: str, *, batch_alias: str = "b") -> str:
+        normalized = access_mode.strip().upper()
+        if normalized == "READ":
+            return batch_read_scope_sql(batch_alias=batch_alias)
+        if normalized == "WRITE":
+            return batch_write_scope_sql(batch_alias=batch_alias)
+        raise ValueError("enrichment access mode must be READ or WRITE")
 
     def create(
         self, request: CreateFieldEnrichmentRequest, principal: Principal
@@ -61,11 +71,13 @@ class SqlFieldEnrichmentService:
             batch = (
                 connection.execute(
                     text(
-                    "SELECT test_stage,factory_code,status FROM ingestion.import_batch "
-                    "WITH (UPDLOCK,HOLDLOCK) "
-                    "WHERE import_batch_id=:batch_id AND " + self._access_scope()
+                        "SELECT b.test_stage,b.factory_code,b.status FROM ingestion.import_batch b "
+                        "WITH (UPDLOCK,HOLDLOCK) "
+                        "WHERE b.import_batch_id=:batch_id AND "
+                        + self._access_scope("WRITE")
                     ),
-                    {"batch_id": request.import_batch_id, "user_id": principal.user_id},
+                    visibility_parameters(principal)
+                    | {"batch_id": request.import_batch_id},
                 )
                 .mappings()
                 .one_or_none()
@@ -98,8 +110,7 @@ class SqlFieldEnrichmentService:
                 request.field_code == "LOT_ID"
                 and str(batch["factory_code"] or "").strip().casefold()
                 in {"riyuexin", "riyueguang"}
-                and re.fullmatch(r"[A-Z0-9]{4}-\d{4}", request.value_text or "")
-                is None
+                and re.fullmatch(r"[A-Z0-9]{4}-\d{4}", request.value_text or "") is None
             ):
                 raise DomainError(
                     "LOT_ID_FORMAT_INVALID",
@@ -208,13 +219,11 @@ class SqlFieldEnrichmentService:
                         "FROM ingestion.field_enrichment WHERE import_batch_id=:batch_id "
                         "AND EXISTS(SELECT 1 FROM ingestion.import_batch b WHERE "
                         "b.import_batch_id=ingestion.field_enrichment.import_batch_id AND "
-                        + self._access_scope().replace(
-                            "owner_user_id", "b.owner_user_id"
-                        )
+                        + self._access_scope("READ")
                         + ") "
                         "AND is_current=1 ORDER BY test_stage,field_code,source_file_id"
                     ),
-                    {"batch_id": import_batch_id, "user_id": principal.user_id},
+                    visibility_parameters(principal) | {"batch_id": import_batch_id},
                 )
                 .mappings()
                 .all()

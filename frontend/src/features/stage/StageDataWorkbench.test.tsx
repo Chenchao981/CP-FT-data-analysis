@@ -58,6 +58,9 @@ const baseUpload = {
   completion_time_utc: null,
   uploader_login: "operator",
   uploader_name: "操作员",
+  is_duplicate_receipt: false,
+  can_manage: true,
+  can_download_source: true,
   latest_job_id: 1,
   error_code: null,
   error_message: null,
@@ -70,7 +73,7 @@ const uploadRows = [
   { ...baseUpload, import_batch_id: 12, sequence_no: 1, receipt_id: 21, source_file_id: 121, original_file_name: "failed-a.xlsx", status: "FAILED", error_code: "PARSER_FAILED", error_message: "文件格式不符合要求" },
   { ...baseUpload, import_batch_id: 12, sequence_no: 2, receipt_id: 22, source_file_id: 122, original_file_name: "failed-b.xlsx", status: "FAILED", error_code: "PARSER_FAILED", error_message: "文件格式不符合要求" },
   { ...baseUpload, import_batch_id: 13, sequence_no: 1, receipt_id: 31, source_file_id: 131, original_file_name: "running.xlsx", status: "PROCESSING" },
-  { ...baseUpload, import_batch_id: 14, sequence_no: 1, receipt_id: 41, source_file_id: 141, original_file_name: "done.xlsx", status: "PROCESSED", completion_time_utc: "2026-08-27T08:01:00Z" },
+  { ...baseUpload, import_batch_id: 14, sequence_no: 1, receipt_id: 41, source_file_id: 141, original_file_name: "done.xlsx", status: "PROCESSED", completion_time_utc: "2026-08-27T08:01:00Z", is_duplicate_receipt: true },
 ];
 
 const resultRows = [1, 2].map((resultSummaryId) => ({
@@ -81,6 +84,9 @@ const resultRows = [1, 2].map((resultSummaryId) => ({
   lot_id: "LOT-DONE",
   wafer_count: null,
   factory_code: "riyuexin",
+  uploader_login: "operator",
+  uploader_name: "操作员",
+  can_manage: true,
   test_item_count: 10,
   unit_count: 100,
   pass_count: null,
@@ -184,6 +190,24 @@ describe("StageDataWorkbench Lot input states", () => {
     }
   }, 30_000);
 
+  it("explains shared production visibility and identifies Batch, uploader, and duplicate receipts", async () => {
+    renderWorkbench();
+
+    await screen.findByText("done.xlsx", {}, { timeout: 15_000 });
+    expect(screen.getByText("量产正式结果面向全员共享查询")).toBeInTheDocument();
+    expect(screen.getByText("相同内容已上传")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "清洗结果" }));
+    const resultRow = (await screen.findByText("result-1")).closest("tr")!;
+    expect(within(resultRow).getByText("#14")).toBeInTheDocument();
+    expect(within(resultRow).getByText("操作员（operator）")).toBeInTheDocument();
+  }, 30_000);
+
+  it("explains that engineering data is visible only to its uploader", async () => {
+    renderWorkbench({ businessDomain: "ENGINEERING", testStage: "FT" });
+    expect(await screen.findByText("工程数据仅上传人本人可见", {}, { timeout: 15_000 })).toBeInTheDocument();
+  }, 30_000);
+
   it("opens Lot input only for authorized users and clears it when the CP/FT route changes", async () => {
     const view = renderWorkbench();
     await screen.findByText("missing-a.xlsx", {}, { timeout: 15_000 });
@@ -194,17 +218,29 @@ describe("StageDataWorkbench Lot input states", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Lot补录弹窗" })).not.toBeInTheDocument());
   }, 30_000);
 
-  it("hides the Lot correction action without TASK_CREATE permission", async () => {
-    vi.mocked(useAuth).mockReturnValue({
-      user: { ...user, permissions: ["DATASET_READ"] },
-      loading: false,
-      login: vi.fn(),
-      logout: vi.fn(),
-      can: (permission: string) => permission === "DATASET_READ",
+  it("hides management and raw-download actions when the backend row capabilities deny them", async () => {
+    vi.mocked(listStageUploadsPage).mockResolvedValue({
+      items: uploadRows.map((row) => ({ ...row, can_manage: false, can_download_source: false })),
+      total: uploadRows.length,
+      page: 1,
+      page_size: 20,
+    });
+    vi.mocked(listStageResultsPage).mockResolvedValue({
+      items: resultRows.map((row) => ({ ...row, can_manage: false })),
+      total: resultRows.length,
+      page: 1,
+      page_size: 20,
     });
     renderWorkbench();
     await screen.findByText("missing-a.xlsx");
     expect(screen.queryByRole("button", { name: /补录批次号/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^下载$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /重新处理/ })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "清洗结果" }));
+    const resultRow = (await screen.findByText("result-1")).closest("tr")!;
+    expect(within(resultRow).queryByRole("button", { name: /重新处理/ })).not.toBeInTheDocument();
+    expect(within(resultRow).getByRole("button", { name: /数据分析/ })).toBeInTheDocument();
   }, 30_000);
 
   it("refreshes results once when an active upload reaches a terminal status", async () => {
@@ -426,6 +462,8 @@ describe("StageDataWorkbench Lot input states", () => {
     const onOpenJob = vi.fn();
     renderWorkbench({ businessDomain: "PRODUCTION", testStage: "FT", onOpenJob });
     fireEvent.click(await screen.findByRole("button", { name: /上传数据/ }));
+    expect(await screen.findByText("量产数据允许重复上传")).toBeInTheDocument();
+    expect(screen.getByText(/本次提交仍会创建独立 Batch/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("radio", { name: /受控服务器目录/ }));
 
     expect(await screen.findByText("日月新量产灰度目录")).toBeInTheDocument();

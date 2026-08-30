@@ -26,8 +26,7 @@ def _delete_batch(engine, batch_id: int | None) -> None:
     with engine.begin() as connection:
         connection.execute(
             text(
-                "DELETE ingestion.processing_input_request "
-                "WHERE import_batch_id=:batch"
+                "DELETE ingestion.processing_input_request WHERE import_batch_id=:batch"
             ),
             {"batch": batch_id},
         )
@@ -77,7 +76,7 @@ def main() -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            if revision != "sql2014_0018":
+            if revision != "sql2014_0019":
                 raise RuntimeError(f"unexpected schema revision: {revision}")
             active_initial_imports = int(
                 connection.execute(
@@ -88,9 +87,7 @@ def main() -> None:
                 ).scalar_one()
             )
             if active_initial_imports:
-                raise RuntimeError(
-                    "verification requires an idle INITIAL_IMPORT queue"
-                )
+                raise RuntimeError("verification requires an idle INITIAL_IMPORT queue")
             owner = (
                 connection.execute(
                     text(
@@ -138,9 +135,7 @@ def main() -> None:
                         requested_by=login_name,
                         requested_by_user_id=owner_id,
                         reason="SQL concurrency verification",
-                        idempotency_key=(
-                            f"state-consistency:{token}:{index}"
-                        ),
+                        idempotency_key=(f"state-consistency:{token}:{index}"),
                     ),
                     principal,
                     allowed_batch_statuses=("PROCESSED", "FAILED"),
@@ -171,16 +166,15 @@ def main() -> None:
                 .mappings()
                 .one()
             )
-        if concurrent_state["status"] != "QUEUED" or int(
-            concurrent_state["job_count"]
-        ) != 1:
+        if (
+            concurrent_state["status"] != "QUEUED"
+            or int(concurrent_state["job_count"]) != 1
+        ):
             raise RuntimeError(f"unexpected atomic queue state: {concurrent_state}")
         _delete_batch(engine, concurrent_batch_id)
         concurrent_batch_id = None
 
-        exhausted_batch_id = _new_batch(
-            engine, owner_id, login_name, "QUEUED", token
-        )
+        exhausted_batch_id = _new_batch(engine, owner_id, login_name, "QUEUED", token)
         with engine.begin() as connection:
             exhausted_job_id = int(
                 connection.execute(

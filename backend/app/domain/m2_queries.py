@@ -53,6 +53,9 @@ class StageUploadPageItem:
     error_message: str | None
     action_required: str | None
     queue_age_seconds: int | None
+    is_duplicate_receipt: bool = False
+    can_manage: bool = False
+    can_download_source: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +77,9 @@ class StageResultPageItem:
     dataset_id: int | None
     dataset_version_no: int | None
     created_at_utc: str
+    can_manage: bool = False
+    uploader_login: str = ""
+    uploader_name: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +106,9 @@ class CurrentDatasetCatalogItem:
     owner_name: str
     cleaner_version: str | None
     can_archive: bool
+    can_edit_product: bool = False
+    can_export: bool = False
+    can_reprocess: bool = False
 
 
 @dataclass(frozen=True, slots=True)

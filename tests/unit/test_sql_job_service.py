@@ -7,7 +7,14 @@ from typing import Any
 import pytest
 from app.core.errors import DomainError
 from app.domain.auth import Principal
-from app.domain.jobs import CreateJobRequest, Job, JobStatus, JobType, TriggerType
+from app.domain.jobs import (
+    CreateJobRequest,
+    Job,
+    JobStatus,
+    JobType,
+    TransitionJobRequest,
+    TriggerType,
+)
 from app.infrastructure.sql_job_service import (
     SqlJobService,
     _assert_idempotent_job_scope,
@@ -341,6 +348,95 @@ def _atomic_job_row(
     }
 
 
+class _JobAccessConnection:
+    def __init__(self, *, business_domain: str, can_manage: bool = False) -> None:
+        self.business_domain = business_domain
+        self.can_manage = can_manage
+        self.statements: list[str] = []
+
+    def execute(self, statement, parameters=None):
+        sql = str(statement)
+        self.statements.append(sql)
+        if "AS can_manage,b.business_domain" in sql:
+            if not self.can_manage and self.business_domain != "PRODUCTION":
+                return _SqlResult()
+            return _SqlResult(
+                rows=[
+                    {
+                        "can_manage": int(self.can_manage),
+                        "business_domain": self.business_domain,
+                    }
+                ]
+            )
+        if "SELECT TOP (1) 1 FROM ingestion.processing_job j" in sql:
+            return (
+                _SqlResult(rows=[{"allowed": 1}]) if self.can_manage else _SqlResult()
+            )
+        if "FROM ingestion.processing_job WHERE job_id=:job_id" in sql:
+            row = {
+                **_atomic_job_row(),
+                "source_file_id": 31,
+                "reason": "operator-only diagnostic",
+                "error_message": "private worker detail",
+            }
+            return _SqlResult(rows=[row])
+        raise AssertionError(sql)
+
+
+class _JobAccessEngine:
+    def __init__(self, connection: _JobAccessConnection) -> None:
+        self.connection = connection
+
+    @contextmanager
+    def connect(self):
+        yield self.connection
+
+
+def test_non_owner_can_read_redacted_production_job() -> None:
+    connection = _JobAccessConnection(business_domain="PRODUCTION")
+    service = SqlJobService(_JobAccessEngine(connection))  # type: ignore[arg-type]
+
+    job = service.get_for_principal(91, _principal(2))
+
+    assert job.job_id == 91
+    assert job.status == JobStatus.RUNNING
+    assert job.import_batch_id == 7
+    assert job.source_file_id is None
+    assert job.requested_by_user_id is None
+    assert job.reason is None
+    assert job.error_message is None
+    assert job.idempotency_key is None
+    assert job.lease_token is None
+    assert job.lease_owner is None
+    assert "b.business_domain='PRODUCTION'" in connection.statements[0]
+
+
+def test_non_owner_cannot_read_engineering_job() -> None:
+    service = SqlJobService(  # type: ignore[arg-type]
+        _JobAccessEngine(_JobAccessConnection(business_domain="ENGINEERING"))
+    )
+
+    with pytest.raises(DomainError) as error:
+        service.get_for_principal(91, _principal(2))
+
+    assert error.value.code == "JOB_NOT_FOUND"
+
+
+def test_non_owner_production_reader_cannot_transition_job() -> None:
+    connection = _JobAccessConnection(business_domain="PRODUCTION")
+    service = SqlJobService(_JobAccessEngine(connection))  # type: ignore[arg-type]
+
+    with pytest.raises(DomainError) as error:
+        service.transition_for_principal(
+            91,
+            TransitionJobRequest(target_status=JobStatus.CANCELLED),
+            _principal(2),
+        )
+
+    assert error.value.code == "JOB_NOT_FOUND"
+    assert "b.business_domain='PRODUCTION'" not in connection.statements[0]
+
+
 def _staged_intent_row() -> dict[str, Any]:
     return {
         "job_id": 91,
@@ -382,6 +478,7 @@ class _AtomicFinalizeConnection:
         links: dict[str, int] | None = None,
         previous_version_id: int | None = 204,
         previous_run_id: int | None = 100,
+        previous_run_has_other_current: bool = False,
         zero_rowcount_contains: str | None = None,
     ) -> None:
         self.job_row = job_row or _atomic_job_row()
@@ -395,6 +492,7 @@ class _AtomicFinalizeConnection:
         }
         self.previous_version_id = previous_version_id
         self.previous_run_id = previous_run_id
+        self.previous_run_has_other_current = previous_run_has_other_current
         self.zero_rowcount_contains = zero_rowcount_contains
         self.statements: list[tuple[str, dict[str, Any]]] = []
 
@@ -410,7 +508,9 @@ class _AtomicFinalizeConnection:
             return _SqlResult(rows=[self.job_row])
         if sql.startswith("SELECT i.job_id"):
             return _SqlResult(rows=[self.intent_row])
-        if sql.startswith("SELECT import_batch_id,processing_run_id,dataset_version_id,status"):
+        if sql.startswith(
+            "SELECT import_batch_id,processing_run_id,dataset_version_id,status"
+        ):
             simple_intent = {
                 key: self.intent_row[key]
                 for key in (
@@ -432,9 +532,16 @@ class _AtomicFinalizeConnection:
                 else []
             )
             return _SqlResult(rows=rows)
-        if sql.startswith("SELECT processing_run_id FROM ingestion.processing_run"):
+        if sql.startswith("SELECT pr.processing_run_id,pr.status,pr.is_current"):
             rows = (
-                [{"processing_run_id": self.previous_run_id}]
+                [
+                    {
+                        "processing_run_id": self.previous_run_id,
+                        "status": "PUBLISHED",
+                        "is_current": True,
+                        "has_other_current": self.previous_run_has_other_current,
+                    }
+                ]
                 if self.previous_run_id is not None
                 else []
             )
@@ -445,13 +552,13 @@ class _AtomicFinalizeConnection:
         ):
             failed = _atomic_job_row(status="FAILED", lease_token=None)
             return _SqlResult(rows=[failed], rowcount=1)
-        if (
-            sql.startswith("UPDATE ingestion.processing_job SET status='SUCCESS'")
-        ):
+        if sql.startswith("UPDATE ingestion.processing_job SET status='SUCCESS'"):
             succeeded = _atomic_job_row(status="SUCCESS", lease_token=None)
             return _SqlResult(rows=[succeeded], rowcount=1)
         if sql.startswith("UPDATE ingestion.processing_result_summary SET data_name"):
             return _SqlResult(rowcount=0)
+        if sql.startswith("UPDATE pr SET pr.status='SUPERSEDED'"):
+            return _SqlResult(rowcount=0 if self.previous_run_has_other_current else 1)
         if sql.startswith(("UPDATE ", "INSERT ")):
             if self.zero_rowcount_contains and self.zero_rowcount_contains in sql:
                 return _SqlResult(rowcount=0)
@@ -598,8 +705,7 @@ def test_finalize_initial_import_publishes_complete_lineage_atomically() -> None
     )
     assert any("sys.sp_getapplock" in sql for sql in statements)
     assert any(
-        "FROM ingestion.initial_import_finalize_intent i WITH (UPDLOCK,HOLDLOCK)"
-        in sql
+        "FROM ingestion.initial_import_finalize_intent i WITH (UPDLOCK,HOLDLOCK)" in sql
         and "JOIN dataset.dataset_version dv WITH (UPDLOCK,HOLDLOCK)" in sql
         and "JOIN ingestion.processing_run pr WITH (UPDLOCK,HOLDLOCK)" in sql
         for sql in statements
@@ -616,12 +722,9 @@ def test_finalize_initial_import_publishes_complete_lineage_atomically() -> None
     assert "processing_run_input_file" in lineage_sql
     assert "dataset.dataset_version_run" in lineage_sql
     assert lineage_parameters == {"batch": 7, "run": 101, "version": 205}
+    assert any("SET status='SUPERSEDED',is_current=0" in sql for sql in statements)
     assert any(
-        "SET status='SUPERSEDED',is_current=0" in sql for sql in statements
-    )
-    assert any(
-        "SET status='PUBLISHED',is_current=1" in sql
-        and "status='DRAFT'" in sql
+        "SET status='PUBLISHED',is_current=1" in sql and "status='DRAFT'" in sql
         for sql in statements
     )
     assert any(
@@ -631,8 +734,21 @@ def test_finalize_initial_import_publishes_complete_lineage_atomically() -> None
         for sql in statements
     )
     assert any(
-        "processing_run SET status='SUPERSEDED'" in sql
-        and "is_current=0" in sql
+        "UPDATE pr SET pr.status='SUPERSEDED'" in sql and "pr.is_current=0" in sql
+        for sql in statements
+    )
+    previous_run_sql, previous_run_parameters = next(
+        (sql, parameters)
+        for sql, parameters in connection.statements
+        if sql.startswith("SELECT pr.processing_run_id,pr.status,pr.is_current")
+    )
+    assert "dataset.dataset_version_run" in previous_run_sql
+    assert "dvr.dataset_version_id=:previous" in previous_run_sql
+    assert "source_file_id" not in previous_run_sql
+    assert previous_run_parameters == {"previous": 204}
+    assert not any(
+        "target.source_file_id=prior.source_file_id" in sql
+        or "WHERE source_file_id=:source" in sql
         for sql in statements
     )
     result_parameters = next(
@@ -648,6 +764,98 @@ def test_finalize_initial_import_publishes_complete_lineage_atomically() -> None
         "initial_import_finalize_intent SET status='FINALIZED'" in sql
         for sql in statements
     )
+
+
+def test_finalize_same_source_in_another_dataset_does_not_supersede_it() -> None:
+    connection = _AtomicFinalizeConnection(
+        previous_version_id=None,
+        # A Source-global lookup would have found this other Dataset's Run.
+        previous_run_id=100,
+    )
+    engine = _TransactionalFakeEngine(connection)
+
+    job = SqlJobService(engine).finalize_initial_import(  # type: ignore[arg-type]
+        job_id=91,
+        lease_token=_LEASE_TOKEN,
+        processing_run_id=101,
+        dataset_version_id=205,
+        summary=_atomic_summary(),
+    )
+
+    assert job.status == JobStatus.SUCCESS
+    statements = [sql for sql, _ in connection.statements]
+    assert not any(
+        sql.startswith("SELECT pr.processing_run_id,pr.status,pr.is_current")
+        for sql in statements
+    )
+    assert not any("UPDATE pr SET pr.status='SUPERSEDED'" in sql for sql in statements)
+    run_publish_parameters = next(
+        parameters
+        for sql, parameters in connection.statements
+        if "processing_run SET status='PUBLISHED'" in sql
+    )
+    assert run_publish_parameters["previous_run"] is None
+
+
+def test_finalize_same_dataset_reprocess_supersedes_only_previous_version_runs() -> (
+    None
+):
+    connection = _AtomicFinalizeConnection(
+        previous_version_id=204,
+        previous_run_id=100,
+    )
+    engine = _TransactionalFakeEngine(connection)
+
+    SqlJobService(engine).finalize_initial_import(  # type: ignore[arg-type]
+        job_id=91,
+        lease_token=_LEASE_TOKEN,
+        processing_run_id=101,
+        dataset_version_id=205,
+        summary=_atomic_summary(),
+    )
+
+    demotion_sql, parameters = next(
+        (sql, parameters)
+        for sql, parameters in connection.statements
+        if sql.startswith("UPDATE pr SET pr.status='SUPERSEDED'")
+    )
+    assert "dvr.dataset_version_id=:previous" in demotion_sql
+    assert "source_file_id" not in demotion_sql
+    assert parameters == {"previous": 204}
+    run_publish_parameters = next(
+        parameters
+        for sql, parameters in connection.statements
+        if "processing_run SET status='PUBLISHED'" in sql
+    )
+    assert run_publish_parameters["previous_run"] == 100
+
+
+def test_finalize_keeps_a_previous_run_current_when_another_dataset_still_uses_it() -> (
+    None
+):
+    connection = _AtomicFinalizeConnection(
+        previous_version_id=204,
+        previous_run_id=100,
+        previous_run_has_other_current=True,
+    )
+    engine = _TransactionalFakeEngine(connection)
+
+    job = SqlJobService(engine).finalize_initial_import(  # type: ignore[arg-type]
+        job_id=91,
+        lease_token=_LEASE_TOKEN,
+        processing_run_id=101,
+        dataset_version_id=205,
+        summary=_atomic_summary(),
+    )
+
+    assert job.status == JobStatus.SUCCESS
+    demotion_sql = next(
+        sql
+        for sql, _ in connection.statements
+        if sql.startswith("UPDATE pr SET pr.status='SUPERSEDED'")
+    )
+    assert "NOT EXISTS" in demotion_sql
+    assert "other_dv.status='PUBLISHED'" in demotion_sql
 
 
 def test_reprocess_finalize_locks_and_validates_lifecycle_target() -> None:

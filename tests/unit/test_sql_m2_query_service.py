@@ -9,7 +9,6 @@ from app.core.errors import DomainError
 from app.domain.auth import ALL_PERMISSIONS, Principal
 from app.domain.m2_queries import M2PageFilters
 from app.infrastructure.sql_m2_query_service import (
-    _CURRENT_DATA_READ_GRANT,
     _CURRENT_DATASET_COLUMNS,
     _CURRENT_DATASET_FROM,
     _JOB_DETAILS_SQL,
@@ -88,7 +87,7 @@ def _service(results: list[_Result]) -> tuple[SqlM2QueryService, _Connection]:
     return SqlM2QueryService(_Engine(connection)), connection  # type: ignore[arg-type]
 
 
-def test_upload_page_uses_owner_scope_offset_fetch_and_ignores_validated_fields() -> (
+def test_upload_page_uses_domain_aware_scope_offset_fetch_and_ignores_validated_fields() -> (
     None
 ):
     service, connection = _service(
@@ -113,6 +112,8 @@ def test_upload_page_uses_owner_scope_offset_fetch_and_ignores_validated_fields(
                         "error_code": "CLEANER_FAILED",
                         "error_message": r"C:\secret\input.xlsx failed",
                         "queue_age_seconds": 90,
+                        "is_duplicate_receipt": 1,
+                        "can_manage": 1,
                     }
                 ]
             ),
@@ -137,7 +138,8 @@ def test_upload_page_uses_owner_scope_offset_fetch_and_ignores_validated_fields(
     count_sql, count_parameters = connection.calls[0]
     page_sql, page_parameters = connection.calls[1]
     assert "COUNT_BIG(*)" in count_sql
-    assert "(:is_admin=1 OR b.owner_user_id=:user_id)" in page_sql
+    assert "b.owner_user_id=:user_id" in page_sql
+    assert "b.business_domain='PRODUCTION'" in page_sql
     assert "DATEDIFF(second,j.not_before_utc,SYSUTCDATETIME())" in page_sql
     assert "OFFSET :offset ROWS FETCH NEXT :page_size ROWS ONLY" in page_sql
     assert "iam.data_scope_grant" not in count_sql
@@ -149,6 +151,8 @@ def test_upload_page_uses_owner_scope_offset_fetch_and_ignores_validated_fields(
     assert page_parameters["page_size"] == 5
     assert "product_name" not in page_parameters
     assert "lot_id" not in page_parameters
+    assert page.items[0].is_duplicate_receipt is True
+    assert page.items[0].can_manage is True
 
 
 def test_result_page_returns_job_id_nullable_metrics_and_no_storage_fields() -> None:
@@ -175,6 +179,9 @@ def test_result_page_returns_job_id_nullable_metrics_and_no_storage_fields() -> 
                         "dataset_id": 201,
                         "dataset_version_no": 1,
                         "created_at_utc": datetime(2026, 8, 29, 1, 10),
+                        "can_manage": 0,
+                        "login_name": "owner",
+                        "display_name": "Owner",
                     }
                 ]
             ),
@@ -203,10 +210,14 @@ def test_result_page_returns_job_id_nullable_metrics_and_no_storage_fields() -> 
     assert parameters["lot_id"] == "%LOT-1%"
     assert parameters["is_admin"] is False
     assert parameters["user_id"] == 23
+    assert item.can_manage is False
+    assert item.uploader_login == "owner"
+    assert item.uploader_name == "Owner"
     for scoped_sql in (count_sql, sql):
-        assert "iam.data_scope_grant" in scoped_sql
-        assert "scope_g.scope_key=N'TMS_CURRENT_DATA'" in scoped_sql
-        assert "scope_g.expires_at_utc>SYSUTCDATETIME()" in scoped_sql
+        assert "b.business_domain='PRODUCTION'" in scoped_sql
+        assert "result_dv.status='PUBLISHED'" in scoped_sql
+        assert "result_dv.is_current=1" in scoped_sql
+        assert "iam.data_scope_grant" not in scoped_sql
 
 
 def test_current_catalog_only_returns_owner_visible_published_current_versions() -> (
@@ -239,6 +250,9 @@ def test_current_catalog_only_returns_owner_visible_published_current_versions()
                         "owner_login": "owner",
                         "owner_name": "Owner",
                         "cleaner_version": "1.2.3",
+                        "can_edit_product": 1,
+                        "can_export": 1,
+                        "can_reprocess": 1,
                         "can_archive": 1,
                     }
                 ]
@@ -267,6 +281,9 @@ def test_current_catalog_only_returns_owner_visible_published_current_versions()
     assert page.items[0].lot_id == "LOT-1"
     assert page.items[0].lot_count == 1
     assert page.items[0].pass_count is None
+    assert page.items[0].can_edit_product is True
+    assert page.items[0].can_export is True
+    assert page.items[0].can_reprocess is True
     assert page.items[0].can_archive is True
     count_sql, count_parameters = connection.calls[0]
     page_sql, parameters = connection.calls[1]
@@ -274,9 +291,8 @@ def test_current_catalog_only_returns_owner_visible_published_current_versions()
         assert "dv.status='PUBLISHED'" in sql
         assert "dv.is_current=1" in sql
         assert ":is_admin=1 OR d.owner_user_id=:user_id" in sql
-        assert "iam.data_scope_grant" in sql
-        assert "scope_g.scope_key=N'TMS_CURRENT_DATA'" in sql
-        assert "scope_g.expires_at_utc>SYSUTCDATETIME()" in sql
+        assert "b.business_domain='PRODUCTION'" in sql
+        assert "iam.data_scope_grant" not in sql
     assert "ingestion.processing_run_input_file" in page_sql
     assert "OFFSET :offset ROWS FETCH NEXT :page_size ROWS ONLY" in page_sql
     assert "COALESCE(pr.finished_at_utc,dv.published_at_utc)" in page_sql
@@ -285,15 +301,16 @@ def test_current_catalog_only_returns_owner_visible_published_current_versions()
     assert "pr.cleaner_release_id" not in page_sql
     assert "field_code='PRODUCT_CODE'" in page_sql
     assert "lot_scope.lot_id,lot_scope.lot_count" in page_sql
-    assert (
-        "CASE WHEN COUNT(DISTINCT tr.lot_id)=1 THEN MIN(tr.lot_id) END"
-        in page_sql
-    )
+    assert "CASE WHEN COUNT(DISTINCT tr.lot_id)=1 THEN MIN(tr.lot_id) END" in page_sql
     assert "COUNT(DISTINCT tr.lot_id)" in page_sql
     assert "lot_filter_dvr.dataset_version_id=dv.dataset_version_id" in page_sql
     assert "lot_filter_tr.lot_id LIKE :lot_id ESCAPE '\\'" in page_sql
     assert "summary_row.lot_id" not in page_sql
     assert "CASE WHEN :is_admin=1 OR d.owner_user_id=:user_id" in page_sql
+    assert "AS can_edit_product" in page_sql
+    assert "AS can_export" in page_sql
+    assert "AS can_reprocess" in page_sql
+    assert "AS can_archive" in page_sql
     for sql in (count_sql, page_sql):
         assert "wafer_scope.wafer_id LIKE :wafer_id ESCAPE '\\'" in sql
         assert "dv.input_batch_id=:import_batch_id" in sql
@@ -345,6 +362,7 @@ def test_job_details_returns_safe_trace_chain_timeline_and_actions() -> None:
         "test_stage": "FT",
         "factory_code": "RIYUEXIN",
         "batch_status": "PROCESSED",
+        "can_manage": 1,
     }
     link_base = {
         "job_type": "INITIAL_IMPORT",
@@ -458,10 +476,8 @@ def test_job_details_returns_safe_trace_chain_timeline_and_actions() -> None:
     assert "lifecycle_job_target lt" in links_sql
     for sql in (main_sql, links_sql):
         assert "j.import_batch_id IS NOT NULL" in sql
-        assert "iam.data_scope_grant" in sql
-        assert "scope_g.scope_key=N'TMS_CURRENT_DATA'" in sql
-        assert "scope_g.permission_mode='READ'" in sql
-        assert "scope_g.expires_at_utc>SYSUTCDATETIME()" in sql
+        assert "b.business_domain='PRODUCTION'" in sql
+        assert "iam.data_scope_grant" not in sql
     assert main_parameters == {"user_id": 1, "is_admin": True, "job_id": 101}
     assert links_parameters["parent_job_id"] == 100
     assert "processing_run_input_file" in sources_sql
@@ -480,22 +496,11 @@ def test_job_details_hides_existence_when_owner_scope_does_not_match() -> None:
     assert len(connection.calls) == 1
 
 
-def test_global_current_data_grant_is_narrow_and_expiry_aware() -> None:
-    grant = _CURRENT_DATA_READ_GRANT
-
-    assert "scope_ur.user_id=:user_id" in grant
-    assert "scope_r.active=1" in grant
-    assert "scope_g.role_id=scope_ur.role_id" in grant
-    assert "scope_g.user_id IS NULL" in grant
-    assert "scope_g.scope_type='GLOBAL'" in grant
-    assert "scope_g.scope_key=N'TMS_CURRENT_DATA'" in grant
-    assert "scope_g.permission_mode='READ'" in grant
-    assert "scope_g.expires_at_utc IS NULL" in grant
-    assert "scope_g.expires_at_utc>SYSUTCDATETIME()" in grant
-    assert "scope_g.scope_key=N'*'" not in grant
+def test_job_read_scope_is_domain_aware_without_global_grant() -> None:
     for job_sql in (_JOB_DETAILS_SQL, _JOB_LINKS_SQL):
         assert "j.import_batch_id IS NOT NULL" in job_sql
-        assert grant in job_sql
+        assert "b.business_domain='PRODUCTION'" in job_sql
+        assert "iam.data_scope_grant" not in job_sql
 
 
 def test_m2_read_queries_keep_sql_server_2014_compatible_constructs() -> None:

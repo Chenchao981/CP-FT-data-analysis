@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import Engine, text
@@ -15,6 +15,13 @@ from app.domain.stage_data import (
     StageUploadRow,
     StoredUpload,
     WorkerBatchInfo,
+)
+from app.infrastructure.sql_visibility import (
+    batch_read_scope_sql,
+    batch_write_scope_sql,
+    can_manage_sql,
+    formal_result_read_scope_sql,
+    visibility_parameters,
 )
 
 
@@ -37,9 +44,7 @@ class SqlStageDataService:
     ) -> int:
         stage_label = test_stage.upper()
         catalog_metadata = [
-            item.source_metadata
-            for item in files
-            if item.source_metadata is not None
+            item.source_metadata for item in files if item.source_metadata is not None
         ]
         source_channel = "SOURCE_CATALOG" if catalog_metadata else "WEB"
         batch_metadata: dict[str, object] = {"uploader_user_id": principal.user_id}
@@ -78,16 +83,15 @@ class SqlStageDataService:
                         "factory": factory_code,
                         "name": batch_name,
                         "remark": remark,
-                        "metadata": json.dumps(
-                            batch_metadata, ensure_ascii=False
-                        ),
+                        "metadata": json.dumps(batch_metadata, ensure_ascii=False),
                     },
                 ).scalar_one()
             )
             for ordinal, item in enumerate(files, start=1):
                 source_id = connection.execute(
                     text(
-                        "SELECT source_file_id FROM ingestion.source_file WHERE sha256=:sha256"
+                        "SELECT source_file_id FROM ingestion.source_file "
+                        "WITH (UPDLOCK,HOLDLOCK) WHERE sha256=:sha256"
                     ),
                     {"sha256": item.sha256},
                 ).scalar_one_or_none()
@@ -411,23 +415,34 @@ class SqlStageDataService:
                 )
 
     @staticmethod
-    def _scope() -> str:
-        return "(:is_admin=1 OR b.owner_user_id=:user_id)"
+    def _scope(access_mode: str = "WRITE") -> str:
+        normalized = access_mode.strip().upper()
+        if normalized == "READ":
+            return batch_read_scope_sql(batch_alias="b")
+        if normalized == "WRITE":
+            return batch_write_scope_sql(batch_alias="b")
+        raise ValueError("batch access mode must be READ or WRITE")
 
     def get_batch_info(
-        self, principal: Principal, business_domain: str, test_stage: str, batch_id: int
+        self,
+        principal: Principal,
+        business_domain: str,
+        test_stage: str,
+        batch_id: int,
+        access_mode: str = "WRITE",
     ) -> BatchInfo | None:
         with self._engine.connect() as connection:
             batch_row = (
                 connection.execute(
                     text(
-                        "SELECT b.import_batch_id,b.factory_code,b.status FROM ingestion.import_batch b "
+                        "SELECT b.import_batch_id,b.factory_code,b.status,CASE WHEN "
+                        + can_manage_sql(owner_column="b.owner_user_id")
+                        + " THEN 1 ELSE 0 END AS can_manage FROM ingestion.import_batch b "
                         "WHERE b.import_batch_id=:batch AND b.business_domain=:domain AND b.test_stage=:stage AND "
-                        + self._scope()
+                        + self._scope(access_mode)
                     ),
-                    {
-                        "user_id": principal.user_id,
-                        "is_admin": "SYSTEM_ADMIN" in principal.roles,
+                    visibility_parameters(principal)
+                    | {
                         "batch": batch_id,
                         "domain": business_domain,
                         "stage": test_stage,
@@ -442,6 +457,7 @@ class SqlStageDataService:
                 connection.execute(
                     text(
                         "SELECT r.receipt_id,r.source_file_id,r.original_file_name,"
+                        "r.metadata_json,r.is_duplicate_receipt,"
                         "s.canonical_storage_uri,s.sha256 AS expected_sha256 "
                         "FROM ingestion.import_batch_file ibf "
                         "JOIN ingestion.source_file_receipt r ON r.receipt_id=ibf.receipt_id "
@@ -453,23 +469,29 @@ class SqlStageDataService:
                 .mappings()
                 .all()
             )
-        files = tuple(
-            BatchFileInfo(
-                int(r["receipt_id"]),
-                str(r["original_file_name"]),
-                str(r["canonical_storage_uri"]),
-                int(r["source_file_id"]),
-                str(r["expected_sha256"])
-                if r["expected_sha256"] is not None
-                else None,
-            )
-            for r in file_rows
-        )
+        files = tuple(self._batch_file(r) for r in file_rows)
         return BatchInfo(
             int(batch_row["import_batch_id"]),
             str(batch_row["factory_code"] or ""),
             str(batch_row["status"]),
             files,
+            bool(batch_row["can_manage"]),
+        )
+
+    @staticmethod
+    def _batch_file(row: Mapping[str, Any]) -> BatchFileInfo:
+        metadata = json.loads(row["metadata_json"] or "{}")
+        storage_uri = (
+            metadata.get("receipt_storage_uri") or row["canonical_storage_uri"]
+        )
+        return BatchFileInfo(
+            int(row["receipt_id"]),
+            str(row["original_file_name"]),
+            str(storage_uri),
+            int(row["source_file_id"]),
+            str(row["expected_sha256"]) if row["expected_sha256"] is not None else None,
+            None,
+            bool(row["is_duplicate_receipt"]),
         )
 
     def archive_previous_results(self, batch_id: int) -> None:
@@ -489,18 +511,24 @@ class SqlStageDataService:
                 connection.execute(
                     text(
                         "SELECT b.import_batch_id,ibf.ordinal_no,r.receipt_id,r.source_file_id,r.original_file_name,s.file_size,b.factory_code,b.started_at_utc,b.completed_at_utc,u.login_name,u.display_name,b.status,"
-                        "latest.job_id AS latest_job_id,latest.error_code,latest.error_message "
+                        "r.is_duplicate_receipt,latest.job_id AS latest_job_id,"
+                        "CASE WHEN "
+                        + can_manage_sql(owner_column="b.owner_user_id")
+                        + " THEN latest.error_code ELSE NULL END AS error_code,CASE WHEN "
+                        + can_manage_sql(owner_column="b.owner_user_id")
+                        + " THEN latest.error_message ELSE NULL END AS error_message,CASE WHEN "
+                        + can_manage_sql(owner_column="b.owner_user_id")
+                        + " THEN 1 ELSE 0 END AS can_manage "
                         "FROM ingestion.import_batch b JOIN iam.app_user u ON u.user_id=b.owner_user_id JOIN ingestion.import_batch_file ibf ON ibf.import_batch_id=b.import_batch_id "
                         "JOIN ingestion.source_file_receipt r ON r.receipt_id=ibf.receipt_id JOIN ingestion.source_file s ON s.source_file_id=r.source_file_id "
                         "OUTER APPLY(SELECT TOP (1) j.job_id,j.error_code,j.error_message FROM ingestion.processing_job j "
                         "WHERE j.import_batch_id=b.import_batch_id ORDER BY j.job_id DESC) latest "
                         "WHERE b.business_domain=:domain AND b.test_stage=:stage AND "
-                        + self._scope()
+                        + self._scope("READ")
                         + " ORDER BY b.import_batch_id DESC,ibf.ordinal_no"
                     ),
-                    {
-                        "user_id": principal.user_id,
-                        "is_admin": "SYSTEM_ADMIN" in principal.roles,
+                    visibility_parameters(principal)
+                    | {
                         "domain": business_domain,
                         "stage": test_stage,
                     },
@@ -527,10 +555,11 @@ class SqlStageDataService:
                 int(r["source_file_id"]),
                 int(r["latest_job_id"]) if r["latest_job_id"] is not None else None,
                 str(r["error_code"]) if r["error_code"] is not None else None,
-                str(r["error_message"])
-                if r["error_message"] is not None
-                else None,
+                str(r["error_message"]) if r["error_message"] is not None else None,
                 "LOT_ID" if str(r["status"]) == "NEEDS_INPUT" else None,
+                bool(r["is_duplicate_receipt"]),
+                bool(r["can_manage"]),
+                bool(r["can_manage"]),
             )
             for r in rows
         )
@@ -542,14 +571,18 @@ class SqlStageDataService:
             rows = (
                 connection.execute(
                     text(
-                        "SELECT s.* FROM ingestion.processing_result_summary s JOIN ingestion.import_batch b ON b.import_batch_id=s.import_batch_id "
+                        "SELECT s.*,u.login_name,u.display_name,CASE WHEN "
+                        + can_manage_sql(owner_column="b.owner_user_id")
+                        + " THEN 1 ELSE 0 END AS can_manage FROM ingestion.processing_result_summary s JOIN ingestion.import_batch b ON b.import_batch_id=s.import_batch_id "
+                        "JOIN iam.app_user u ON u.user_id=b.owner_user_id "
                         "WHERE b.business_domain=:domain AND b.test_stage=:stage AND s.status='PROCESSED' AND "
-                        + self._scope()
+                        + formal_result_read_scope_sql(
+                            summary_alias="s", batch_alias="b"
+                        )
                         + " ORDER BY s.result_summary_id DESC"
                     ),
-                    {
-                        "user_id": principal.user_id,
-                        "is_admin": "SYSTEM_ADMIN" in principal.roles,
+                    visibility_parameters(principal)
+                    | {
                         "domain": business_domain,
                         "stage": test_stage,
                     },
@@ -577,6 +610,9 @@ class SqlStageDataService:
                 if r["dataset_version_no"] is not None
                 else None,
                 _iso(r["created_at_utc"]) or "",
+                bool(r["can_manage"]),
+                str(r["login_name"]),
+                str(r["display_name"]),
             )
             for r in rows
         )

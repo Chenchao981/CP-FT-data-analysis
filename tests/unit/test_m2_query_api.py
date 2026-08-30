@@ -56,6 +56,9 @@ class StubM2QueryService:
                     error_message=None,
                     action_required=None,
                     queue_age_seconds=73,
+                    is_duplicate_receipt=True,
+                    can_manage=True,
+                    can_download_source=True,
                 ),
             ),
             total=21,
@@ -89,6 +92,9 @@ class StubM2QueryService:
                     dataset_id=201,
                     dataset_version_no=1,
                     created_at_utc="2026-08-29T01:10:00.000Z",
+                    can_manage=True,
+                    uploader_login="owner",
+                    uploader_name="Owner",
                 ),
             ),
             total=1,
@@ -123,6 +129,9 @@ class StubM2QueryService:
                     owner_name="Owner",
                     cleaner_version="1.2.3",
                     can_archive=True,
+                    can_edit_product=True,
+                    can_export=True,
+                    can_reprocess=True,
                 ),
             ),
             total=1,
@@ -256,6 +265,9 @@ def test_upload_page_has_stable_shape_and_validates_ignored_filters() -> None:
                 "error_message": None,
                 "action_required": None,
                 "queue_age_seconds": 73,
+                "is_duplicate_receipt": True,
+                "can_manage": True,
+                "can_download_source": True,
             }
         ],
         "total": 21,
@@ -282,6 +294,9 @@ def test_results_page_returns_nullable_metrics_and_job_id() -> None:
     assert item["job_id"] == 101
     assert item["pass_count"] is None
     assert item["yield_rate"] is None
+    assert item["uploader_login"] == "owner"
+    assert item["uploader_name"] == "Owner"
+    assert item["can_manage"] is True
 
 
 def test_current_catalog_applies_catalog_filters() -> None:
@@ -311,6 +326,9 @@ def test_current_catalog_applies_catalog_filters() -> None:
     assert item["lot_id"] == "LOT-1"
     assert item["lot_count"] == 1
     assert item["cleaner_version"] == "1.2.3"
+    assert item["can_edit_product"] is True
+    assert item["can_export"] is True
+    assert item["can_reprocess"] is True
     assert item["can_archive"] is True
     filters = stub.calls[0][2]
     assert filters.business_domain == "PRODUCTION"

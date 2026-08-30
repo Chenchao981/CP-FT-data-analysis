@@ -78,8 +78,7 @@ def _run_powershell(
 
 def _write_production_runtime(tmp_path: Path, *, overlap: bool = False) -> Path:
     directories = {
-        name: tmp_path / name
-        for name in ("source", "upload", "work", "quick", "logs")
+        name: tmp_path / name for name in ("source", "upload", "work", "quick", "logs")
     }
     for directory in directories.values():
         directory.mkdir()
@@ -161,7 +160,7 @@ def test_production_preflight_accepts_strong_separated_runtime(tmp_path: Path) -
 
     assert completed.returncode == 0, completed.stderr + completed.stdout
     assert "VALID" in completed.stdout
-    assert "sql2014_0018" in completed.stdout
+    assert "sql2014_0019" in completed.stdout
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows production runtime contract")
@@ -184,7 +183,9 @@ def test_production_preflight_rejects_overlapping_roots(tmp_path: Path) -> None:
 @pytest.mark.skipif(os.name != "nt", reason="Windows production runtime contract")
 def test_production_config_rejects_literal_secret(tmp_path: Path) -> None:
     runtime = tmp_path / "unsafe.ps1"
-    runtime.write_text("$env:TMS_JWT_SECRET = 'literal-secret-value'\n", encoding="utf-8")
+    runtime.write_text(
+        "$env:TMS_JWT_SECRET = 'literal-secret-value'\n", encoding="utf-8"
+    )
     common = WINDOWS_SCRIPTS / "TmsRuntime.Common.ps1"
     completed = _run_powershell(
         command=(
@@ -203,8 +204,7 @@ def test_python_production_config_requires_exact_release_head(
     from app.core.config import get_settings
 
     directories = {
-        name: tmp_path / name
-        for name in ("source", "upload", "work", "quick", "logs")
+        name: tmp_path / name for name in ("source", "upload", "work", "quick", "logs")
     }
     for directory in directories.values():
         directory.mkdir()
@@ -224,9 +224,7 @@ def test_python_production_config_requires_exact_release_head(
         "TMS_WORK_ROOT": str(directories["work"]),
         "TMS_QUICK_WORK_ROOT": str(directories["quick"]),
         "TMS_LOG_DIR": str(directories["logs"]),
-        "TMS_SOURCE_ROOTS_JSON": json.dumps(
-            [{"path": str(directories["source"])}]
-        ),
+        "TMS_SOURCE_ROOTS_JSON": json.dumps([{"path": str(directories["source"])}]),
     }
     for name, value in values.items():
         monkeypatch.setenv(name, value)
@@ -407,9 +405,9 @@ def test_database_maintenance_scripts_default_to_dry_run(tmp_path: Path) -> None
 
 
 def test_pre_migration_check_handles_schema_before_finalize_intent_table() -> None:
-    migration_check = (
-        WINDOWS_SCRIPTS / "test_tms_migration_readiness.ps1"
-    ).read_text(encoding="utf-8")
+    migration_check = (WINDOWS_SCRIPTS / "test_tms_migration_readiness.ps1").read_text(
+        encoding="utf-8"
+    )
 
     assert "OBJECT_ID(N'ingestion.initial_import_finalize_intent'" in migration_check
     assert "EXEC sys.sp_executesql" in migration_check
@@ -420,15 +418,15 @@ def test_scheduled_tasks_keep_formal_and_quick_cleanup_separate() -> None:
     installer = (WINDOWS_SCRIPTS / "install_tms_scheduled_tasks.ps1").read_text(
         encoding="utf-8"
     )
-    status = (
-        WINDOWS_SCRIPTS / "get_tms_scheduled_task_status.ps1"
-    ).read_text(encoding="utf-8")
-    uninstaller = (
-        WINDOWS_SCRIPTS / "uninstall_tms_scheduled_tasks.ps1"
-    ).read_text(encoding="utf-8")
-    formal_wrapper = (
-        WINDOWS_SCRIPTS / "run_tms_formal_cleanup.ps1"
-    ).read_text(encoding="utf-8")
+    status = (WINDOWS_SCRIPTS / "get_tms_scheduled_task_status.ps1").read_text(
+        encoding="utf-8"
+    )
+    uninstaller = (WINDOWS_SCRIPTS / "uninstall_tms_scheduled_tasks.ps1").read_text(
+        encoding="utf-8"
+    )
+    formal_wrapper = (WINDOWS_SCRIPTS / "run_tms_formal_cleanup.ps1").read_text(
+        encoding="utf-8"
+    )
     formal_runner = (ROOT / "scripts" / "run_formal_artifact_cleanup.py").read_text(
         encoding="utf-8"
     )
@@ -471,11 +469,12 @@ def test_release_is_reproducible_inspected_and_launcher_smoked(tmp_path: Path) -
         smoke_launcher=True,
     )
 
-    assert hashlib.sha256(first.read_bytes()).digest() == hashlib.sha256(
-        second.read_bytes()
-    ).digest()
+    assert (
+        hashlib.sha256(first.read_bytes()).digest()
+        == hashlib.sha256(second.read_bytes()).digest()
+    )
     assert first_manifest == second_manifest
-    assert first_manifest["schema_revision"] == "sql2014_0018"
+    assert first_manifest["schema_revision"] == "sql2014_0019"
     inspected = inspect_release_archive(first)
     assert inspected == first_manifest
     with zipfile.ZipFile(first) as archive:

@@ -1,62 +1,92 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-
-import pytest
+from pathlib import Path
 
 from scripts.g0.repair_processing_run_current import (
-    PublishedRun,
-    choose_source_repair,
+    LinkedRunState,
+    choose_run_repair,
 )
 
 
 def _run(
     run_id: int,
     *,
-    minutes: int,
+    source_id: int = 9,
+    status: str = "PUBLISHED",
     current: bool = False,
-    versions: tuple[int, ...] = (),
-) -> PublishedRun:
-    return PublishedRun(
+    current_versions: tuple[int, ...] = (),
+    historical_versions: tuple[int, ...] = (),
+) -> LinkedRunState:
+    return LinkedRunState(
         processing_run_id=run_id,
-        source_file_id=9,
-        finished_at_utc=datetime(2026, 8, 29, tzinfo=UTC)
-        + timedelta(minutes=minutes),
-        started_at_utc=None,
+        source_file_id=source_id,
+        status=status,
         is_current=current,
-        current_version_ids=versions,
+        current_version_ids=current_versions,
+        historical_version_ids=historical_versions,
     )
 
 
-def test_repair_chooses_latest_run_backing_a_current_dataset() -> None:
-    repair = choose_source_repair(
-        (
-            _run(10, minutes=1, versions=(20,)),
-            _run(11, minutes=2, versions=(21,)),
-            _run(12, minutes=0),
+def test_same_source_can_back_two_independent_current_datasets() -> None:
+    first = _run(10, current=True, current_versions=(20,))
+    second = _run(11, current=True, current_versions=(21,))
+
+    assert first.source_file_id == second.source_file_id
+    assert choose_run_repair(first) is None
+    assert choose_run_repair(second) is None
+
+
+def test_same_dataset_reprocess_supersedes_only_its_historical_run() -> None:
+    previous = _run(
+        10,
+        current=True,
+        current_versions=(),
+        historical_versions=(20,),
+    )
+    replacement = _run(11, current=True, current_versions=(21,))
+
+    repair = choose_run_repair(previous)
+
+    assert repair is not None
+    assert repair.processing_run_id == 10
+    assert repair.target_status == "SUPERSEDED"
+    assert repair.target_is_current is False
+    assert choose_run_repair(replacement) is None
+
+
+def test_run_linked_to_current_dataset_is_promoted_without_source_winner() -> None:
+    repair = choose_run_repair(
+        _run(
+            10,
+            status="SUPERSEDED",
+            current=False,
+            current_versions=(20,),
         )
     )
 
     assert repair is not None
-    assert repair.winner_run_id == 11
-    assert repair.loser_run_ids == (12, 10)
-    assert repair.superseded_current_version_ids == (20,)
-    assert repair.predecessor_run_id == 10
+    assert repair.target_status == "PUBLISHED"
+    assert repair.target_is_current is True
 
 
-def test_repair_is_noop_for_one_healthy_current_run() -> None:
-    assert (
-        choose_source_repair((_run(10, minutes=1, current=True, versions=(20,)),))
-        is None
-    )
+def test_unlinked_published_run_becomes_noncurrent_history() -> None:
+    repair = choose_run_repair(_run(10, current=True))
+
+    assert repair is not None
+    assert repair.target_status == "SUPERSEDED"
+    assert repair.target_is_current is False
 
 
-def test_repair_skips_published_history_without_dataset_current() -> None:
-    assert choose_source_repair((_run(10, minutes=1), _run(11, minutes=2))) is None
+def test_repair_script_has_no_source_global_winner_policy() -> None:
+    script = (
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "g0"
+        / "repair_processing_run_current.py"
+    ).read_text(encoding="utf-8-sig")
 
-
-def test_repair_rejects_newer_published_run_without_dataset_current() -> None:
-    with pytest.raises(ValueError, match="newer published run"):
-        choose_source_repair(
-            (_run(10, minutes=1, versions=(20,)), _run(11, minutes=2))
-        )
+    assert "GROUP BY pr.source_file_id" not in script
+    assert "ORDER BY pr.source_file_id" not in script
+    assert "winner_run_id" not in script
+    assert "LATEST_PUBLISHED_CURRENT_DATASET_RUN_V1" not in script
+    assert "DATASET_SCOPED_PROCESSING_RUN_CURRENT_V2" in script

@@ -52,7 +52,7 @@ def main() -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert revision == "sql2014_0018", revision
+            assert revision == "sql2014_0019", revision
             route_b_count = connection.execute(
                 text(
                     "SELECT COUNT(*) FROM sys.tables t JOIN sys.schemas s "
@@ -329,7 +329,9 @@ def main() -> None:
                 ]
                 for version_id in version_ids:
                     connection.execute(
-                        text("DELETE dataset.dataset_version_run WHERE dataset_version_id=:version"),
+                        text(
+                            "DELETE dataset.dataset_version_run WHERE dataset_version_id=:version"
+                        ),
                         {"version": version_id},
                     )
                 connection.execute(
@@ -339,7 +341,9 @@ def main() -> None:
                 dataset_ids = [
                     int(row[0])
                     for row in connection.execute(
-                        text("SELECT dataset_id FROM dataset.dataset WHERE dataset_code=:code"),
+                        text(
+                            "SELECT dataset_id FROM dataset.dataset WHERE dataset_code=:code"
+                        ),
                         {"code": f"CP-BATCH-{batch_id}"},
                     )
                 ]
@@ -380,7 +384,9 @@ def main() -> None:
                         {"run": run_id},
                     )
                     connection.execute(
-                        text("DELETE ingestion.processing_run WHERE processing_run_id=:run"),
+                        text(
+                            "DELETE ingestion.processing_run WHERE processing_run_id=:run"
+                        ),
                         {"run": run_id},
                     )
                 if previous_current_run_id is not None:

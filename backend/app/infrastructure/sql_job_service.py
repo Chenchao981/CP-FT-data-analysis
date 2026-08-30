@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -445,7 +446,10 @@ class SqlJobService:
         *,
         allowed_batch_statuses: tuple[str, ...],
     ) -> Job:
-        if request.job_type != JobType.INITIAL_IMPORT or request.import_batch_id is None:
+        if (
+            request.job_type != JobType.INITIAL_IMPORT
+            or request.import_batch_id is None
+        ):
             raise ValueError(
                 "create_initial_import_for_batch requires an INITIAL_IMPORT batch job"
             )
@@ -475,14 +479,9 @@ class SqlJobService:
             owner_user_id = batch["owner_user_id"] if batch is not None else None
             if batch is None or (
                 "SYSTEM_ADMIN" not in principal.roles
-                and (
-                    owner_user_id is None
-                    or int(owner_user_id) != principal.user_id
-                )
+                and (owner_user_id is None or int(owner_user_id) != principal.user_id)
             ):
-                raise DomainError(
-                    "BATCH_NOT_FOUND", "批次不存在或无权访问", 404
-                )
+                raise DomainError("BATCH_NOT_FOUND", "批次不存在或无权访问", 404)
             batch_status = str(batch["status"]).strip().upper()
             if batch_status not in allowed:
                 _raise_initial_import_batch_state_conflict(batch_status)
@@ -532,19 +531,19 @@ class SqlJobService:
         with self._engine.begin() as connection:
             exhausted_rows = (
                 connection.execute(
-                text(
-                    "UPDATE ingestion.processing_job SET status='FAILED',"
-                    "finished_at_utc=:now,error_code='MAX_ATTEMPTS_EXCEEDED',"
-                    "error_message=N'Worker租约多次失效，已达到最大尝试次数',"
-                    "lease_token=NULL,lease_owner=NULL,lease_expires_at_utc=NULL "
-                    "OUTPUT INSERTED.job_id,INSERTED.job_type,INSERTED.import_batch_id,"
-                    "INSERTED.finalize_protocol "
-                    f"WHERE job_type IN ({type_placeholders}) "
-                    "AND attempt_count>=max_attempts AND ("
-                    "status='QUEUED' OR (status='RUNNING' AND lease_expires_at_utc<:now))"
-                ),
-                {"now": now, **type_parameters},
-            )
+                    text(
+                        "UPDATE ingestion.processing_job SET status='FAILED',"
+                        "finished_at_utc=:now,error_code='MAX_ATTEMPTS_EXCEEDED',"
+                        "error_message=N'Worker租约多次失效，已达到最大尝试次数',"
+                        "lease_token=NULL,lease_owner=NULL,lease_expires_at_utc=NULL "
+                        "OUTPUT INSERTED.job_id,INSERTED.job_type,INSERTED.import_batch_id,"
+                        "INSERTED.finalize_protocol "
+                        f"WHERE job_type IN ({type_placeholders}) "
+                        "AND attempt_count>=max_attempts AND ("
+                        "status='QUEUED' OR (status='RUNNING' AND lease_expires_at_utc<:now))"
+                    ),
+                    {"now": now, **type_parameters},
+                )
                 .mappings()
                 .all()
             )
@@ -1001,11 +1000,9 @@ class SqlJobService:
                     "STAGED Run 未完整绑定当前批次的全部源文件",
                     409,
                 )
-            if (
-                int(intent["unit_count"]) != int(intent["unit_count_output"])
-                or int(intent["measurement_count"])
-                != int(intent["measurement_count_output"])
-            ):
+            if int(intent["unit_count"]) != int(intent["unit_count_output"]) or int(
+                intent["measurement_count"]
+            ) != int(intent["measurement_count_output"]):
                 raise DomainError(
                     "ATOMIC_COUNT_RECONCILIATION_FAILED",
                     "Dataset Version 与 Processing Run 的数据量不一致",
@@ -1031,7 +1028,49 @@ class SqlJobService:
                     "version": dataset_version_id,
                 },
             ).scalar_one_or_none()
+            previous_run: int | None = None
+            previous_run_ids: tuple[int, ...] = ()
             if previous is not None:
+                previous_run_rows = (
+                    connection.execute(
+                        text(
+                            "SELECT pr.processing_run_id,pr.status,pr.is_current,"
+                            "CASE WHEN EXISTS(SELECT 1 "
+                            "FROM dataset.dataset_version_run other_dvr "
+                            "JOIN dataset.dataset_version other_dv "
+                            "ON other_dv.dataset_version_id=other_dvr.dataset_version_id "
+                            "WHERE other_dvr.processing_run_id=pr.processing_run_id "
+                            "AND other_dv.dataset_version_id<>:previous "
+                            "AND other_dv.status='PUBLISHED' AND other_dv.is_current=1) "
+                            "THEN 1 ELSE 0 END AS has_other_current "
+                            "FROM dataset.dataset_version_run dvr WITH (UPDLOCK,HOLDLOCK) "
+                            "JOIN ingestion.processing_run pr WITH (UPDLOCK,HOLDLOCK) "
+                            "ON pr.processing_run_id=dvr.processing_run_id "
+                            "WHERE dvr.dataset_version_id=:previous "
+                            "ORDER BY CASE WHEN dvr.run_role='PRIMARY' THEN 0 ELSE 1 END,"
+                            "dvr.ordinal_no,pr.processing_run_id"
+                        ),
+                        {"previous": previous},
+                    )
+                    .mappings()
+                    .all()
+                )
+                if not previous_run_rows or any(
+                    row["status"] != "PUBLISHED" or not bool(row["is_current"])
+                    for row in previous_run_rows
+                ):
+                    raise DomainError(
+                        "ATOMIC_PREVIOUS_RUN_CONFLICT",
+                        "旧 Current Dataset Version 的 Processing Run 状态不一致",
+                        409,
+                    )
+                previous_run_ids = tuple(
+                    int(row["processing_run_id"]) for row in previous_run_rows
+                )
+                previous_runs_to_supersede = sum(
+                    not bool(row["has_other_current"]) for row in previous_run_rows
+                )
+                previous_run = previous_run_ids[0]
                 previous_updated = connection.execute(
                     text(
                         "UPDATE dataset.dataset_version SET status='SUPERSEDED',is_current=0 "
@@ -1045,40 +1084,24 @@ class SqlJobService:
                         "旧 Current Dataset Version 状态已变化",
                         409,
                     )
-
-            previous_run = connection.execute(
-                text(
-                    "SELECT processing_run_id FROM ingestion.processing_run "
-                    "WITH (UPDLOCK,HOLDLOCK) WHERE source_file_id=:source "
-                    "AND status='PUBLISHED' AND is_current=1 "
-                    "AND processing_run_id<>:run"
-                ),
-                {
-                    "source": int(intent["source_file_id"]),
-                    "run": processing_run_id,
-                },
-            ).scalar_one_or_none()
-            if previous_run is not None:
-                connection.execute(
-                    text(
-                        "UPDATE dv SET status='SUPERSEDED',is_current=0 "
-                        "FROM dataset.dataset_version dv WITH (UPDLOCK,HOLDLOCK) "
-                        "JOIN dataset.dataset_version_run dvr "
-                        "ON dvr.dataset_version_id=dv.dataset_version_id "
-                        "WHERE dvr.processing_run_id=:previous_run "
-                        "AND dv.status='PUBLISHED' AND dv.is_current=1"
-                    ),
-                    {"previous_run": previous_run},
-                )
                 previous_run_updated = connection.execute(
                     text(
-                        "UPDATE ingestion.processing_run SET status='SUPERSEDED',"
-                        "is_current=0 WHERE processing_run_id=:previous_run "
-                        "AND status='PUBLISHED' AND is_current=1"
+                        "UPDATE pr SET pr.status='SUPERSEDED',pr.is_current=0 "
+                        "FROM ingestion.processing_run pr WITH (UPDLOCK,HOLDLOCK) "
+                        "JOIN dataset.dataset_version_run dvr "
+                        "ON dvr.processing_run_id=pr.processing_run_id "
+                        "WHERE dvr.dataset_version_id=:previous "
+                        "AND pr.status='PUBLISHED' AND pr.is_current=1 "
+                        "AND NOT EXISTS(SELECT 1 "
+                        "FROM dataset.dataset_version_run other_dvr "
+                        "JOIN dataset.dataset_version other_dv "
+                        "ON other_dv.dataset_version_id=other_dvr.dataset_version_id "
+                        "WHERE other_dvr.processing_run_id=pr.processing_run_id "
+                        "AND other_dv.status='PUBLISHED' AND other_dv.is_current=1)"
                     ),
-                    {"previous_run": previous_run},
+                    {"previous": previous},
                 )
-                if previous_run_updated.rowcount != 1:
+                if previous_run_updated.rowcount != previous_runs_to_supersede:
                     raise DomainError(
                         "ATOMIC_PREVIOUS_RUN_CONFLICT",
                         "旧 Current Processing Run 状态已变化",
@@ -1279,7 +1302,9 @@ class SqlJobService:
     ) -> Job:
         if field_code != "LOT_ID":
             raise ValueError("only LOT_ID input requests are supported")
-        requested_names = tuple(dict.fromkeys(item.strip() for item in files if item.strip()))
+        requested_names = tuple(
+            dict.fromkeys(item.strip() for item in files if item.strip())
+        )
         if not requested_names:
             raise ValueError("input-required files are required")
         now = datetime.now(UTC).replace(tzinfo=None)
@@ -1372,7 +1397,10 @@ class SqlJobService:
                         "receipt": receipt_id,
                         "prompt": message[:500],
                         "evidence": json.dumps(
-                            {**evidence, "original_file_name": row["original_file_name"]},
+                            {
+                                **evidence,
+                                "original_file_name": row["original_file_name"],
+                            },
                             ensure_ascii=False,
                             separators=(",", ":"),
                         ),
@@ -1469,23 +1497,43 @@ class SqlJobService:
         if "SYSTEM_ADMIN" in principal.roles:
             return self.get(job_id)
         with self._engine.connect() as connection:
-            allowed = connection.execute(
-                text(
-                    "SELECT TOP (1) 1 FROM ingestion.processing_job j "
-                    "WHERE j.job_id=:job_id AND ("
-                    "EXISTS(SELECT 1 FROM ingestion.import_batch b WHERE "
-                    "b.import_batch_id=j.import_batch_id AND b.owner_user_id=:user_id) OR "
-                    "EXISTS(SELECT 1 FROM ingestion.source_file_receipt r "
-                    "JOIN ingestion.import_batch b ON b.import_batch_id=r.import_batch_id "
-                    "WHERE r.source_file_id=j.source_file_id AND b.owner_user_id=:user_id) OR "
-                    "EXISTS(SELECT 1 FROM workspace.analysis_session s WHERE "
-                    "s.analysis_session_id=j.analysis_session_id AND s.owner_user_id=:user_id))"
-                ),
-                {"job_id": job_id, "user_id": principal.user_id},
-            ).scalar_one_or_none()
-        if allowed is None:
+            access = (
+                connection.execute(
+                    text(
+                        "SELECT TOP (1) CASE WHEN b.owner_user_id=:user_id OR "
+                        "ws.owner_user_id=:user_id OR j.requested_by_user_id=:user_id "
+                        "THEN 1 ELSE 0 END AS can_manage,b.business_domain "
+                        "FROM ingestion.processing_job j "
+                        "LEFT JOIN ingestion.import_batch b "
+                        "ON b.import_batch_id=j.import_batch_id "
+                        "LEFT JOIN workspace.analysis_session ws "
+                        "ON ws.analysis_session_id=j.analysis_session_id "
+                        "WHERE j.job_id=:job_id AND (b.owner_user_id=:user_id OR "
+                        "ws.owner_user_id=:user_id OR j.requested_by_user_id=:user_id OR "
+                        "(j.import_batch_id IS NOT NULL AND "
+                        "b.business_domain='PRODUCTION'))"
+                    ),
+                    {"job_id": job_id, "user_id": principal.user_id},
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if access is None:
             raise DomainError("JOB_NOT_FOUND", "任务不存在或无权访问", 404)
-        return self.get(job_id)
+        job = self.get(job_id)
+        if bool(access["can_manage"]):
+            return job
+        return replace(
+            job,
+            source_file_id=None,
+            analysis_session_id=None,
+            requested_by_user_id=None,
+            reason=None,
+            error_message=None,
+            idempotency_key=None,
+            lease_token=None,
+            lease_owner=None,
+        )
 
     def transition_for_principal(
         self,
@@ -1493,7 +1541,23 @@ class SqlJobService:
         request: TransitionJobRequest,
         principal: Principal,
     ) -> Job:
-        self.get_for_principal(job_id, principal)
+        if "SYSTEM_ADMIN" not in principal.roles:
+            with self._engine.connect() as connection:
+                allowed = connection.execute(
+                    text(
+                        "SELECT TOP (1) 1 FROM ingestion.processing_job j "
+                        "LEFT JOIN ingestion.import_batch b "
+                        "ON b.import_batch_id=j.import_batch_id "
+                        "LEFT JOIN workspace.analysis_session ws "
+                        "ON ws.analysis_session_id=j.analysis_session_id "
+                        "WHERE j.job_id=:job_id AND (b.owner_user_id=:user_id OR "
+                        "ws.owner_user_id=:user_id OR "
+                        "j.requested_by_user_id=:user_id)"
+                    ),
+                    {"job_id": job_id, "user_id": principal.user_id},
+                ).scalar_one_or_none()
+            if allowed is None:
+                raise DomainError("JOB_NOT_FOUND", "任务不存在或无权操作", 404)
         return self.transition(job_id, request)
 
     def transition(self, job_id: int, request: TransitionJobRequest) -> Job:

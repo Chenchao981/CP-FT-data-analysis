@@ -18,6 +18,7 @@ from fastapi.testclient import TestClient
 
 class StubManagementService:
     def quality_summary(self, **kwargs) -> QualityManagementSummary:
+        assert kwargs["principal"].user_id == 9
         assert kwargs["from_utc"].tzinfo is UTC
         assert kwargs["to_utc"].tzinfo is UTC
         return QualityManagementSummary(

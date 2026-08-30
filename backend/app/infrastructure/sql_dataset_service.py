@@ -35,44 +35,10 @@ from app.domain.datasets import (
     WaferOption,
     WaferYieldPoint,
 )
-
-_CURRENT_DATA_READ_GRANT = """
-EXISTS(
-    SELECT 1
-    FROM iam.user_role scope_ur
-    JOIN iam.role scope_r
-      ON scope_r.role_id=scope_ur.role_id AND scope_r.active=1
-    JOIN iam.data_scope_grant scope_g
-      ON scope_g.role_id=scope_ur.role_id AND scope_g.user_id IS NULL
-    WHERE scope_ur.user_id=:user_id
-      AND scope_g.scope_type='GLOBAL'
-      AND scope_g.scope_key=N'TMS_CURRENT_DATA'
-      AND scope_g.permission_mode='READ'
-      AND (scope_g.expires_at_utc IS NULL
-           OR scope_g.expires_at_utc>SYSUTCDATETIME())
+from app.infrastructure.sql_visibility import (
+    current_dataset_read_scope_sql,
+    visibility_parameters,
 )
-"""
-
-_CURRENT_PUBLISHED_DATASET_VERSION = """
-EXISTS(
-    SELECT 1
-    FROM dataset.dataset_version access_dv
-    WHERE access_dv.dataset_id=d.dataset_id
-      AND access_dv.status='PUBLISHED'
-      AND access_dv.is_current=1
-)
-"""
-
-_CURRENT_PUBLISHED_REQUESTED_VERSION = """
-EXISTS(
-    SELECT 1
-    FROM dataset.dataset_version access_dv
-    WHERE access_dv.dataset_id=d.dataset_id
-      AND access_dv.version_no=:access_version_no
-      AND access_dv.status='PUBLISHED'
-      AND access_dv.is_current=1
-)
-"""
 
 _MAX_SQL_SERVER_OFFSET = 2_147_483_647
 _DETAIL_FILTER_LIMITS = {
@@ -248,21 +214,24 @@ class SqlDatasetService:
         self._engine = engine
 
     def list_datasets(self, principal: Principal) -> tuple[DatasetRecord, ...]:
-        params = {
-            "user_id": principal.user_id,
-            "is_admin": "SYSTEM_ADMIN" in principal.roles,
-        }
+        params = visibility_parameters(principal)
         with self._engine.connect() as connection:
             rows = (
                 connection.execute(
                     text(
                         "SELECT d.dataset_id,d.dataset_code,d.dataset_name,d.dataset_type,d.test_stage,"
                         "d.supplier_id,d.product_id,d.owner_user_id FROM dataset.dataset d "
-                        "WHERE :is_admin=1 OR d.owner_user_id=:user_id OR ("
-                        + _CURRENT_DATA_READ_GRANT
-                        + " AND "
-                        + _CURRENT_PUBLISHED_DATASET_VERSION
-                        + ") "
+                        "LEFT JOIN dataset.dataset_version access_dv ON "
+                        "access_dv.dataset_id=d.dataset_id AND "
+                        "access_dv.status='PUBLISHED' AND access_dv.is_current=1 "
+                        "LEFT JOIN ingestion.import_batch access_b ON "
+                        "access_b.import_batch_id=access_dv.input_batch_id WHERE "
+                        + current_dataset_read_scope_sql(
+                            dataset_alias="d",
+                            version_alias="access_dv",
+                            batch_alias="access_b",
+                        )
+                        + " "
                         "ORDER BY d.dataset_id DESC"
                     ),
                     params,
@@ -283,32 +252,40 @@ class SqlDatasetService:
         normalized_mode = mode.strip().upper()
         if normalized_mode not in {"READ", "WRITE"}:
             raise ValueError("dataset access mode must be READ or WRITE")
-        scope = ":is_admin=1 OR d.owner_user_id=:user_id"
-        if normalized_mode == "READ":
-            current_version_scope = (
-                _CURRENT_PUBLISHED_REQUESTED_VERSION
-                if version_no is not None
-                else _CURRENT_PUBLISHED_DATASET_VERSION
-            )
-            scope += (
-                " OR ("
-                + _CURRENT_DATA_READ_GRANT
-                + " AND "
-                + current_version_scope
-                + ")"
-            )
-        parameters: dict[str, object] = {
-            "dataset_id": dataset_id,
-            "user_id": principal.user_id,
-            "is_admin": "SYSTEM_ADMIN" in principal.roles,
+        parameters: dict[str, object] = visibility_parameters(principal) | {
+            "dataset_id": dataset_id
         }
-        if normalized_mode == "READ" and version_no is not None:
-            parameters["access_version_no"] = version_no
+        joins = ""
+        scope = "(:is_admin=1 OR d.owner_user_id=:user_id)"
+        if normalized_mode == "READ":
+            version_predicate = (
+                "access_dv.dataset_id=d.dataset_id AND "
+                "access_dv.version_no=:access_version_no"
+                if version_no is not None
+                else "access_dv.dataset_id=d.dataset_id AND "
+                "access_dv.status='PUBLISHED' AND access_dv.is_current=1"
+            )
+            joins = (
+                " LEFT JOIN dataset.dataset_version access_dv ON "
+                + version_predicate
+                + " LEFT JOIN ingestion.import_batch access_b ON "
+                "access_b.import_batch_id=access_dv.input_batch_id"
+            )
+            scope = current_dataset_read_scope_sql(
+                dataset_alias="d",
+                version_alias="access_dv",
+                batch_alias="access_b",
+            )
+            if version_no is not None:
+                parameters["access_version_no"] = version_no
         with self._engine.connect() as connection:
             found = connection.execute(
                 text(
                     "SELECT TOP (1) d.dataset_id FROM dataset.dataset d "
-                    "WHERE d.dataset_id=:dataset_id AND (" + scope + ")"
+                    + joins
+                    + " WHERE d.dataset_id=:dataset_id AND ("
+                    + scope
+                    + ")"
                 ),
                 parameters,
             ).scalar_one_or_none()
@@ -377,9 +354,7 @@ class SqlDatasetService:
             context = self._version_context(
                 connection, dataset_id, version_no, lock=False
             )
-            if str(context["status"]) != "PUBLISHED" or not bool(
-                context["is_current"]
-            ):
+            if str(context["status"]) != "PUBLISHED" or not bool(context["is_current"]):
                 raise DomainError(
                     "ANALYSIS_VERSION_NOT_CURRENT",
                     "图表只允许查看当前已发布的正式版本",
@@ -775,14 +750,12 @@ class SqlDatasetService:
             "JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
         )
         unit_from = version_join + "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
-        version_where = (
-            "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no"
-        )
+        version_where = "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no"
         with self._engine.connect() as connection:
-            context = self._version_context(connection, dataset_id, version_no, lock=False)
-            if str(context["status"]) != "PUBLISHED" or not bool(
-                context["is_current"]
-            ):
+            context = self._version_context(
+                connection, dataset_id, version_no, lock=False
+            )
+            if str(context["status"]) != "PUBLISHED" or not bool(context["is_current"]):
                 raise DomainError(
                     "ANALYSIS_VERSION_NOT_CURRENT",
                     "只能查看当前已发布正式版本的明细",
@@ -943,9 +916,7 @@ class SqlDatasetService:
                 DatasetDetailRow(
                     unit_id=int(row["unit_id"]),
                     logical_unit_key=str(row["logical_unit_key"]),
-                    lot_id=(
-                        str(row["lot_id"]) if row["lot_id"] is not None else None
-                    ),
+                    lot_id=(str(row["lot_id"]) if row["lot_id"] is not None else None),
                     wafer_id=str(row["wafer_id"])
                     if row["wafer_id"] is not None
                     else None,
@@ -961,7 +932,9 @@ class SqlDatasetService:
                     source_row_no=int(row["source_row_no"])
                     if row["source_row_no"] is not None
                     else None,
-                    measurements=tuple(measurements_by_unit.get(int(row["unit_id"]), ())),
+                    measurements=tuple(
+                        measurements_by_unit.get(int(row["unit_id"]), ())
+                    ),
                 )
                 for row in unit_rows
             ),
@@ -1332,17 +1305,12 @@ class SqlDatasetService:
             "version_no": version_no,
         }
         if principal is not None:
-            access_clause = (
-                " AND (:is_admin=1 OR d.owner_user_id=:user_id OR ("
-                + _CURRENT_DATA_READ_GRANT
-                + " AND dv.status='PUBLISHED' AND dv.is_current=1))"
+            access_clause = " AND " + current_dataset_read_scope_sql(
+                dataset_alias="d",
+                version_alias="dv",
+                batch_alias="access_b",
             )
-            parameters.update(
-                {
-                    "user_id": principal.user_id,
-                    "is_admin": "SYSTEM_ADMIN" in principal.roles,
-                }
-            )
+            parameters.update(visibility_parameters(principal))
         row = (
             connection.execute(
                 text(
@@ -1353,6 +1321,8 @@ class SqlDatasetService:
                     "dv.spec_set_id "
                     f"FROM dataset.dataset_version dv{lock_hint} "
                     "JOIN dataset.dataset d ON d.dataset_id=dv.dataset_id "
+                    "JOIN ingestion.import_batch access_b ON "
+                    "access_b.import_batch_id=dv.input_batch_id "
                     "LEFT JOIN mdm.product p ON p.product_id=d.product_id "
                     "OUTER APPLY(SELECT TOP (1) fe.value_text FROM "
                     "ingestion.field_enrichment fe WHERE "
@@ -1587,24 +1557,78 @@ class SqlDatasetService:
                 {"dataset_id": dataset_id},
             ).scalar_one_or_none()
             if previous_id is not None and int(previous_id) != version_id:
-                connection.execute(
+                previous_run_rows = (
+                    connection.execute(
+                        text(
+                            "SELECT pr.processing_run_id,pr.status,pr.is_current,"
+                            "CASE WHEN EXISTS(SELECT 1 "
+                            "FROM dataset.dataset_version_run other_dvr "
+                            "JOIN dataset.dataset_version other_dv "
+                            "ON other_dv.dataset_version_id=other_dvr.dataset_version_id "
+                            "WHERE other_dvr.processing_run_id=pr.processing_run_id "
+                            "AND other_dv.dataset_version_id<>:previous_id "
+                            "AND other_dv.status='PUBLISHED' AND other_dv.is_current=1) "
+                            "THEN 1 ELSE 0 END AS has_other_current "
+                            "FROM dataset.dataset_version_run dvr WITH (UPDLOCK,HOLDLOCK) "
+                            "JOIN ingestion.processing_run pr WITH (UPDLOCK,HOLDLOCK) "
+                            "ON pr.processing_run_id=dvr.processing_run_id "
+                            "WHERE dvr.dataset_version_id=:previous_id "
+                            "ORDER BY dvr.ordinal_no,pr.processing_run_id"
+                        ),
+                        {"previous_id": previous_id},
+                    )
+                    .mappings()
+                    .all()
+                )
+                if not previous_run_rows or any(
+                    row["status"] != "PUBLISHED" or not bool(row["is_current"])
+                    for row in previous_run_rows
+                ):
+                    raise DomainError(
+                        "DATASET_PREVIOUS_RUN_CONFLICT",
+                        "previous Current Dataset Version has inconsistent Processing Runs",
+                        409,
+                    )
+                previous_runs_to_supersede = sum(
+                    not bool(row["has_other_current"]) for row in previous_run_rows
+                )
+                previous_updated = connection.execute(
                     text(
                         "UPDATE dataset.dataset_version SET status='SUPERSEDED',is_current=0 "
-                        "WHERE dataset_version_id=:previous_id"
+                        "WHERE dataset_version_id=:previous_id "
+                        "AND status='PUBLISHED' AND is_current=1"
                     ),
                     {"previous_id": previous_id},
                 )
-            connection.execute(
-                text(
-                    "UPDATE prior SET prior.status='SUPERSEDED',prior.is_current=0 "
-                    "FROM ingestion.processing_run prior JOIN ingestion.processing_run target "
-                    "ON target.source_file_id=prior.source_file_id "
-                    "JOIN dataset.dataset_version_run dvr ON dvr.processing_run_id=target.processing_run_id "
-                    "WHERE dvr.dataset_version_id=:version_id AND prior.status='PUBLISHED' "
-                    "AND prior.is_current=1 AND prior.processing_run_id<>target.processing_run_id"
-                ),
-                {"version_id": version_id},
-            )
+                if previous_updated.rowcount != 1:
+                    raise DomainError(
+                        "DATASET_PREVIOUS_VERSION_CONFLICT",
+                        "previous Current Dataset Version changed during publication",
+                        409,
+                    )
+                previous_runs_updated = connection.execute(
+                    text(
+                        "UPDATE pr SET pr.status='SUPERSEDED',pr.is_current=0 "
+                        "FROM ingestion.processing_run pr WITH (UPDLOCK,HOLDLOCK) "
+                        "JOIN dataset.dataset_version_run dvr "
+                        "ON dvr.processing_run_id=pr.processing_run_id "
+                        "WHERE dvr.dataset_version_id=:previous_id "
+                        "AND pr.status='PUBLISHED' AND pr.is_current=1 "
+                        "AND NOT EXISTS(SELECT 1 "
+                        "FROM dataset.dataset_version_run other_dvr "
+                        "JOIN dataset.dataset_version other_dv "
+                        "ON other_dv.dataset_version_id=other_dvr.dataset_version_id "
+                        "WHERE other_dvr.processing_run_id=pr.processing_run_id "
+                        "AND other_dv.status='PUBLISHED' AND other_dv.is_current=1)"
+                    ),
+                    {"previous_id": previous_id},
+                )
+                if previous_runs_updated.rowcount != previous_runs_to_supersede:
+                    raise DomainError(
+                        "DATASET_PREVIOUS_RUN_CONFLICT",
+                        "previous Current Processing Runs changed during publication",
+                        409,
+                    )
             connection.execute(
                 text(
                     "UPDATE pr SET pr.status='PUBLISHED',pr.is_current=1 "
@@ -1645,16 +1669,14 @@ class SqlDatasetService:
         version_no: int,
         principal: Principal,
     ) -> DatasetResultSummary:
-        access_clause = (
-            " AND (:is_admin=1 OR d.owner_user_id=:user_id OR ("
-            + _CURRENT_DATA_READ_GRANT
-            + " AND dv.status='PUBLISHED' AND dv.is_current=1))"
+        access_clause = " AND " + current_dataset_read_scope_sql(
+            dataset_alias="d",
+            version_alias="dv",
+            batch_alias="access_b",
         )
-        parameters: dict[str, object] = {
+        parameters: dict[str, object] = visibility_parameters(principal) | {
             "dataset_id": dataset_id,
             "version_no": version_no,
-            "user_id": principal.user_id,
-            "is_admin": "SYSTEM_ADMIN" in principal.roles,
         }
         with self._engine.connect() as connection:
             base = (
@@ -1670,6 +1692,8 @@ class SqlDatasetService:
                         "SUM(CASE WHEN ur.overall_result='FAIL' THEN 1 ELSE 0 END) AS fail_count "
                         "FROM dataset.dataset d JOIN dataset.dataset_version dv "
                         "ON dv.dataset_id=d.dataset_id "
+                        "JOIN ingestion.import_batch access_b ON "
+                        "access_b.import_batch_id=dv.input_batch_id "
                         "LEFT JOIN dataset.dataset_version_run dvr ON dvr.dataset_version_id=dv.dataset_version_id "
                         "LEFT JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
                         "LEFT JOIN test.unit_result ur ON ur.run_id=tr.run_id "
@@ -1735,7 +1759,9 @@ class SqlDatasetService:
             unit_count=unit_count,
             pass_count=pass_count,
             fail_count=fail_count,
-            yield_rate=(classified_pass_count / classified_count if classified_count else None),
+            yield_rate=(
+                classified_pass_count / classified_count if classified_count else None
+            ),
             measurement_count=measurement_count,
             bin_counts={
                 str(row["soft_bin"]): int(row["unit_count"]) for row in bin_rows

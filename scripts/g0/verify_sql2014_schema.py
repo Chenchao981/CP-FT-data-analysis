@@ -71,7 +71,7 @@ def main() -> None:
         cursor = connection.cursor()
         cursor.execute("SELECT version_num FROM alembic_version")
         revision = cursor.fetchone()[0]
-        assert revision == "sql2014_0018", revision
+        assert revision == "sql2014_0019", revision
 
         cursor.execute("SELECT name FROM sys.schemas")
         schemas = {row[0] for row in cursor.fetchall()}
@@ -82,8 +82,7 @@ def main() -> None:
         assert not (EXPECTED_TABLES - tables), EXPECTED_TABLES - tables
 
         cursor.execute(
-            "SELECT name FROM sys.columns "
-            "WHERE object_id=OBJECT_ID('dataset.dataset')"
+            "SELECT name FROM sys.columns WHERE object_id=OBJECT_ID('dataset.dataset')"
         )
         dataset_columns = {row[0] for row in cursor.fetchall()}
         required_lifecycle_columns = {

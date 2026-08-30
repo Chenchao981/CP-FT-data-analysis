@@ -40,7 +40,7 @@ def main() -> None:
             )
             if identity != {
                 "database_name": "TMS_G0_DEV",
-                "revision": "sql2014_0018",
+                "revision": "sql2014_0019",
             }:
                 raise RuntimeError(f"unexpected development database: {identity}")
             owner = (
@@ -186,7 +186,9 @@ def main() -> None:
             request,
         )
         if repeated.job_id != result.job_id:
-            raise RuntimeError("Lot resolution idempotency returned a different resume Job")
+            raise RuntimeError(
+                "Lot resolution idempotency returned a different resume Job"
+            )
         with engine.connect() as connection:
             state = (
                 connection.execute(
@@ -216,15 +218,14 @@ def main() -> None:
         }
         if dict(state) != expected:
             raise RuntimeError(f"unexpected Lot resume state: {dict(state)}")
-        print(
-            "lot_input_resume_sql=PASS protocol=ATOMIC_V1 "
-            "idempotent_same_job=PASS"
-        )
+        print("lot_input_resume_sql=PASS protocol=ATOMIC_V1 idempotent_same_job=PASS")
     finally:
         with engine.begin() as connection:
             if "blocked_job" in ids:
                 connection.execute(
-                    text("DELETE governance.audit_log WHERE correlation_id=:correlation"),
+                    text(
+                        "DELETE governance.audit_log WHERE correlation_id=:correlation"
+                    ),
                     {"correlation": f"job:{ids['blocked_job']}"},
                 )
             if "batch" in ids:
@@ -267,9 +268,7 @@ def main() -> None:
                     {"batch": ids["batch"]},
                 )
                 connection.execute(
-                    text(
-                        "DELETE ingestion.import_batch WHERE import_batch_id=:batch"
-                    ),
+                    text("DELETE ingestion.import_batch WHERE import_batch_id=:batch"),
                     {"batch": ids["batch"]},
                 )
         engine.dispose()

@@ -7,11 +7,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_lot_input_migration_is_sql2014_safe_and_keeps_test_run_nullable() -> None:
     sql = (
-        ROOT
-        / "db"
-        / "alembic"
-        / "sql"
-        / "0014_lot_input_resolution_sql2014.sql"
+        ROOT / "db" / "alembic" / "sql" / "0014_lot_input_resolution_sql2014.sql"
     ).read_text(encoding="utf-8-sig")
     assert "'NEEDS_INPUT'" in sql
     assert "CREATE TABLE ingestion.processing_input_request" in sql
@@ -33,9 +29,9 @@ def test_lot_input_migration_is_sql2014_safe_and_keeps_test_run_nullable() -> No
 
 
 def test_existing_release_bootstrap_requires_current_atomic_schema() -> None:
-    script = (ROOT / "scripts" / "g0" / "bootstrap_existing_cleaner_releases.py").read_text(
-        encoding="utf-8-sig"
-    )
-    assert 'revision != "sql2014_0018"' in script
+    script = (
+        ROOT / "scripts" / "g0" / "bootstrap_existing_cleaner_releases.py"
+    ).read_text(encoding="utf-8-sig")
+    assert 'revision != "sql2014_0019"' in script
     assert "Cleaner version checksum collision" in script
     assert "artifact_uri=:artifact_uri" in script

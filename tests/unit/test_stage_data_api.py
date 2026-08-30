@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from app.core.errors import DomainError
 from app.domain.cleaner_registry import CleanerRelease
 from app.domain.jobs import InMemoryJobService
 from app.domain.stage_data import (
@@ -87,6 +88,9 @@ class StubStageService:
                 "LOT_ID_REQUIRED",
                 "请确认批次号",
                 "LOT_ID",
+                False,
+                True,
+                True,
             ),
         )
 
@@ -110,6 +114,9 @@ class StubStageService:
                 31,
                 1,
                 "2026-08-21T00:00:00",
+                True,
+                principal.login_name,
+                principal.display_name,
             ),
         )
 
@@ -307,6 +314,41 @@ def test_sql_upload_uses_atomic_batch_queue_and_job_creation(
     assert service.queued == []
 
 
+def test_upload_registration_failure_removes_only_the_fresh_snapshot(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+
+    class FailingRegistrationService(StubStageService):
+        def register_upload(
+            self,
+            principal,
+            business_domain,
+            test_stage,
+            factory_code,
+            files,
+            remark,
+        ):
+            self.registered_files = files
+            raise DomainError(
+                "SOURCE_REGISTER_CONFLICT",
+                "source registration did not complete",
+                409,
+            )
+
+    response = _client(FailingRegistrationService()).post(
+        "/api/v1/production/cp/uploads",
+        files={"files": ("sample.zip", b"sample", "application/zip")},
+        data={"factory_code": "huahong"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "SOURCE_REGISTER_CONFLICT"
+    request_scope = tmp_path / "raw" / "production" / "cp"
+    assert request_scope.is_dir()
+    assert list(request_scope.iterdir()) == []
+
+
 def test_production_ft_upload_queues_ft_release(monkeypatch, tmp_path: Path) -> None:
     _stub_ft_cleaner(monkeypatch, tmp_path)
     service = StubStageService()
@@ -412,7 +454,9 @@ def test_cp_upload_accepts_registered_existing_company_cleaners(
     assert response.json()["cleaner_release"]["cleaner_code"] == f"{factory.upper()}_CP"
 
 
-def test_general_cp_upload_rejects_custom_guoyu_tool(monkeypatch, tmp_path: Path) -> None:
+def test_general_cp_upload_rejects_custom_guoyu_tool(
+    monkeypatch, tmp_path: Path
+) -> None:
     _stub_cp_cleaner(monkeypatch, tmp_path)
     response = _client(StubStageService()).post(
         "/api/v1/production/cp/uploads",
@@ -493,14 +537,15 @@ def test_cp_upload_snapshots_an_authorized_catalog_directory(
         "C146808-02.xls",
     ]
     assert all(source not in item.path.parents for item in service.registered_files)
-    assert all((tmp_path / "raw") in item.path.parents for item in service.registered_files)
+    assert all(
+        (tmp_path / "raw") in item.path.parents for item in service.registered_files
+    )
     assert {item.path.parent.name for item in service.registered_files} == {
         "C146808.02"
     }
     assert all(
         item.source_metadata["source_root_code"] == "JETECH_ENGINEERING"
-        and item.source_metadata["snapshot_selected_directory_name"]
-        == "C146808.02"
+        and item.source_metadata["snapshot_selected_directory_name"] == "C146808.02"
         and item.source_metadata["snapshot_copy"] is True
         for item in service.registered_files
     )
@@ -554,9 +599,7 @@ def test_ft_catalog_snapshot_accepts_only_direct_dc_files(
     )
 
     assert response.status_code == 201
-    assert [item.original_name for item in service.registered_files] == [
-        "sample.xlsx"
-    ]
+    assert [item.original_name for item in service.registered_files] == ["sample.xlsx"]
 
 
 def test_formal_upload_rejects_legacy_absolute_source_path(
@@ -598,10 +641,13 @@ def test_formal_source_catalog_hides_physical_paths_and_enforces_scope(
     assert roots.status_code == 200
     assert roots.json()[0]["code"] == "RIYUEXIN_PRODUCTION"
     assert str(tmp_path) not in roots.text
-    assert client.get(
-        "/api/v1/engineering/ft/source-roots",
-        params={"factory_code": "riyuexin"},
-    ).json() == []
+    assert (
+        client.get(
+            "/api/v1/engineering/ft/source-roots",
+            params={"factory_code": "riyuexin"},
+        ).json()
+        == []
+    )
     forbidden = client.get(
         "/api/v1/engineering/ft/source-roots/RIYUEXIN_PRODUCTION/directories",
         params={"factory_code": "riyuexin", "relative_path": "."},
@@ -610,9 +656,7 @@ def test_formal_source_catalog_hides_physical_paths_and_enforces_scope(
     assert forbidden.json()["error"]["code"] == "SOURCE_ROOT_SCOPE_MISMATCH"
 
 
-def test_formal_catalog_enforces_file_count_quota(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_formal_catalog_enforces_file_count_quota(monkeypatch, tmp_path: Path) -> None:
     _stub_cp_cleaner(monkeypatch, tmp_path)
     monkeypatch.setenv("TMS_FORMAL_MAX_SOURCE_FILES", "1")
     source = tmp_path / "batch"
@@ -728,7 +772,9 @@ def test_catalog_upload_rejects_changed_manifest_before_copy_or_registration(
     assert not (tmp_path / "raw").exists()
 
 
-def test_production_ft_upload_keeps_riyueguang_separate(monkeypatch, tmp_path: Path) -> None:
+def test_production_ft_upload_keeps_riyueguang_separate(
+    monkeypatch, tmp_path: Path
+) -> None:
     _stub_ft_cleaner(monkeypatch, tmp_path)
     service = StubStageService()
     response = _client(service).post(
@@ -778,7 +824,13 @@ def test_lists_are_scoped_by_business_domain_and_stage() -> None:
     assert upload["latest_job_id"] == 73
     assert upload["error_code"] == "LOT_ID_REQUIRED"
     assert upload["action_required"] == "LOT_ID"
-    assert client.get("/api/v1/production/cp/results").json()[0]["data_type"] == "CP"
+    assert upload["can_manage"] is True
+    assert upload["can_download_source"] is True
+    result = client.get("/api/v1/production/cp/results").json()[0]
+    assert result["data_type"] == "CP"
+    assert result["uploader_login"] == "development-admin"
+    assert result["uploader_name"] == "开发管理员"
+    assert result["can_manage"] is True
     assert ("ENGINEERING", "CP") in service.calls
     assert ("PRODUCTION", "CP") in service.calls
 
@@ -833,9 +885,7 @@ def test_download_fails_closed_for_empty_or_relative_managed_root(
     service.stored_path = stored
 
     with pytest.raises(RuntimeError, match="TMS_UPLOAD_ROOT"):
-        _client(service).get(
-            "/api/v1/engineering/cp/uploads/41/files/9001/download"
-        )
+        _client(service).get("/api/v1/engineering/cp/uploads/41/files/9001/download")
 
 
 def test_download_rejects_unknown_receipt(monkeypatch, tmp_path: Path) -> None:
@@ -847,9 +897,7 @@ def test_download_rejects_unknown_receipt(monkeypatch, tmp_path: Path) -> None:
     assert response.json()["error"]["code"] == "UPLOAD_FILE_NOT_FOUND"
 
 
-def test_reprocess_queues_same_route_a_pipeline(
-    monkeypatch, tmp_path: Path
-) -> None:
+def test_reprocess_queues_same_route_a_pipeline(monkeypatch, tmp_path: Path) -> None:
     _stub_cp_cleaner(monkeypatch, tmp_path)
     service = StubStageService()
     response = _client(service).post("/api/v1/production/cp/uploads/41/reprocess")
@@ -911,9 +959,7 @@ def test_reprocess_rejects_active_batch(
             )
 
     service = ActiveService()
-    response = _client(service).post(
-        "/api/v1/production/cp/uploads/41/reprocess"
-    )
+    response = _client(service).post("/api/v1/production/cp/uploads/41/reprocess")
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "BATCH_ALREADY_ACTIVE"
     assert service.queued == []
@@ -937,9 +983,7 @@ def test_reprocess_needs_input_must_use_dedicated_resolution(
             )
 
     service = NeedsInputService()
-    response = _client(service).post(
-        "/api/v1/production/cp/uploads/41/reprocess"
-    )
+    response = _client(service).post("/api/v1/production/cp/uploads/41/reprocess")
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "LOT_INPUT_RESOLUTION_REQUIRED"
     assert service.queued == []
