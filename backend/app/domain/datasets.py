@@ -25,6 +25,29 @@ class DatasetStage(StrEnum):
     OTHER = "OTHER"
 
 
+class DatasetAnalysisGroupBy(StrEnum):
+    DATASET = "DATASET"
+
+
+class DatasetParameterAnalysisType(StrEnum):
+    DESCRIPTIVE = "DESCRIPTIVE"
+    BOX_PLOT = "BOX_PLOT"
+    HISTOGRAM = "HISTOGRAM"
+    CAPABILITY = "CAPABILITY"
+
+
+class DatasetCapabilityRuleCode(StrEnum):
+    CPK_POOLED_WITHIN_RUN_V1 = "CPK_POOLED_WITHIN_RUN_V1"
+    CPK_POOLED_WITHIN_LOT_WAFER_V1 = "CPK_POOLED_WITHIN_LOT_WAFER_V1"
+
+
+class DatasetAnalysisOverallResult(StrEnum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    UNKNOWN = "UNKNOWN"
+    ABORT = "ABORT"
+
+
 class CreateDatasetRequest(StrictRequest):
     dataset_code: str = Field(pattern=r"^[A-Z0-9][A-Z0-9_.-]{1,127}$")
     dataset_name: str = Field(min_length=1, max_length=300)
@@ -100,6 +123,101 @@ class DatasetComparisonRequest(StrictRequest):
         if len(normalized) != len(set(normalized)):
             raise ValueError("analysis filter values must be unique")
         return normalized
+
+
+class DatasetParameterAnalysisFilters(StrictRequest):
+    lot_ids: list[str] = Field(default_factory=list, max_length=50)
+    wafer_ids: list[str] = Field(default_factory=list, max_length=100)
+    bin_codes: list[str] = Field(default_factory=list, max_length=50)
+    overall_results: list[DatasetAnalysisOverallResult] = Field(
+        default_factory=list, max_length=4
+    )
+    source_ids: list[str] = Field(default_factory=list, max_length=50)
+
+    @field_validator("lot_ids", "wafer_ids", "bin_codes", "source_ids")
+    @classmethod
+    def values_are_unique_and_non_empty(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value]
+        if any(not item or len(item) > 200 for item in normalized):
+            raise ValueError("analysis filter values must be non-empty and bounded")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("analysis filter values must be unique")
+        return normalized
+
+    @field_validator("overall_results")
+    @classmethod
+    def result_values_are_unique(
+        cls, value: list[DatasetAnalysisOverallResult]
+    ) -> list[DatasetAnalysisOverallResult]:
+        if len(value) != len(set(value)):
+            raise ValueError("analysis overall-result values must be unique")
+        return value
+
+
+class DatasetHistogramConfig(StrictRequest):
+    bin_count: int = Field(default=20, ge=5, le=100)
+
+
+class DatasetCapabilityConfig(StrictRequest):
+    rule_code: DatasetCapabilityRuleCode | None = None
+
+
+class DatasetParameterAnalysisRequest(StrictRequest):
+    datasets: list[DatasetReference] = Field(min_length=1, max_length=8)
+    group_by: DatasetAnalysisGroupBy = DatasetAnalysisGroupBy.DATASET
+    filters: DatasetParameterAnalysisFilters = Field(
+        default_factory=DatasetParameterAnalysisFilters
+    )
+    parameters: list[str] = Field(min_length=1, max_length=5)
+    analyses: list[DatasetParameterAnalysisType] = Field(
+        default_factory=lambda: [DatasetParameterAnalysisType.DESCRIPTIVE],
+        min_length=1,
+        max_length=4,
+    )
+    histogram: DatasetHistogramConfig = Field(default_factory=DatasetHistogramConfig)
+    capability: DatasetCapabilityConfig = Field(default_factory=DatasetCapabilityConfig)
+
+    @field_validator("datasets")
+    @classmethod
+    def dataset_refs_are_unique(
+        cls, value: list[DatasetReference]
+    ) -> list[DatasetReference]:
+        dataset_ids = [item.dataset_id for item in value]
+        if len(dataset_ids) != len(set(dataset_ids)):
+            raise ValueError("each dataset may appear only once in an analysis")
+        return value
+
+    @field_validator("parameters")
+    @classmethod
+    def parameters_are_unique_and_non_empty(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value]
+        if any(not item or len(item) > 200 for item in normalized):
+            raise ValueError("analysis parameters must be non-empty and bounded")
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("analysis parameters must be unique")
+        return normalized
+
+    @field_validator("analyses")
+    @classmethod
+    def analyses_are_unique(
+        cls, value: list[DatasetParameterAnalysisType]
+    ) -> list[DatasetParameterAnalysisType]:
+        if len(value) != len(set(value)):
+            raise ValueError("analysis types must be unique")
+        return value
+
+    @model_validator(mode="after")
+    def capability_rule_requires_capability_analysis(
+        self,
+    ) -> DatasetParameterAnalysisRequest:
+        if (
+            self.capability.rule_code is not None
+            and DatasetParameterAnalysisType.CAPABILITY not in self.analyses
+        ):
+            raise ValueError(
+                "capability rule_code requires the CAPABILITY analysis type"
+            )
+        return self
 
 
 @dataclass(frozen=True, slots=True)
@@ -279,6 +397,198 @@ class DatasetComparisonResult:
 
 
 @dataclass(frozen=True, slots=True)
+class DatasetParameterAnalysisFilterSummary:
+    lot_ids: tuple[str, ...]
+    wafer_ids: tuple[str, ...]
+    bin_codes: tuple[str, ...]
+    overall_results: tuple[str, ...]
+    source_ids: tuple[str, ...]
+    matched_unit_count: int
+    candidate_measurement_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetAnalysisParameterIdentity:
+    name: str
+    canonical_parameter_code: str | None
+    unit: str | None
+    program_lsl: float | None
+    program_usl: float | None
+    test_condition: str | None
+    spec_set_ids: tuple[int, ...]
+    limit_source: str
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetMeasurementStatusCount:
+    status: str
+    count: int
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetDescriptiveStatistics:
+    row_count: int
+    numeric_count: int
+    excluded_count: int
+    minimum: float | None
+    maximum: float | None
+    average: float | None
+    sample_stddev: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetBoxPlotStatistics:
+    minimum: float
+    q1: float
+    median: float
+    q3: float
+    maximum: float
+    lower_whisker: float
+    upper_whisker: float
+    outlier_count: int
+    method: str
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetHistogramBin:
+    index: int
+    lower_bound: float
+    upper_bound: float
+    count: int
+    lower_inclusive: bool
+    upper_inclusive: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetHistogramStatistics:
+    bin_count: int
+    requested_bin_count: int
+    range_min: float | None
+    range_max: float | None
+    bins: tuple[DatasetHistogramBin, ...]
+    method: str = "EQUAL_WIDTH_FIXED_BINS_LAST_CLOSED_V1"
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetCapabilityStatistics:
+    status: str
+    ppk_status: str
+    cpk_status: str
+    reason_codes: tuple[str, ...]
+    spec_mode: str | None
+    lsl: float | None
+    usl: float | None
+    sample_count: int
+    subgroup_count: int
+    overall_sigma: float | None
+    within_sigma: float | None
+    ppl: float | None
+    ppu: float | None
+    ppk: float | None
+    cpl: float | None
+    cpu: float | None
+    cpk: float | None
+    rule_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetParameterAnalysis:
+    identity: DatasetAnalysisParameterIdentity
+    status_counts: tuple[DatasetMeasurementStatusCount, ...]
+    descriptive: DatasetDescriptiveStatistics | None
+    box_plot: DatasetBoxPlotStatistics | None
+    histogram: DatasetHistogramStatistics | None
+    capability: DatasetCapabilityStatistics | None
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetParameterAnalysisItem:
+    dataset_id: int
+    version_no: int
+    test_stage: str
+    group_key: str
+    filter_summary: DatasetParameterAnalysisFilterSummary
+    parameters: tuple[DatasetParameterAnalysis, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetParameterAnalysisResolvedDataset:
+    dataset_id: int
+    version_no: int
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetParameterAnalysisDatasetContext:
+    resolved_datasets: tuple[DatasetParameterAnalysisResolvedDataset, ...]
+    test_stage: str
+    current_published_verified: bool
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetParameterAnalysisNormalizedFilters:
+    lot_ids: tuple[str, ...]
+    wafer_ids: tuple[str, ...]
+    bin_codes: tuple[str, ...]
+    overall_results: tuple[str, ...]
+    source_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetParameterAnalysisContextFilterSummary:
+    normalized_filters: DatasetParameterAnalysisNormalizedFilters
+    filter_hash: str
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetParameterAnalysisRuleContext:
+    spec_versions: tuple[str, ...]
+    bin_mapping_versions: tuple[str, ...]
+    evaluation_rule_versions: tuple[str, ...]
+    capability_rule_code: str | None
+    capability_rule_approval_status: str
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetParameterAnalysisCapability:
+    code: str
+    status: str
+    reason_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetParameterAnalysisCounts:
+    input_units: int
+    included_units: int
+    excluded_units: int
+    missing_measurements: int
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetParameterAnalysisSamplingSummary:
+    sampled: bool
+    method: str | None
+    original_points: int
+    returned_points: int
+    preserved_out_of_spec_points: int
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetParameterAnalysisResult:
+    contract_version: str
+    group_by: str
+    compatibility: str
+    dataset_context: DatasetParameterAnalysisDatasetContext
+    filter_summary: DatasetParameterAnalysisContextFilterSummary
+    rule_context: DatasetParameterAnalysisRuleContext
+    capabilities: tuple[DatasetParameterAnalysisCapability, ...]
+    counts: DatasetParameterAnalysisCounts
+    sampling_summary: DatasetParameterAnalysisSamplingSummary
+    warnings: tuple[str, ...]
+    computed_at: str
+    items: tuple[DatasetParameterAnalysisItem, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class DatasetDetailMeasurement:
     parameter: str
     value_numeric: float | None
@@ -360,6 +670,14 @@ class DatasetService(Protocol):
     ) -> DatasetChartData: ...
 
     def compare(self, request: DatasetComparisonRequest) -> DatasetComparisonResult: ...
+
+    def assert_parameter_analysis_rules_approved(
+        self, request: DatasetParameterAnalysisRequest
+    ) -> None: ...
+
+    def analyze_parameters(
+        self, request: DatasetParameterAnalysisRequest
+    ) -> DatasetParameterAnalysisResult: ...
 
     def get_detail_page(
         self,

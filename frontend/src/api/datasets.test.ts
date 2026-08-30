@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
+  analyzeDatasetParameters,
   compareDatasets,
   getDatasetChartData,
   getDatasetDetails,
@@ -50,6 +51,44 @@ describe("datasets api", () => {
       bin_codes: ["1", "5"],
       parameters: ["VTH", "RDSON"],
     });
+  });
+
+  it("posts the parameter-analysis contract without inventing a capability rule", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ contract_version: "1.0", group_by: "DATASET", compatibility: "COMPATIBLE", items: [] }), { status: 200 }),
+    );
+
+    await analyzeDatasetParameters({
+      datasets: [{ dataset_id: 12, version_no: 3 }, { dataset_id: 14, version_no: 1 }],
+      group_by: "DATASET",
+      filters: {
+        lot_ids: ["LOT-A"],
+        wafer_ids: ["01"],
+        bin_codes: ["1"],
+        overall_results: ["PASS", "UNKNOWN"],
+        source_ids: ["SOURCE-1"],
+      },
+      parameters: ["VTH", "RDSON"],
+      analyses: ["BOX_PLOT", "HISTOGRAM", "CAPABILITY"],
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/v1/datasets/parameter-analysis");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(String(init?.body))).toEqual({
+      datasets: [{ dataset_id: 12, version_no: 3 }, { dataset_id: 14, version_no: 1 }],
+      group_by: "DATASET",
+      filters: {
+        lot_ids: ["LOT-A"],
+        wafer_ids: ["01"],
+        bin_codes: ["1"],
+        overall_results: ["PASS", "UNKNOWN"],
+        source_ids: ["SOURCE-1"],
+      },
+      parameters: ["VTH", "RDSON"],
+      analyses: ["BOX_PLOT", "HISTOGRAM", "CAPABILITY"],
+    });
+    expect(JSON.parse(String(init?.body))).not.toHaveProperty("capability.rule_code");
   });
 
   it("encodes repeated filters for a server-paged detail query", async () => {

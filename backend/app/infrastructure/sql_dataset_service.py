@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import Engine, bindparam, text
@@ -15,13 +17,34 @@ from app.domain.datasets import (
     BinCountPoint,
     CreateDatasetRequest,
     CreateDatasetVersionRequest,
+    DatasetAnalysisParameterIdentity,
+    DatasetBoxPlotStatistics,
+    DatasetCapabilityStatistics,
     DatasetChartData,
     DatasetComparisonItem,
     DatasetComparisonRequest,
     DatasetComparisonResult,
+    DatasetDescriptiveStatistics,
     DatasetDetailMeasurement,
     DatasetDetailPage,
     DatasetDetailRow,
+    DatasetHistogramBin,
+    DatasetHistogramStatistics,
+    DatasetMeasurementStatusCount,
+    DatasetParameterAnalysis,
+    DatasetParameterAnalysisCapability,
+    DatasetParameterAnalysisContextFilterSummary,
+    DatasetParameterAnalysisCounts,
+    DatasetParameterAnalysisDatasetContext,
+    DatasetParameterAnalysisFilterSummary,
+    DatasetParameterAnalysisItem,
+    DatasetParameterAnalysisNormalizedFilters,
+    DatasetParameterAnalysisRequest,
+    DatasetParameterAnalysisResolvedDataset,
+    DatasetParameterAnalysisResult,
+    DatasetParameterAnalysisRuleContext,
+    DatasetParameterAnalysisSamplingSummary,
+    DatasetParameterAnalysisType,
     DatasetParameterStatistic,
     DatasetRecord,
     DatasetResultSummary,
@@ -46,7 +69,30 @@ _DETAIL_FILTER_LIMITS = {
     "wafer_ids": 100,
     "bin_codes": 50,
     "parameters": 20,
+    "overall_results": 4,
+    "source_ids": 50,
 }
+_PARAMETER_ANALYSIS_MAX_CANDIDATE_MEASUREMENTS = 2_000_000
+_PARAMETER_ANALYSIS_CONTRACT_VERSION = "PARAMETER_ANALYSIS_V1"
+_BOX_PLOT_METHOD = "TUKEY_1_5_IQR_PERCENTILE_CONT_LINEAR_V1"
+_HISTOGRAM_METHOD = "EQUAL_WIDTH_FIXED_BINS_LAST_CLOSED_V1"
+_SUPPORTED_PARAMETER_ANALYSIS_RULE_CODES = frozenset(
+    {
+        _BOX_PLOT_METHOD,
+        _HISTOGRAM_METHOD,
+        "CPK_POOLED_WITHIN_RUN_V1",
+        "CPK_POOLED_WITHIN_LOT_WAFER_V1",
+    }
+)
+_MEASUREMENT_STATUSES = (
+    "MEASURED",
+    "OVER_RANGE",
+    "UNDER_RANGE",
+    "NOT_TESTED",
+    "MISSING",
+    "INVALID",
+    "NOT_APPLICABLE",
+)
 
 
 def _dataset(row: Mapping[str, Any]) -> DatasetRecord:
@@ -122,6 +168,30 @@ def _normalized_filter_values(
     return normalized
 
 
+def _parameter_analysis_filter_hash(
+    *,
+    lot_ids: tuple[str, ...],
+    wafer_ids: tuple[str, ...],
+    bin_codes: tuple[str, ...],
+    overall_results: tuple[str, ...],
+    source_ids: tuple[str, ...],
+) -> str:
+    payload = {
+        "lot_ids": sorted(lot_ids),
+        "wafer_ids": sorted(wafer_ids),
+        "bin_codes": sorted(bin_codes),
+        "overall_results": sorted(overall_results),
+        "source_ids": sorted(source_ids),
+    }
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def _condition_text(value: object, *, parameter: str) -> str | None:
     if value is None or not str(value).strip():
         return None
@@ -139,17 +209,39 @@ def _condition_text(value: object, *, parameter: str) -> str | None:
             f"parameter {parameter} has invalid test-condition metadata",
             409,
         )
-    raw_text = decoded.get("text")
-    if raw_text is None:
-        return None
-    if not isinstance(raw_text, str):
+    supported_keys = {"text", "bias1", "bias2"}
+    if any(not isinstance(key, str) for key in decoded) or not set(decoded).issubset(
+        supported_keys
+    ):
         raise DomainError(
             "ANALYSIS_SPEC_CONTRACT_INVALID",
-            f"parameter {parameter} has invalid test-condition metadata",
+            f"parameter {parameter} has unsupported test-condition metadata",
             409,
         )
-    normalized = " ".join(raw_text.split())
-    return normalized or None
+    normalized: dict[str, str] = {}
+    for key in ("text", "bias1", "bias2"):
+        raw_value = decoded.get(key)
+        if raw_value is None:
+            continue
+        if not isinstance(raw_value, str):
+            raise DomainError(
+                "ANALYSIS_SPEC_CONTRACT_INVALID",
+                f"parameter {parameter} has invalid test-condition metadata",
+                409,
+            )
+        normalized_value = " ".join(raw_value.split())
+        if normalized_value:
+            normalized[key] = normalized_value
+    if not normalized:
+        return None
+    if set(normalized) == {"text"}:
+        return normalized["text"]
+    return json.dumps(
+        normalized,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _optional_finite_float(value: object, *, field: str) -> float | None:
@@ -177,6 +269,8 @@ def _analysis_filter_sql(
     lot_ids: tuple[str, ...] = (),
     wafer_ids: tuple[str, ...] = (),
     bin_codes: tuple[str, ...] = (),
+    overall_results: tuple[str, ...] = (),
+    source_run_ids: tuple[int, ...] | None = None,
 ) -> tuple[str, dict[str, object], tuple[str, ...]]:
     clauses: list[str] = []
     parameters: dict[str, object] = {}
@@ -193,6 +287,17 @@ def _analysis_filter_sql(
         clauses.append("COALESCE(ur.soft_bin,ur.hard_bin,N'UNKNOWN') IN :bin_codes")
         parameters["bin_codes"] = bin_codes
         expanding.append("bin_codes")
+    if overall_results:
+        clauses.append("ur.overall_result IN :overall_results")
+        parameters["overall_results"] = overall_results
+        expanding.append("overall_results")
+    if source_run_ids is not None:
+        if source_run_ids:
+            clauses.append("tr.run_id IN :source_run_ids")
+            parameters["source_run_ids"] = source_run_ids
+            expanding.append("source_run_ids")
+        else:
+            clauses.append("1=0")
     return (
         " AND " + " AND ".join(clauses) if clauses else "",
         parameters,
@@ -209,9 +314,80 @@ def _statement(sql: str, expanding: tuple[str, ...] = ()):
     return statement
 
 
+def _run_source_identity(row: Mapping[str, Any]) -> str:
+    metadata: dict[str, Any] = {}
+    try:
+        decoded = json.loads(row.get("metadata_json") or "{}")
+        if isinstance(decoded, dict):
+            metadata = decoded
+    except (TypeError, ValueError):
+        metadata = {}
+    source_id = str(metadata.get("source_id") or "").strip()
+    if source_id:
+        return source_id
+    tester_id = str(row.get("tester_id") or "").strip()
+    return tester_id or f"RUN-{int(row['run_id'])}"
+
+
+def _capability_side(
+    *, mean: float, limit: float | None, sigma: float, lower: bool
+) -> float | None:
+    if limit is None:
+        return None
+    value = (mean - limit) / (3.0 * sigma) if lower else (limit - mean) / (3.0 * sigma)
+    return value if math.isfinite(value) else None
+
+
+def _combined_capability(
+    lower_index: float | None, upper_index: float | None
+) -> float | None:
+    available = tuple(
+        value for value in (lower_index, upper_index) if value is not None
+    )
+    return min(available) if available else None
+
+
 class SqlDatasetService:
-    def __init__(self, engine: Engine) -> None:
+    def __init__(
+        self,
+        engine: Engine,
+        *,
+        approved_parameter_analysis_rule_codes: frozenset[str] = frozenset(),
+    ) -> None:
         self._engine = engine
+        normalized_rules = frozenset(
+            str(rule_code).strip()
+            for rule_code in approved_parameter_analysis_rule_codes
+        )
+        unknown_rules = normalized_rules - _SUPPORTED_PARAMETER_ANALYSIS_RULE_CODES
+        if unknown_rules:
+            raise ValueError(
+                "approved parameter-analysis rules contain an unknown rule code"
+            )
+        self._approved_parameter_analysis_rule_codes = normalized_rules
+
+    def assert_parameter_analysis_rules_approved(
+        self, request: DatasetParameterAnalysisRequest
+    ) -> None:
+        analyses = set(request.analyses)
+        required_rules: set[str] = set()
+        if DatasetParameterAnalysisType.BOX_PLOT in analyses:
+            required_rules.add(_BOX_PLOT_METHOD)
+        if DatasetParameterAnalysisType.HISTOGRAM in analyses:
+            required_rules.add(_HISTOGRAM_METHOD)
+        if request.capability.rule_code is not None:
+            required_rules.add(request.capability.rule_code.value)
+        missing_rules = sorted(
+            required_rules - self._approved_parameter_analysis_rule_codes
+        )
+        if missing_rules:
+            raise DomainError(
+                "ANALYSIS_RULE_NOT_APPROVED",
+                "one or more requested parameter-analysis rules have no approved "
+                "server-side activation",
+                409,
+                details=[{"rule_code": rule_code} for rule_code in missing_rules],
+            )
 
     def list_datasets(self, principal: Principal) -> tuple[DatasetRecord, ...]:
         params = visibility_parameters(principal)
@@ -702,6 +878,1591 @@ class SqlDatasetService:
             wafer_ids=tuple(request.wafer_ids),
             bin_codes=tuple(request.bin_codes),
             parameters=tuple(request.parameters),
+            items=tuple(items),
+        )
+
+    def _analysis_source_run_ids(
+        self,
+        connection: Connection,
+        *,
+        dataset_id: int,
+        version_no: int,
+        source_ids: tuple[str, ...],
+    ) -> tuple[int, ...] | None:
+        if not source_ids:
+            return None
+        rows = (
+            connection.execute(
+                text(
+                    "SELECT DISTINCT tr.run_id,tr.tester_id,tr.metadata_json "
+                    "FROM dataset.dataset_version dv "
+                    "JOIN dataset.dataset_version_run dvr "
+                    "ON dvr.dataset_version_id=dv.dataset_version_id "
+                    "JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
+                    "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
+                    "ORDER BY tr.run_id"
+                ),
+                {"dataset_id": dataset_id, "version_no": version_no},
+            )
+            .mappings()
+            .all()
+        )
+        selected = set(source_ids)
+        return tuple(
+            int(row["run_id"]) for row in rows if _run_source_identity(row) in selected
+        )
+
+    def _analysis_identity_rows(
+        self,
+        connection: Connection,
+        *,
+        dataset_id: int,
+        version_no: int,
+        lot_ids: tuple[str, ...],
+        source_run_ids: tuple[int, ...] | None,
+        parameter_names: tuple[str, ...],
+    ) -> tuple[Mapping[str, Any], ...]:
+        clauses: list[str] = []
+        params: dict[str, object] = {
+            "dataset_id": dataset_id,
+            "version_no": version_no,
+            "analysis_parameters": parameter_names,
+        }
+        expanding = ["analysis_parameters"]
+        if lot_ids:
+            clauses.append("tr.lot_id IN :identity_lot_ids")
+            params["identity_lot_ids"] = lot_ids
+            expanding.append("identity_lot_ids")
+        if source_run_ids is not None:
+            if source_run_ids:
+                clauses.append("tr.run_id IN :identity_source_run_ids")
+                params["identity_source_run_ids"] = source_run_ids
+                expanding.append("identity_source_run_ids")
+            else:
+                clauses.append("1=0")
+        rows = (
+            connection.execute(
+                _statement(
+                    "SELECT DISTINCT tr.run_id,tr.program_version_id AS run_program_version_id,"
+                    "tid.test_item_id,tid.program_version_id,tid.step_code,tid.sequence_no,"
+                    "tid.raw_item_name,tid.canonical_parameter_code,tid.unit_code,"
+                    "tid.program_lsl,tid.program_usl,tid.condition_json "
+                    "FROM dataset.dataset_version dv "
+                    "JOIN dataset.dataset_version_run dvr "
+                    "ON dvr.dataset_version_id=dv.dataset_version_id "
+                    "JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
+                    "LEFT JOIN mdm.test_item_definition tid "
+                    "ON tid.program_version_id=tr.program_version_id "
+                    "AND tid.is_analysis_parameter=1 "
+                    "AND tid.raw_item_name IN :analysis_parameters "
+                    "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no"
+                    + (" AND " + " AND ".join(clauses) if clauses else "")
+                    + " ORDER BY tr.run_id,tid.raw_item_name",
+                    tuple(expanding),
+                ),
+                params,
+            )
+            .mappings()
+            .all()
+        )
+        return tuple(rows)
+
+    def _analysis_preflight(
+        self,
+        connection: Connection,
+        *,
+        dataset_id: int,
+        version_no: int,
+        filter_sql: str,
+        filter_parameters: dict[str, object],
+        expanding: tuple[str, ...],
+        test_item_ids: tuple[int, ...],
+    ) -> tuple[int, int]:
+        parameters = {
+            "dataset_id": dataset_id,
+            "version_no": version_no,
+            "analysis_test_item_ids": test_item_ids,
+            **filter_parameters,
+        }
+        row = (
+            connection.execute(
+                _statement(
+                    ";WITH filtered_units AS ("
+                    "SELECT ur.unit_id,tr.program_version_id FROM dataset.dataset_version dv "
+                    "JOIN dataset.dataset_version_run dvr "
+                    "ON dvr.dataset_version_id=dv.dataset_version_id "
+                    "JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
+                    "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
+                    "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no"
+                    + filter_sql
+                    + "), selected_measurements AS ("
+                    "SELECT m.measurement_id FROM filtered_units fu "
+                    "JOIN test.measurement m ON m.unit_id=fu.unit_id "
+                    "JOIN mdm.test_item_definition tid ON tid.test_item_id=m.test_item_id "
+                    "AND tid.program_version_id=fu.program_version_id "
+                    "WHERE m.test_item_id IN :analysis_test_item_ids) "
+                    "SELECT (SELECT COUNT_BIG(*) FROM filtered_units) AS matched_unit_count,"
+                    "(SELECT COUNT_BIG(*) FROM selected_measurements) "
+                    "AS candidate_measurement_count",
+                    expanding + ("analysis_test_item_ids",),
+                ),
+                parameters,
+            )
+            .mappings()
+            .one()
+        )
+        matched = int(row["matched_unit_count"] or 0)
+        candidate = int(row["candidate_measurement_count"] or 0)
+        if matched < 0 or candidate < 0:
+            raise DomainError(
+                "ANALYSIS_AGGREGATE_CONTRACT_INVALID",
+                "parameter-analysis preflight returned invalid counts",
+                409,
+            )
+        if candidate > _PARAMETER_ANALYSIS_MAX_CANDIDATE_MEASUREMENTS:
+            raise DomainError(
+                "ANALYSIS_WORKLOAD_LIMIT_EXCEEDED",
+                "parameter analysis exceeds the bounded measurement workload",
+                422,
+                details=[
+                    {
+                        "dataset_id": dataset_id,
+                        "version_no": version_no,
+                        "actual": candidate,
+                        "limit": _PARAMETER_ANALYSIS_MAX_CANDIDATE_MEASUREMENTS,
+                    }
+                ],
+            )
+        return matched, candidate
+
+    def _analysis_aggregate_rows(
+        self,
+        connection: Connection,
+        *,
+        dataset_id: int,
+        version_no: int,
+        filter_sql: str,
+        filter_parameters: dict[str, object],
+        expanding: tuple[str, ...],
+        test_item_ids: tuple[int, ...],
+    ) -> tuple[Mapping[str, Any], ...]:
+        status_columns = ",".join(
+            "SUM(CASE WHEN m.measurement_status='"
+            + status
+            + "' THEN CONVERT(bigint,1) ELSE 0 END) AS status_"
+            + status.lower()
+            for status in _MEASUREMENT_STATUSES
+        )
+        rows = (
+            connection.execute(
+                _statement(
+                    "SELECT tid.raw_item_name,COUNT_BIG(*) AS row_count,"
+                    "SUM(CASE WHEN m.measurement_status='MEASURED' "
+                    "AND m.value_numeric IS NOT NULL THEN CONVERT(bigint,1) ELSE 0 END) "
+                    "AS numeric_count,"
+                    + status_columns
+                    + ",MIN(CASE WHEN m.measurement_status='MEASURED' "
+                    "THEN m.value_numeric END) AS minimum,"
+                    "MAX(CASE WHEN m.measurement_status='MEASURED' "
+                    "THEN m.value_numeric END) AS maximum,"
+                    "AVG(CASE WHEN m.measurement_status='MEASURED' "
+                    "THEN m.value_numeric END) AS average,"
+                    "STDEV(CASE WHEN m.measurement_status='MEASURED' "
+                    "THEN m.value_numeric END) AS sample_stddev "
+                    "FROM dataset.dataset_version dv "
+                    "JOIN dataset.dataset_version_run dvr "
+                    "ON dvr.dataset_version_id=dv.dataset_version_id "
+                    "JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
+                    "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
+                    "JOIN test.measurement m ON m.unit_id=ur.unit_id "
+                    "JOIN mdm.test_item_definition tid ON tid.test_item_id=m.test_item_id "
+                    "AND tid.program_version_id=tr.program_version_id "
+                    "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no"
+                    + filter_sql
+                    + " AND m.test_item_id IN :analysis_test_item_ids "
+                    "GROUP BY tid.raw_item_name ORDER BY tid.raw_item_name",
+                    expanding + ("analysis_test_item_ids",),
+                ),
+                {
+                    "dataset_id": dataset_id,
+                    "version_no": version_no,
+                    "analysis_test_item_ids": test_item_ids,
+                    **filter_parameters,
+                },
+            )
+            .mappings()
+            .all()
+        )
+        return tuple(rows)
+
+    def _analysis_box_rows(
+        self,
+        connection: Connection,
+        *,
+        dataset_id: int,
+        version_no: int,
+        filter_sql: str,
+        filter_parameters: dict[str, object],
+        expanding: tuple[str, ...],
+        test_item_ids: tuple[int, ...],
+    ) -> tuple[Mapping[str, Any], ...]:
+        rows = (
+            connection.execute(
+                _statement(
+                    ";WITH numeric_values AS ("
+                    "SELECT tid.raw_item_name,m.value_numeric FROM dataset.dataset_version dv "
+                    "JOIN dataset.dataset_version_run dvr "
+                    "ON dvr.dataset_version_id=dv.dataset_version_id "
+                    "JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
+                    "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
+                    "JOIN test.measurement m ON m.unit_id=ur.unit_id "
+                    "JOIN mdm.test_item_definition tid ON tid.test_item_id=m.test_item_id "
+                    "AND tid.program_version_id=tr.program_version_id "
+                    "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no"
+                    + filter_sql
+                    + " AND m.test_item_id IN :analysis_test_item_ids "
+                    "AND m.measurement_status='MEASURED' AND m.value_numeric IS NOT NULL),"
+                    "quartiles AS (SELECT raw_item_name,value_numeric,"
+                    "PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY value_numeric) "
+                    "OVER(PARTITION BY raw_item_name) AS q1,"
+                    "PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY value_numeric) "
+                    "OVER(PARTITION BY raw_item_name) AS median,"
+                    "PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY value_numeric) "
+                    "OVER(PARTITION BY raw_item_name) AS q3 FROM numeric_values) "
+                    "SELECT raw_item_name,MIN(value_numeric) AS minimum,MAX(q1) AS q1,"
+                    "MAX(median) AS median,MAX(q3) AS q3,MAX(value_numeric) AS maximum,"
+                    "MIN(CASE WHEN value_numeric>=q1-1.5*(q3-q1) THEN value_numeric END) "
+                    "AS lower_whisker,"
+                    "MAX(CASE WHEN value_numeric<=q3+1.5*(q3-q1) THEN value_numeric END) "
+                    "AS upper_whisker,"
+                    "SUM(CASE WHEN value_numeric<q1-1.5*(q3-q1) "
+                    "OR value_numeric>q3+1.5*(q3-q1) "
+                    "THEN CONVERT(bigint,1) ELSE 0 END) AS outlier_count "
+                    "FROM quartiles GROUP BY raw_item_name ORDER BY raw_item_name",
+                    expanding + ("analysis_test_item_ids",),
+                ),
+                {
+                    "dataset_id": dataset_id,
+                    "version_no": version_no,
+                    "analysis_test_item_ids": test_item_ids,
+                    **filter_parameters,
+                },
+            )
+            .mappings()
+            .all()
+        )
+        return tuple(rows)
+
+    def _analysis_histogram_rows(
+        self,
+        connection: Connection,
+        *,
+        dataset_id: int,
+        version_no: int,
+        filter_sql: str,
+        filter_parameters: dict[str, object],
+        expanding: tuple[str, ...],
+        test_item_ids: tuple[int, ...],
+        bin_count: int,
+    ) -> tuple[Mapping[str, Any], ...]:
+        rows = (
+            connection.execute(
+                _statement(
+                    ";WITH numeric_values AS ("
+                    "SELECT tid.raw_item_name,m.value_numeric FROM dataset.dataset_version dv "
+                    "JOIN dataset.dataset_version_run dvr "
+                    "ON dvr.dataset_version_id=dv.dataset_version_id "
+                    "JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
+                    "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
+                    "JOIN test.measurement m ON m.unit_id=ur.unit_id "
+                    "JOIN mdm.test_item_definition tid ON tid.test_item_id=m.test_item_id "
+                    "AND tid.program_version_id=tr.program_version_id "
+                    "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no"
+                    + filter_sql
+                    + " AND m.test_item_id IN :analysis_test_item_ids "
+                    "AND m.measurement_status='MEASURED' AND m.value_numeric IS NOT NULL),"
+                    "bounds AS (SELECT raw_item_name,MIN(value_numeric) AS range_min,"
+                    "MAX(value_numeric) AS range_max FROM numeric_values GROUP BY raw_item_name),"
+                    "bucketed AS (SELECT v.raw_item_name,b.range_min,b.range_max,"
+                    "CASE WHEN b.range_min=b.range_max THEN 0 "
+                    "WHEN v.value_numeric=b.range_max THEN :histogram_bin_count-1 "
+                    "ELSE CONVERT(int,FLOOR((v.value_numeric-b.range_min)*"
+                    ":histogram_bin_count/NULLIF(b.range_max-b.range_min,0))) END "
+                    "AS bin_index FROM numeric_values v JOIN bounds b "
+                    "ON b.raw_item_name=v.raw_item_name) "
+                    "SELECT raw_item_name,range_min,range_max,bin_index,"
+                    "COUNT_BIG(*) AS bin_value_count FROM bucketed "
+                    "GROUP BY raw_item_name,range_min,range_max,bin_index "
+                    "ORDER BY raw_item_name,bin_index",
+                    expanding + ("analysis_test_item_ids",),
+                ),
+                {
+                    "dataset_id": dataset_id,
+                    "version_no": version_no,
+                    "analysis_test_item_ids": test_item_ids,
+                    "histogram_bin_count": bin_count,
+                    **filter_parameters,
+                },
+            )
+            .mappings()
+            .all()
+        )
+        return tuple(rows)
+
+    def _analysis_spec_rows(
+        self,
+        connection: Connection,
+        *,
+        dataset_id: int,
+        version_no: int,
+        test_stage: str,
+        dataset_spec_set_id: int | None,
+        filter_sql: str,
+        filter_parameters: dict[str, object],
+        expanding: tuple[str, ...],
+        test_item_ids: tuple[int, ...],
+    ) -> tuple[Mapping[str, Any], ...]:
+        if test_stage == "CP":
+            spec_joins = (
+                "LEFT JOIN mdm.spec_set ss ON ss.spec_set_id=:dataset_spec_set_id "
+                "AND ss.status='RELEASED' "
+                "LEFT JOIN mdm.spec_item si ON si.spec_set_id=ss.spec_set_id "
+                "AND si.test_item_id=tid.test_item_id "
+            )
+        else:
+            spec_joins = (
+                "LEFT JOIN mdm.spec_binding sb ON sb.active=1 "
+                "AND sb.program_version_id=tr.program_version_id "
+                "AND (sb.product_id IS NULL OR sb.product_id=tr.product_id) "
+                "AND (sb.supplier_id IS NULL OR sb.supplier_id=tr.supplier_id) "
+                "AND (sb.test_stage IS NULL OR sb.test_stage=tr.test_stage) "
+                "LEFT JOIN mdm.spec_set ss ON ss.spec_set_id=sb.spec_set_id "
+                "AND ss.status='RELEASED' "
+                "LEFT JOIN mdm.spec_item si ON si.spec_set_id=ss.spec_set_id "
+                "AND si.test_item_id=tid.test_item_id "
+            )
+        rows = (
+            connection.execute(
+                _statement(
+                    "SELECT DISTINCT tr.run_id,"
+                    "tr.program_version_id AS run_program_version_id,"
+                    "tid.program_version_id AS item_program_version_id,"
+                    "tid.test_item_id,tr.lot_id,"
+                    "COALESCE(ur.wafer_id,tr.wafer_id) AS wafer_id,"
+                    "tid.raw_item_name,ss.spec_set_id,si.spec_item_id,si.unit_code,"
+                    "si.lsl,si.usl,si.condition_json "
+                    "FROM dataset.dataset_version dv "
+                    "JOIN dataset.dataset_version_run dvr "
+                    "ON dvr.dataset_version_id=dv.dataset_version_id "
+                    "JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
+                    "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
+                    "JOIN test.measurement m ON m.unit_id=ur.unit_id "
+                    "JOIN mdm.test_item_definition tid ON tid.test_item_id=m.test_item_id "
+                    "AND tid.program_version_id=tr.program_version_id "
+                    + spec_joins
+                    + "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no"
+                    + filter_sql
+                    + " AND m.test_item_id IN :analysis_test_item_ids "
+                    "ORDER BY tid.raw_item_name,tr.run_id,tid.test_item_id,ss.spec_set_id",
+                    expanding + ("analysis_test_item_ids",),
+                ),
+                {
+                    "dataset_id": dataset_id,
+                    "version_no": version_no,
+                    "dataset_spec_set_id": dataset_spec_set_id,
+                    "analysis_test_item_ids": test_item_ids,
+                    **filter_parameters,
+                },
+            )
+            .mappings()
+            .all()
+        )
+        return tuple(rows)
+
+    def _analysis_subgroup_rows(
+        self,
+        connection: Connection,
+        *,
+        dataset_id: int,
+        version_no: int,
+        filter_sql: str,
+        filter_parameters: dict[str, object],
+        expanding: tuple[str, ...],
+        test_item_ids: tuple[int, ...],
+        rule_code: str,
+    ) -> tuple[Mapping[str, Any], ...]:
+        if rule_code == "CPK_POOLED_WITHIN_RUN_V1":
+            subgroup_expression = "CONVERT(nvarchar(64),tr.run_id)"
+            identity_complete_expression = "1"
+        elif rule_code == "CPK_POOLED_WITHIN_LOT_WAFER_V1":
+            subgroup_expression = (
+                "COALESCE(tr.lot_id,N'')+N'|'+COALESCE(ur.wafer_id,tr.wafer_id,N'')"
+            )
+            identity_complete_expression = (
+                "CASE WHEN "
+                "NULLIF(LTRIM(RTRIM(tr.lot_id)),N'') IS NULL OR "
+                "NULLIF(LTRIM(RTRIM(COALESCE(ur.wafer_id,tr.wafer_id))),N'') IS NULL "
+                "THEN 0 ELSE 1 END"
+            )
+        else:
+            raise DomainError(
+                "ANALYSIS_CAPABILITY_RULE_INVALID",
+                "unsupported Cpk subgroup rule",
+                422,
+            )
+        rows = (
+            connection.execute(
+                _statement(
+                    "SELECT tid.raw_item_name,"
+                    + subgroup_expression
+                    + " AS subgroup_key,MIN("
+                    + identity_complete_expression
+                    + ") AS subgroup_identity_complete,COUNT_BIG(*) AS subgroup_count,"
+                    "STDEV(m.value_numeric) AS subgroup_stddev "
+                    "FROM dataset.dataset_version dv "
+                    "JOIN dataset.dataset_version_run dvr "
+                    "ON dvr.dataset_version_id=dv.dataset_version_id "
+                    "JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
+                    "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
+                    "JOIN test.measurement m ON m.unit_id=ur.unit_id "
+                    "JOIN mdm.test_item_definition tid ON tid.test_item_id=m.test_item_id "
+                    "AND tid.program_version_id=tr.program_version_id "
+                    "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no"
+                    + filter_sql
+                    + " AND m.test_item_id IN :analysis_test_item_ids "
+                    "AND m.measurement_status='MEASURED' AND m.value_numeric IS NOT NULL "
+                    "GROUP BY tid.raw_item_name,"
+                    + subgroup_expression
+                    + " ORDER BY tid.raw_item_name,subgroup_key",
+                    expanding + ("analysis_test_item_ids",),
+                ),
+                {
+                    "dataset_id": dataset_id,
+                    "version_no": version_no,
+                    "analysis_test_item_ids": test_item_ids,
+                    **filter_parameters,
+                },
+            )
+            .mappings()
+            .all()
+        )
+        return tuple(rows)
+
+    def _analysis_capability_result(
+        self,
+        *,
+        parameter: str,
+        identity: DatasetAnalysisParameterIdentity,
+        statistics: Mapping[str, Any],
+        spec_rows: tuple[Mapping[str, Any], ...],
+        subgroup_rows: tuple[Mapping[str, Any], ...],
+        rule_code: str | None,
+    ) -> tuple[DatasetCapabilityStatistics, tuple[int, ...], str]:
+        if rule_code is None:
+            return (
+                DatasetCapabilityStatistics(
+                    status="NOT_ELIGIBLE",
+                    ppk_status="NOT_REQUESTED",
+                    cpk_status="NOT_REQUESTED",
+                    reason_codes=("CAPABILITY_RULE_REQUIRED",),
+                    spec_mode=None,
+                    lsl=None,
+                    usl=None,
+                    sample_count=int(statistics["numeric_count"]),
+                    subgroup_count=0,
+                    overall_sigma=None,
+                    within_sigma=None,
+                    ppl=None,
+                    ppu=None,
+                    ppk=None,
+                    cpl=None,
+                    cpu=None,
+                    cpk=None,
+                    rule_code=None,
+                ),
+                identity.spec_set_ids,
+                "NOT_EVALUATED",
+            )
+        reasons: list[str] = []
+        covered_spec_set_ids: set[int] = set()
+        spec_signatures: set[tuple[object, ...]] = set()
+        scope_rows: dict[tuple[object, ...], list[Mapping[str, Any]]] = {}
+        for row in spec_rows:
+            scope_key = (
+                row["run_id"],
+                row["run_program_version_id"],
+                row["item_program_version_id"],
+                row["test_item_id"],
+                row["lot_id"],
+                row["wafer_id"],
+            )
+            scope_rows.setdefault(scope_key, []).append(row)
+        scope_uncovered = False
+        scope_ambiguous = False
+        for scope_key, rows in scope_rows.items():
+            if scope_key[1] is None or scope_key[1] != scope_key[2]:
+                scope_uncovered = True
+                continue
+            covered_rows = tuple(
+                row
+                for row in rows
+                if row["spec_set_id"] is not None and row["spec_item_id"] is not None
+            )
+            if not covered_rows:
+                scope_uncovered = True
+                continue
+            scope_spec_ids = {int(row["spec_set_id"]) for row in covered_rows}
+            scope_signatures = {
+                (
+                    str(row["unit_code"]).strip() or None
+                    if row["unit_code"] is not None
+                    else None,
+                    _optional_finite_float(row["lsl"], field=f"{parameter} formal LSL"),
+                    _optional_finite_float(row["usl"], field=f"{parameter} formal USL"),
+                    _condition_text(
+                        row["condition_json"], parameter=f"{parameter} formal spec"
+                    ),
+                )
+                for row in covered_rows
+            }
+            if len(scope_spec_ids) != 1 or len(scope_signatures) != 1:
+                scope_ambiguous = True
+                continue
+            covered_spec_set_ids.update(scope_spec_ids)
+            spec_signatures.update(scope_signatures)
+        spec_set_ids = tuple(sorted(covered_spec_set_ids))
+        formal_signature: tuple[object, ...] | None = None
+        if not spec_rows:
+            reasons.append("FORMAL_RELEASED_SPEC_NOT_FOUND")
+        elif scope_uncovered:
+            reasons.append("FORMAL_SPEC_SCOPE_NOT_COVERED")
+        if scope_ambiguous or len(spec_signatures) > 1 or len(spec_set_ids) > 1:
+            reasons.append("SPEC_CONTEXT_AMBIGUOUS")
+        if not reasons and len(spec_signatures) == 1 and len(spec_set_ids) == 1:
+            formal_signature = next(iter(spec_signatures))
+            if (
+                formal_signature[0] != identity.unit
+                or formal_signature[3] != identity.test_condition
+            ):
+                reasons.append("SPEC_CONTEXT_AMBIGUOUS")
+                formal_signature = None
+
+        lsl = formal_signature[1] if formal_signature is not None else None
+        usl = formal_signature[2] if formal_signature is not None else None
+        if lsl is not None and usl is not None and float(lsl) > float(usl):
+            raise DomainError(
+                "ANALYSIS_SPEC_CONTRACT_INVALID",
+                f"parameter {parameter} has reversed formal specification limits",
+                409,
+            )
+        if lsl is None and usl is None:
+            reasons.append("FORMAL_SPEC_LIMIT_MISSING")
+            spec_mode = None
+        elif lsl is None:
+            spec_mode = "UPPER_ONLY"
+        elif usl is None:
+            spec_mode = "LOWER_ONLY"
+        else:
+            spec_mode = "TWO_SIDED"
+
+        sample_count = int(statistics["numeric_count"])
+        status_counts: Mapping[str, int] = statistics["status_counts"]
+        if int(status_counts.get("OVER_RANGE", 0)) or int(
+            status_counts.get("UNDER_RANGE", 0)
+        ):
+            reasons.append("CENSORED_MEASUREMENTS_PRESENT")
+        if int(status_counts.get("MEASURED", 0)) != sample_count:
+            reasons.append("MEASURED_VALUE_MISSING")
+        mean = statistics["average"]
+        overall_sigma = statistics["sample_stddev"]
+        if mean is None:
+            reasons.append("PPK_MEAN_UNAVAILABLE")
+        if overall_sigma is None or float(overall_sigma) <= 0.0:
+            reasons.append("PPK_OVERALL_SIGMA_NOT_POSITIVE")
+
+        ppk_blockers = tuple(dict.fromkeys(reasons))
+        ppl = ppu = ppk = None
+        if not ppk_blockers:
+            mean_value = float(mean)
+            sigma_value = float(overall_sigma)
+            ppl = _capability_side(
+                mean=mean_value,
+                limit=float(lsl) if lsl is not None else None,
+                sigma=sigma_value,
+                lower=True,
+            )
+            ppu = _capability_side(
+                mean=mean_value,
+                limit=float(usl) if usl is not None else None,
+                sigma=sigma_value,
+                lower=False,
+            )
+            ppk = _combined_capability(ppl, ppu)
+        ppk_status = "ELIGIBLE" if ppk is not None else "NOT_ELIGIBLE"
+
+        cpl = cpu = cpk = within_sigma = None
+        subgroup_count = 0
+        cpk_reasons: list[str] = []
+        if rule_code is None:
+            raise AssertionError("capability rule gate was not applied")
+        else:
+            cpk_reasons.extend(ppk_blockers)
+            selected_subgroups = tuple(
+                row for row in subgroup_rows if str(row["raw_item_name"]) == parameter
+            )
+            subgroup_count = len(selected_subgroups)
+            counts: list[int] = []
+            variance_numerator = 0.0
+            variance_denominator = 0
+            for row in selected_subgroups:
+                count = int(row["subgroup_count"] or 0)
+                counts.append(count)
+                if not bool(row.get("subgroup_identity_complete", 1)):
+                    cpk_reasons.append("CPK_SUBGROUP_IDENTITY_MISSING")
+                if count < 2:
+                    cpk_reasons.append("CPK_SUBGROUP_INSUFFICIENT_DF")
+                    continue
+                sigma = _optional_finite_float(
+                    row["subgroup_stddev"],
+                    field=f"{parameter} subgroup standard deviation",
+                )
+                if sigma is None:
+                    cpk_reasons.append("CPK_SUBGROUP_SIGMA_UNAVAILABLE")
+                    continue
+                if sigma < 0.0:
+                    raise DomainError(
+                        "ANALYSIS_AGGREGATE_CONTRACT_INVALID",
+                        f"parameter {parameter} subgroup standard deviation is negative",
+                        409,
+                    )
+                variance_numerator += (count - 1) * sigma * sigma
+                variance_denominator += count - 1
+            if selected_subgroups and sum(counts) != sample_count:
+                raise DomainError(
+                    "ANALYSIS_AGGREGATE_CONTRACT_INVALID",
+                    f"parameter {parameter} subgroup counts do not reconcile",
+                    409,
+                )
+            if variance_denominator > 0:
+                within_sigma = math.sqrt(variance_numerator / variance_denominator)
+                if not math.isfinite(within_sigma) or within_sigma <= 0.0:
+                    within_sigma = None
+                    cpk_reasons.append("CPK_WITHIN_SIGMA_NOT_POSITIVE")
+            else:
+                cpk_reasons.append("CPK_WITHIN_SIGMA_NOT_POSITIVE")
+            cpk_reasons = list(dict.fromkeys(cpk_reasons))
+            if not cpk_reasons and within_sigma is not None:
+                mean_value = float(mean)
+                cpl = _capability_side(
+                    mean=mean_value,
+                    limit=float(lsl) if lsl is not None else None,
+                    sigma=within_sigma,
+                    lower=True,
+                )
+                cpu = _capability_side(
+                    mean=mean_value,
+                    limit=float(usl) if usl is not None else None,
+                    sigma=within_sigma,
+                    lower=False,
+                )
+                cpk = _combined_capability(cpl, cpu)
+            cpk_status = "ELIGIBLE" if cpk is not None else "NOT_ELIGIBLE"
+
+        combined_reasons = tuple(dict.fromkeys((*ppk_blockers, *cpk_reasons)))
+        if ppk_status == "NOT_ELIGIBLE":
+            status = "NOT_ELIGIBLE"
+        elif cpk_status == "NOT_ELIGIBLE":
+            status = "PARTIAL"
+        else:
+            status = "ELIGIBLE"
+        return (
+            DatasetCapabilityStatistics(
+                status=status,
+                ppk_status=ppk_status,
+                cpk_status=cpk_status,
+                reason_codes=combined_reasons,
+                spec_mode=spec_mode,
+                lsl=float(lsl) if lsl is not None else None,
+                usl=float(usl) if usl is not None else None,
+                sample_count=sample_count,
+                subgroup_count=subgroup_count,
+                overall_sigma=float(overall_sigma)
+                if overall_sigma is not None
+                else None,
+                within_sigma=within_sigma,
+                ppl=ppl,
+                ppu=ppu,
+                ppk=ppk,
+                cpl=cpl,
+                cpu=cpu,
+                cpk=cpk,
+                rule_code=rule_code,
+            ),
+            spec_set_ids if formal_signature is not None else (),
+            "RELEASED_SPEC" if formal_signature is not None else "UNRESOLVED",
+        )
+
+    def analyze_parameters(
+        self, request: DatasetParameterAnalysisRequest
+    ) -> DatasetParameterAnalysisResult:
+        self.assert_parameter_analysis_rules_approved(request)
+        lot_ids = _normalized_filter_values(
+            tuple(request.filters.lot_ids), field="lot_ids"
+        )
+        wafer_ids = _normalized_filter_values(
+            tuple(request.filters.wafer_ids), field="wafer_ids"
+        )
+        bin_codes = _normalized_filter_values(
+            tuple(request.filters.bin_codes), field="bin_codes"
+        )
+        source_ids = _normalized_filter_values(
+            tuple(request.filters.source_ids), field="source_ids"
+        )
+        overall_results = _normalized_filter_values(
+            tuple(item.value for item in request.filters.overall_results),
+            field="overall_results",
+        )
+        parameter_names = _normalized_filter_values(
+            tuple(request.parameters), field="parameters"
+        )
+        analysis_types = {item.value for item in request.analyses}
+        rule_code = (
+            request.capability.rule_code.value
+            if request.capability.rule_code is not None
+            else None
+        )
+        refs = tuple(request.datasets)
+        contexts: list[Mapping[str, Any]] = []
+        work: list[
+            tuple[
+                object,
+                Mapping[str, Any],
+                tuple[int, ...] | None,
+                dict[str, DatasetAnalysisParameterIdentity],
+                dict[str, tuple[object, ...]],
+                dict[str, tuple[int, ...]],
+            ]
+        ] = []
+        with self._engine.connect() as connection:
+            for ref in refs:
+                context = self._version_context(
+                    connection, ref.dataset_id, ref.version_no, lock=False
+                )
+                if str(context["status"]) != "PUBLISHED" or not bool(
+                    context["is_current"]
+                ):
+                    raise DomainError(
+                        "ANALYSIS_VERSION_NOT_CURRENT",
+                        "parameter analysis only allows Current Published Dataset Versions",
+                        409,
+                    )
+                contexts.append(context)
+            stages = {str(context["test_stage"]) for context in contexts}
+            if len(stages) != 1:
+                raise DomainError(
+                    "ANALYSIS_STAGE_INCOMPATIBLE",
+                    "CP and FT datasets cannot be combined in one parameter analysis",
+                    409,
+                )
+            stage = next(iter(stages))
+            if stage not in {"CP", "FT"}:
+                raise DomainError(
+                    "ANALYSIS_STAGE_INCOMPATIBLE",
+                    "parameter analysis currently supports CP and FT datasets only",
+                    409,
+                )
+            if len(contexts) > 1 and stage == "CP":
+                spec_ids = {context["spec_set_id"] for context in contexts}
+                if None in spec_ids or len(spec_ids) != 1:
+                    raise DomainError(
+                        "ANALYSIS_SPEC_INCOMPATIBLE",
+                        "selected CP datasets do not have provably compatible specifications",
+                        409,
+                    )
+
+            all_signatures: dict[str, set[tuple[object, ...]]] = {
+                name: set() for name in parameter_names
+            }
+            for ref, context in zip(refs, contexts, strict=True):
+                source_run_ids = self._analysis_source_run_ids(
+                    connection,
+                    dataset_id=ref.dataset_id,
+                    version_no=ref.version_no,
+                    source_ids=source_ids,
+                )
+                identity_rows = self._analysis_identity_rows(
+                    connection,
+                    dataset_id=ref.dataset_id,
+                    version_no=ref.version_no,
+                    lot_ids=lot_ids,
+                    source_run_ids=source_run_ids,
+                    parameter_names=parameter_names,
+                )
+                grouped_rows: dict[str, list[Mapping[str, Any]]] = {}
+                available_by_program: dict[int, set[str]] = {}
+                for row in identity_rows:
+                    run_program_version_id = row["run_program_version_id"]
+                    if run_program_version_id is None:
+                        raise DomainError(
+                            "ANALYSIS_PARAMETER_INCOMPATIBLE",
+                            "selected run has no program-version identity",
+                            409,
+                        )
+                    program_id = int(run_program_version_id)
+                    available_by_program.setdefault(program_id, set())
+                    if row["raw_item_name"] is None:
+                        continue
+                    name = str(row["raw_item_name"])
+                    grouped_rows.setdefault(name, []).append(row)
+                    available_by_program[program_id].add(name)
+                identities: dict[str, DatasetAnalysisParameterIdentity] = {}
+                signatures: dict[str, tuple[object, ...]] = {}
+                allowed_test_item_ids: dict[str, tuple[int, ...]] = {}
+                missing = sorted(
+                    {
+                        name
+                        for name in parameter_names
+                        if name not in grouped_rows
+                        or any(
+                            name not in available
+                            for available in available_by_program.values()
+                        )
+                    }
+                )
+                if missing:
+                    raise DomainError(
+                        "ANALYSIS_PARAMETER_INCOMPATIBLE",
+                        "one or more parameters are unavailable after run-level filters",
+                        409,
+                        details=[
+                            {
+                                "dataset_id": ref.dataset_id,
+                                "version_no": ref.version_no,
+                                "parameters": missing,
+                            }
+                        ],
+                    )
+                for name in parameter_names:
+                    rows = grouped_rows[name]
+                    definitions_by_program: dict[int, set[tuple[str, int]]] = {}
+                    for row in rows:
+                        step_code = str(row["step_code"] or "").strip().upper()
+                        if not step_code:
+                            raise DomainError(
+                                "ANALYSIS_PARAMETER_INCOMPATIBLE",
+                                "selected parameter has an empty step identity",
+                                409,
+                                details=[
+                                    {
+                                        "dataset_id": ref.dataset_id,
+                                        "version_no": ref.version_no,
+                                        "parameters": [name],
+                                    }
+                                ],
+                            )
+                        definitions_by_program.setdefault(
+                            int(row["program_version_id"]), set()
+                        ).add((step_code, int(row["sequence_no"])))
+                    normalized_step_codes = {
+                        step_code
+                        for definitions in definitions_by_program.values()
+                        for step_code, _ in definitions
+                    }
+                    sequence_nos = {
+                        sequence_no
+                        for definitions in definitions_by_program.values()
+                        for _, sequence_no in definitions
+                    }
+                    if (
+                        any(
+                            len(definitions) != 1
+                            for definitions in definitions_by_program.values()
+                        )
+                        or len(normalized_step_codes) != 1
+                        or len(sequence_nos) != 1
+                    ):
+                        raise DomainError(
+                            "ANALYSIS_PARAMETER_INCOMPATIBLE",
+                            "selected raw parameter name does not resolve to one stable step identity",
+                            409,
+                            details=[
+                                {
+                                    "dataset_id": ref.dataset_id,
+                                    "version_no": ref.version_no,
+                                    "parameters": [name],
+                                }
+                            ],
+                        )
+                    stable_step_code = next(iter(normalized_step_codes))
+                    stable_sequence_no = next(iter(sequence_nos))
+                    canonical_codes = {
+                        str(row["canonical_parameter_code"]).strip() or None
+                        if row["canonical_parameter_code"] is not None
+                        else None
+                        for row in rows
+                    }
+                    parameter_signatures = {
+                        (
+                            str(row["unit_code"]).strip() or None
+                            if row["unit_code"] is not None
+                            else None,
+                            _optional_finite_float(
+                                row["program_lsl"], field=f"{name} program LSL"
+                            ),
+                            _optional_finite_float(
+                                row["program_usl"], field=f"{name} program USL"
+                            ),
+                            _condition_text(row["condition_json"], parameter=name),
+                        )
+                        for row in rows
+                    }
+                    if len(canonical_codes) != 1 or len(parameter_signatures) != 1:
+                        raise DomainError(
+                            "ANALYSIS_PARAMETER_INCOMPATIBLE",
+                            "selected parameter has conflicting identity metadata",
+                            409,
+                            details=[
+                                {
+                                    "dataset_id": ref.dataset_id,
+                                    "version_no": ref.version_no,
+                                    "parameters": [name],
+                                }
+                            ],
+                        )
+                    signature = next(iter(parameter_signatures))
+                    canonical_parameter_code = next(iter(canonical_codes))
+                    item_ids = tuple(sorted({int(row["test_item_id"]) for row in rows}))
+                    if not item_ids:
+                        raise DomainError(
+                            "ANALYSIS_PARAMETER_INCOMPATIBLE",
+                            "selected parameter has no exact test-item identity",
+                            409,
+                        )
+                    allowed_test_item_ids[name] = item_ids
+                    cross_dataset_signature = (
+                        stable_step_code,
+                        stable_sequence_no,
+                        canonical_parameter_code,
+                        *signature,
+                    )
+                    signatures[name] = cross_dataset_signature
+                    all_signatures[name].add(cross_dataset_signature)
+                    context_spec_id = context["spec_set_id"]
+                    identities[name] = DatasetAnalysisParameterIdentity(
+                        name=name,
+                        canonical_parameter_code=canonical_parameter_code,
+                        unit=signature[0],
+                        program_lsl=signature[1],
+                        program_usl=signature[2],
+                        test_condition=signature[3],
+                        spec_set_ids=(int(context_spec_id),)
+                        if context_spec_id is not None
+                        else (),
+                        limit_source="PROGRAM_METADATA",
+                    )
+                work.append(
+                    (
+                        ref,
+                        context,
+                        source_run_ids,
+                        identities,
+                        signatures,
+                        allowed_test_item_ids,
+                    )
+                )
+
+            incompatible = [
+                name
+                for name, signatures in all_signatures.items()
+                if len(signatures) != 1
+            ]
+            if incompatible:
+                raise DomainError(
+                    "ANALYSIS_PARAMETER_INCOMPATIBLE",
+                    "selected parameters have incompatible unit, limits, or test conditions",
+                    409,
+                    details=[{"parameters": incompatible}],
+                )
+
+            items: list[DatasetParameterAnalysisItem] = []
+            formal_compatibility_signatures: dict[str, set[tuple[object, ...]]] = {
+                name: set() for name in parameter_names
+            }
+            unresolved_formal_parameters: set[str] = set()
+            for (
+                ref,
+                context,
+                source_run_ids,
+                identities,
+                _,
+                allowed_test_item_ids,
+            ) in work:
+                selected_test_item_ids = tuple(
+                    sorted(
+                        {
+                            item_id
+                            for item_ids in allowed_test_item_ids.values()
+                            for item_id in item_ids
+                        }
+                    )
+                )
+                filter_sql, filter_parameters, expanding = _analysis_filter_sql(
+                    lot_ids=lot_ids,
+                    wafer_ids=wafer_ids,
+                    bin_codes=bin_codes,
+                    overall_results=overall_results,
+                    source_run_ids=source_run_ids,
+                )
+                matched_units, candidate_measurements = self._analysis_preflight(
+                    connection,
+                    dataset_id=ref.dataset_id,
+                    version_no=ref.version_no,
+                    filter_sql=filter_sql,
+                    filter_parameters=filter_parameters,
+                    expanding=expanding,
+                    test_item_ids=selected_test_item_ids,
+                )
+                aggregate_rows = self._analysis_aggregate_rows(
+                    connection,
+                    dataset_id=ref.dataset_id,
+                    version_no=ref.version_no,
+                    filter_sql=filter_sql,
+                    filter_parameters=filter_parameters,
+                    expanding=expanding,
+                    test_item_ids=selected_test_item_ids,
+                )
+                box_rows = (
+                    self._analysis_box_rows(
+                        connection,
+                        dataset_id=ref.dataset_id,
+                        version_no=ref.version_no,
+                        filter_sql=filter_sql,
+                        filter_parameters=filter_parameters,
+                        expanding=expanding,
+                        test_item_ids=selected_test_item_ids,
+                    )
+                    if DatasetParameterAnalysisType.BOX_PLOT.value in analysis_types
+                    else ()
+                )
+                histogram_rows = (
+                    self._analysis_histogram_rows(
+                        connection,
+                        dataset_id=ref.dataset_id,
+                        version_no=ref.version_no,
+                        filter_sql=filter_sql,
+                        filter_parameters=filter_parameters,
+                        expanding=expanding,
+                        test_item_ids=selected_test_item_ids,
+                        bin_count=request.histogram.bin_count,
+                    )
+                    if DatasetParameterAnalysisType.HISTOGRAM.value in analysis_types
+                    else ()
+                )
+                spec_rows = (
+                    self._analysis_spec_rows(
+                        connection,
+                        dataset_id=ref.dataset_id,
+                        version_no=ref.version_no,
+                        test_stage=str(context["test_stage"]),
+                        dataset_spec_set_id=(
+                            int(context["spec_set_id"])
+                            if context["spec_set_id"] is not None
+                            else None
+                        ),
+                        filter_sql=filter_sql,
+                        filter_parameters=filter_parameters,
+                        expanding=expanding,
+                        test_item_ids=selected_test_item_ids,
+                    )
+                    if DatasetParameterAnalysisType.CAPABILITY.value in analysis_types
+                    and rule_code is not None
+                    else ()
+                )
+                subgroup_rows = (
+                    self._analysis_subgroup_rows(
+                        connection,
+                        dataset_id=ref.dataset_id,
+                        version_no=ref.version_no,
+                        filter_sql=filter_sql,
+                        filter_parameters=filter_parameters,
+                        expanding=expanding,
+                        test_item_ids=selected_test_item_ids,
+                        rule_code=rule_code,
+                    )
+                    if DatasetParameterAnalysisType.CAPABILITY.value in analysis_types
+                    and rule_code is not None
+                    else ()
+                )
+
+                aggregate_by_name = {
+                    str(row["raw_item_name"]): row for row in aggregate_rows
+                }
+                if any(name not in parameter_names for name in aggregate_by_name):
+                    raise DomainError(
+                        "ANALYSIS_AGGREGATE_CONTRACT_INVALID",
+                        "parameter aggregate returned an unrequested parameter",
+                        409,
+                    )
+                internal_statistics: dict[str, dict[str, Any]] = {}
+                aggregate_total = 0
+                for name in parameter_names:
+                    row = aggregate_by_name.get(name)
+                    if row is None:
+                        row_count = numeric_count = 0
+                        status_counts = {status: 0 for status in _MEASUREMENT_STATUSES}
+                        minimum = maximum = average = sample_stddev = None
+                    else:
+                        row_count = int(row["row_count"] or 0)
+                        numeric_count = int(row["numeric_count"] or 0)
+                        status_counts = {
+                            status: int(row[f"status_{status.lower()}"] or 0)
+                            for status in _MEASUREMENT_STATUSES
+                        }
+                        minimum = _optional_finite_float(
+                            row["minimum"], field=f"{name} minimum"
+                        )
+                        maximum = _optional_finite_float(
+                            row["maximum"], field=f"{name} maximum"
+                        )
+                        average = _optional_finite_float(
+                            row["average"], field=f"{name} average"
+                        )
+                        sample_stddev = _optional_finite_float(
+                            row["sample_stddev"],
+                            field=f"{name} sample standard deviation",
+                        )
+                    if (
+                        row_count < 0
+                        or numeric_count < 0
+                        or numeric_count > row_count
+                        or sum(status_counts.values()) != row_count
+                    ):
+                        raise DomainError(
+                            "ANALYSIS_AGGREGATE_CONTRACT_INVALID",
+                            f"parameter {name} has invalid aggregate counts",
+                            409,
+                        )
+                    aggregate_total += row_count
+                    internal_statistics[name] = {
+                        "row_count": row_count,
+                        "numeric_count": numeric_count,
+                        "status_counts": status_counts,
+                        "minimum": minimum,
+                        "maximum": maximum,
+                        "average": average,
+                        "sample_stddev": sample_stddev,
+                    }
+                if aggregate_total != candidate_measurements:
+                    raise DomainError(
+                        "ANALYSIS_AGGREGATE_CONTRACT_INVALID",
+                        "parameter measurement counts do not reconcile to preflight",
+                        409,
+                    )
+
+                box_by_name = {str(row["raw_item_name"]): row for row in box_rows}
+                histogram_by_name: dict[str, list[Mapping[str, Any]]] = {}
+                for row in histogram_rows:
+                    histogram_by_name.setdefault(str(row["raw_item_name"]), []).append(
+                        row
+                    )
+                spec_by_name: dict[str, list[Mapping[str, Any]]] = {}
+                for row in spec_rows:
+                    spec_by_name.setdefault(str(row["raw_item_name"]), []).append(row)
+
+                parameter_results: list[DatasetParameterAnalysis] = []
+                for name in parameter_names:
+                    stats = internal_statistics[name]
+                    descriptive = (
+                        DatasetDescriptiveStatistics(
+                            row_count=stats["row_count"],
+                            numeric_count=stats["numeric_count"],
+                            excluded_count=stats["row_count"] - stats["numeric_count"],
+                            minimum=stats["minimum"],
+                            maximum=stats["maximum"],
+                            average=stats["average"],
+                            sample_stddev=stats["sample_stddev"],
+                        )
+                        if DatasetParameterAnalysisType.DESCRIPTIVE.value
+                        in analysis_types
+                        else None
+                    )
+                    box_plot = None
+                    box_row = box_by_name.get(name)
+                    if (
+                        DatasetParameterAnalysisType.BOX_PLOT.value in analysis_types
+                        and stats["numeric_count"] > 0
+                        and box_row is None
+                    ):
+                        raise DomainError(
+                            "ANALYSIS_AGGREGATE_CONTRACT_INVALID",
+                            f"parameter {name} is missing requested box-plot aggregates",
+                            409,
+                        )
+                    if box_row is not None:
+                        values = {
+                            field: _optional_finite_float(
+                                box_row[field], field=f"{name} box {field}"
+                            )
+                            for field in (
+                                "minimum",
+                                "q1",
+                                "median",
+                                "q3",
+                                "maximum",
+                                "lower_whisker",
+                                "upper_whisker",
+                            )
+                        }
+                        if any(value is None for value in values.values()):
+                            raise DomainError(
+                                "ANALYSIS_AGGREGATE_CONTRACT_INVALID",
+                                f"parameter {name} has incomplete box-plot aggregates",
+                                409,
+                            )
+                        ordered = tuple(
+                            float(values[field])
+                            for field in ("minimum", "q1", "median", "q3", "maximum")
+                        )
+                        lower_whisker = float(values["lower_whisker"])
+                        upper_whisker = float(values["upper_whisker"])
+                        outlier_count = int(box_row["outlier_count"] or 0)
+                        if (
+                            tuple(sorted(ordered)) != ordered
+                            or not ordered[0]
+                            <= lower_whisker
+                            <= upper_whisker
+                            <= ordered[-1]
+                            or outlier_count < 0
+                            or outlier_count > stats["numeric_count"]
+                        ):
+                            raise DomainError(
+                                "ANALYSIS_AGGREGATE_CONTRACT_INVALID",
+                                f"parameter {name} has invalid box-plot aggregates",
+                                409,
+                            )
+                        box_plot = DatasetBoxPlotStatistics(
+                            minimum=ordered[0],
+                            q1=ordered[1],
+                            median=ordered[2],
+                            q3=ordered[3],
+                            maximum=ordered[4],
+                            lower_whisker=lower_whisker,
+                            upper_whisker=upper_whisker,
+                            outlier_count=outlier_count,
+                            method=_BOX_PLOT_METHOD,
+                        )
+
+                    histogram = None
+                    if DatasetParameterAnalysisType.HISTOGRAM.value in analysis_types:
+                        rows = histogram_by_name.get(name, [])
+                        if not rows:
+                            if stats["numeric_count"] > 0:
+                                raise DomainError(
+                                    "ANALYSIS_AGGREGATE_CONTRACT_INVALID",
+                                    f"parameter {name} is missing requested histogram aggregates",
+                                    409,
+                                )
+                            histogram = DatasetHistogramStatistics(
+                                bin_count=0,
+                                requested_bin_count=request.histogram.bin_count,
+                                range_min=None,
+                                range_max=None,
+                                bins=(),
+                            )
+                        else:
+                            range_pairs = {
+                                (
+                                    _optional_finite_float(
+                                        row["range_min"],
+                                        field=f"{name} histogram minimum",
+                                    ),
+                                    _optional_finite_float(
+                                        row["range_max"],
+                                        field=f"{name} histogram maximum",
+                                    ),
+                                )
+                                for row in rows
+                            }
+                            if len(range_pairs) != 1 or None in next(iter(range_pairs)):
+                                raise DomainError(
+                                    "ANALYSIS_AGGREGATE_CONTRACT_INVALID",
+                                    f"parameter {name} has invalid histogram bounds",
+                                    409,
+                                )
+                            range_min, range_max = (
+                                float(value) for value in next(iter(range_pairs))
+                            )
+                            actual_bin_count = (
+                                1
+                                if range_min == range_max
+                                else request.histogram.bin_count
+                            )
+                            counts = [0] * actual_bin_count
+                            for row in rows:
+                                index = int(row["bin_index"])
+                                count = int(row["bin_value_count"] or 0)
+                                if index < 0 or index >= actual_bin_count or count < 0:
+                                    raise DomainError(
+                                        "ANALYSIS_AGGREGATE_CONTRACT_INVALID",
+                                        f"parameter {name} has invalid histogram buckets",
+                                        409,
+                                    )
+                                counts[index] += count
+                            if sum(counts) != stats["numeric_count"]:
+                                raise DomainError(
+                                    "ANALYSIS_AGGREGATE_CONTRACT_INVALID",
+                                    f"parameter {name} histogram does not reconcile",
+                                    409,
+                                )
+                            width = (
+                                (range_max - range_min) / actual_bin_count
+                                if actual_bin_count > 1
+                                else 0.0
+                            )
+                            bins = tuple(
+                                DatasetHistogramBin(
+                                    index=index,
+                                    lower_bound=(
+                                        range_min + width * index
+                                        if actual_bin_count > 1
+                                        else range_min
+                                    ),
+                                    upper_bound=(
+                                        range_max
+                                        if index == actual_bin_count - 1
+                                        else range_min + width * (index + 1)
+                                    ),
+                                    count=count,
+                                    lower_inclusive=True,
+                                    upper_inclusive=index == actual_bin_count - 1,
+                                )
+                                for index, count in enumerate(counts)
+                            )
+                            histogram = DatasetHistogramStatistics(
+                                bin_count=actual_bin_count,
+                                requested_bin_count=request.histogram.bin_count,
+                                range_min=range_min,
+                                range_max=range_max,
+                                bins=bins,
+                            )
+
+                    capability = None
+                    identity = identities[name]
+                    if DatasetParameterAnalysisType.CAPABILITY.value in analysis_types:
+                        capability, spec_set_ids, limit_source = (
+                            self._analysis_capability_result(
+                                parameter=name,
+                                identity=identity,
+                                statistics=stats,
+                                spec_rows=tuple(spec_by_name.get(name, ())),
+                                subgroup_rows=subgroup_rows,
+                                rule_code=rule_code,
+                            )
+                        )
+                        identity = DatasetAnalysisParameterIdentity(
+                            name=identity.name,
+                            canonical_parameter_code=identity.canonical_parameter_code,
+                            unit=identity.unit,
+                            program_lsl=identity.program_lsl,
+                            program_usl=identity.program_usl,
+                            test_condition=identity.test_condition,
+                            spec_set_ids=spec_set_ids,
+                            limit_source=limit_source,
+                        )
+                        if len(refs) > 1:
+                            formal_blockers = {
+                                "FORMAL_RELEASED_SPEC_NOT_FOUND",
+                                "FORMAL_SPEC_SCOPE_NOT_COVERED",
+                                "SPEC_CONTEXT_AMBIGUOUS",
+                                "FORMAL_SPEC_LIMIT_MISSING",
+                            }
+                            if formal_blockers.intersection(capability.reason_codes):
+                                unresolved_formal_parameters.add(name)
+                            else:
+                                formal_compatibility_signatures[name].add(
+                                    (
+                                        identity.unit,
+                                        identity.test_condition,
+                                        capability.lsl,
+                                        capability.usl,
+                                    )
+                                )
+                    parameter_results.append(
+                        DatasetParameterAnalysis(
+                            identity=identity,
+                            status_counts=tuple(
+                                DatasetMeasurementStatusCount(
+                                    status=status,
+                                    count=stats["status_counts"][status],
+                                )
+                                for status in _MEASUREMENT_STATUSES
+                            ),
+                            descriptive=descriptive,
+                            box_plot=box_plot,
+                            histogram=histogram,
+                            capability=capability,
+                        )
+                    )
+                items.append(
+                    DatasetParameterAnalysisItem(
+                        dataset_id=ref.dataset_id,
+                        version_no=ref.version_no,
+                        test_stage=str(context["test_stage"]),
+                        group_key=f"DATASET:{ref.dataset_id}:VERSION:{ref.version_no}",
+                        filter_summary=DatasetParameterAnalysisFilterSummary(
+                            lot_ids=lot_ids,
+                            wafer_ids=wafer_ids,
+                            bin_codes=bin_codes,
+                            overall_results=overall_results,
+                            source_ids=source_ids,
+                            matched_unit_count=matched_units,
+                            candidate_measurement_count=candidate_measurements,
+                        ),
+                        parameters=tuple(parameter_results),
+                    )
+                )
+            if (
+                len(refs) > 1
+                and DatasetParameterAnalysisType.CAPABILITY.value in analysis_types
+                and rule_code is not None
+                and (
+                    unresolved_formal_parameters
+                    or any(
+                        len(signatures) != 1
+                        for signatures in formal_compatibility_signatures.values()
+                    )
+                )
+            ):
+                incompatible_specs = sorted(
+                    unresolved_formal_parameters
+                    | {
+                        name
+                        for name, signatures in formal_compatibility_signatures.items()
+                        if len(signatures) != 1
+                    }
+                )
+                raise DomainError(
+                    "ANALYSIS_SPEC_INCOMPATIBLE",
+                    "selected datasets do not have compatible unique formal specifications",
+                    409,
+                    details=[{"parameters": incompatible_specs}],
+                )
+        included_unit_count = sum(
+            item.filter_summary.matched_unit_count for item in items
+        )
+        input_unit_count = max(
+            included_unit_count,
+            sum(int(context.get("unit_count") or 0) for context in contexts),
+        )
+        missing_measurement_count = sum(
+            status.count
+            for item in items
+            for parameter in item.parameters
+            for status in parameter.status_counts
+            if status.status == "MISSING"
+        )
+        spec_versions = tuple(
+            f"SPEC_SET:{spec_set_id}"
+            for spec_set_id in sorted(
+                {
+                    spec_set_id
+                    for item in items
+                    for parameter in item.parameters
+                    for spec_set_id in parameter.identity.spec_set_ids
+                }
+            )
+        )
+        return DatasetParameterAnalysisResult(
+            contract_version=_PARAMETER_ANALYSIS_CONTRACT_VERSION,
+            group_by=request.group_by.value,
+            compatibility="SINGLE_DATASET" if len(refs) == 1 else "COMPATIBLE",
+            dataset_context=DatasetParameterAnalysisDatasetContext(
+                resolved_datasets=tuple(
+                    DatasetParameterAnalysisResolvedDataset(
+                        dataset_id=ref.dataset_id,
+                        version_no=ref.version_no,
+                    )
+                    for ref in refs
+                ),
+                test_stage=stage,
+                current_published_verified=True,
+            ),
+            filter_summary=DatasetParameterAnalysisContextFilterSummary(
+                normalized_filters=DatasetParameterAnalysisNormalizedFilters(
+                    lot_ids=lot_ids,
+                    wafer_ids=wafer_ids,
+                    bin_codes=bin_codes,
+                    overall_results=overall_results,
+                    source_ids=source_ids,
+                ),
+                filter_hash=_parameter_analysis_filter_hash(
+                    lot_ids=lot_ids,
+                    wafer_ids=wafer_ids,
+                    bin_codes=bin_codes,
+                    overall_results=overall_results,
+                    source_ids=source_ids,
+                ),
+            ),
+            rule_context=DatasetParameterAnalysisRuleContext(
+                spec_versions=spec_versions,
+                bin_mapping_versions=(),
+                evaluation_rule_versions=tuple(
+                    method
+                    for method in (
+                        _BOX_PLOT_METHOD
+                        if DatasetParameterAnalysisType.BOX_PLOT.value in analysis_types
+                        else None,
+                        _HISTOGRAM_METHOD
+                        if DatasetParameterAnalysisType.HISTOGRAM.value
+                        in analysis_types
+                        else None,
+                        rule_code,
+                    )
+                    if method is not None
+                ),
+                capability_rule_code=rule_code,
+                capability_rule_approval_status=(
+                    "NOT_REQUESTED" if rule_code is None else "APPROVED"
+                ),
+            ),
+            capabilities=tuple(
+                DatasetParameterAnalysisCapability(
+                    code=analysis.value,
+                    status=(
+                        "GATED"
+                        if analysis == DatasetParameterAnalysisType.CAPABILITY
+                        and rule_code is None
+                        else "AVAILABLE"
+                    ),
+                    reason_code=(
+                        "CAPABILITY_RULE_REQUIRED"
+                        if analysis == DatasetParameterAnalysisType.CAPABILITY
+                        and rule_code is None
+                        else None
+                    ),
+                )
+                for analysis in request.analyses
+            ),
+            counts=DatasetParameterAnalysisCounts(
+                input_units=input_unit_count,
+                included_units=included_unit_count,
+                excluded_units=input_unit_count - included_unit_count,
+                missing_measurements=missing_measurement_count,
+            ),
+            sampling_summary=DatasetParameterAnalysisSamplingSummary(
+                sampled=False,
+                method=None,
+                original_points=0,
+                returned_points=0,
+                preserved_out_of_spec_points=0,
+            ),
+            warnings=(
+                ("CAPABILITY_RULE_REQUIRED",)
+                if DatasetParameterAnalysisType.CAPABILITY.value in analysis_types
+                and rule_code is None
+                else ()
+            ),
+            computed_at=datetime.now(timezone.utc).isoformat(),
             items=tuple(items),
         )
 
@@ -1316,6 +3077,7 @@ class SqlDatasetService:
                 text(
                     "SELECT dv.dataset_version_id,dv.dataset_id,dv.version_no,"
                     "dv.input_batch_id,dv.canonical_model_version,dv.status,dv.is_current,"
+                    "dv.unit_count,"
                     "d.supplier_id,d.product_id,d.test_stage,"
                     "COALESCE(product_enrichment.value_text,p.product_name) AS product_name,"
                     "dv.spec_set_id "

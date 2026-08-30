@@ -217,7 +217,17 @@ def test_non_owner_input_request_api_returns_404_without_private_details(
         )
 
     assert response.status_code == 404
-    body = response.text
-    assert "private prompt" not in body
-    assert "private-file.xlsx" not in body
-    assert "7001" not in body
+    payload = response.json()
+    assert set(payload) == {"error"}
+    error = payload["error"]
+    assert set(error) <= {
+        "code",
+        "message",
+        "request_id",
+        "retryable",
+        "recommended_action",
+        "details",
+    }
+    assert error["code"] == "IMPORT_BATCH_NOT_FOUND"
+    assert error["message"] == "上传任务不存在或无权访问"
+    assert not error.get("details")

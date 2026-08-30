@@ -4,9 +4,10 @@ import { useEffect, useRef } from "react";
 interface Props {
   option: echarts.EChartsOption;
   className?: string;
+  ariaLabel?: string;
 }
 
-export function EChart({ option, className }: Props) {
+export function EChart({ option, className, ariaLabel }: Props) {
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -21,5 +22,5 @@ export function EChart({ option, className }: Props) {
     };
   }, [option]);
 
-  return <div ref={ref} className={className ?? "chart-canvas"} />;
+  return <div ref={ref} className={className ?? "chart-canvas"} role={ariaLabel ? "img" : undefined} aria-label={ariaLabel} />;
 }

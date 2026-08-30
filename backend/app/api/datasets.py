@@ -11,6 +11,7 @@ from app.domain.datasets import (
     CreateDatasetRequest,
     CreateDatasetVersionRequest,
     DatasetComparisonRequest,
+    DatasetParameterAnalysisRequest,
     DatasetService,
     PublishDatasetVersionRequest,
 )
@@ -84,6 +85,23 @@ def compare_datasets(
     return asdict(instance.compare(payload))
 
 
+@router.post("/parameter-analysis")
+def parameter_analysis(
+    payload: DatasetParameterAnalysisRequest,
+    request: Request,
+    principal: Principal = Depends(require_permission("DATASET_READ")),
+) -> dict:
+    instance = service(request)
+    for reference in payload.datasets:
+        instance.assert_dataset_access(
+            reference.dataset_id,
+            principal,
+            version_no=reference.version_no,
+        )
+    instance.assert_parameter_analysis_rules_approved(payload)
+    return asdict(instance.analyze_parameters(payload))
+
+
 @router.post("/{dataset_id}/versions", status_code=status.HTTP_201_CREATED)
 def create_version(
     dataset_id: int,
@@ -144,9 +162,7 @@ def chart_data(
     parameter: str | None = None,
     principal: Principal = Depends(require_permission("DATASET_READ")),
 ) -> dict:
-    service(request).assert_dataset_access(
-        dataset_id, principal, version_no=version_no
-    )
+    service(request).assert_dataset_access(dataset_id, principal, version_no=version_no)
     return asdict(
         service(request).get_chart_data(
             dataset_id, version_no, lot_id, wafer_id, source_id, parameter

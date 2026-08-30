@@ -14,6 +14,7 @@ import {
   type DatasetDetailRow,
 } from "../../api/datasets";
 import { EChart } from "../../components/EChart";
+import { ParameterAnalysisPanel } from "./ParameterAnalysisPanel";
 
 export interface DatasetSelection { datasetId: number; versionNo: number }
 
@@ -307,6 +308,18 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
           <Typography.Text type="secondary">比较和明细使用全部筛选值；图表展示当前 Dataset，并使用 Lot、Wafer、参数筛选的首项。Bin 仅作用于比较和明细。</Typography.Text>
         </Space>
       </Card>
+
+      <ParameterAnalysisPanel
+        datasets={selectedDatasets.map((item) => ({ dataset_id: item.datasetId, version_no: item.versionNo }))}
+        parameterOptions={uniqueValues([
+          ...(detailOptions?.parameter_options ?? []),
+          ...(data?.parameter_options.map((item) => item.name) ?? []),
+        ])}
+        lotIds={lotIds}
+        waferIds={waferIds}
+        binCodes={binCodes}
+        sourceIds={sourceId ? [sourceId] : []}
+      />
 
       {comparisonQuery.isError && <Alert type="error" showIcon message="Dataset 比较失败" description={comparisonQuery.error.message} className="review-alert" />}
       {comparisonQuery.data && <Card title={`服务端比较（${comparisonQuery.data.items.length} 个 Dataset）`} extra={<Tag color={comparisonQuery.data.spec_compatibility === "COMPATIBLE" ? "success" : "default"}>{compatibilityLabel[comparisonQuery.data.spec_compatibility] ?? comparisonQuery.data.spec_compatibility}</Tag>} className="production-table-card">

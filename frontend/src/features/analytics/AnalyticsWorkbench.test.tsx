@@ -7,6 +7,7 @@ import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  analyzeDatasetParameters,
   compareDatasets,
   getDatasetChartData,
   getDatasetDetails,
@@ -17,6 +18,7 @@ import {
 import { AnalyticsWorkbench, type DatasetSelection } from "./AnalyticsWorkbench";
 
 vi.mock("../../api/datasets", () => ({
+  analyzeDatasetParameters: vi.fn(),
   compareDatasets: vi.fn(),
   getDatasetChartData: vi.fn(),
   getDatasetDetails: vi.fn(),
@@ -159,6 +161,7 @@ describe("AnalyticsWorkbench formal Dataset flow", () => {
     expect(compareDatasets).not.toHaveBeenCalled();
     expect(getDatasetDetails).not.toHaveBeenCalled();
     expect(getDatasetChartData).not.toHaveBeenCalled();
+    expect(analyzeDatasetParameters).not.toHaveBeenCalled();
   });
 
   it("runs server comparison, filtered chart, and paged details for the selected Dataset set", async () => {
@@ -185,6 +188,19 @@ describe("AnalyticsWorkbench formal Dataset flow", () => {
     expect(getDatasetChartData).toHaveBeenCalledWith(21, 2, "LOT-A", "W1", "SRC-1", "VTH");
     expect(screen.getByText("VTH: 1.55 V (VALID)")).toBeInTheDocument();
     expect(screen.queryByText("Dataset编号")).not.toBeInTheDocument();
+    expect(analyzeDatasetParameters).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("does not run parameter analysis on page entry or the top-level refresh", async () => {
+    renderAnalytics();
+    expect(await screen.findByText("UNIT-501", {}, { timeout: 15_000 })).toBeInTheDocument();
+    expect(analyzeDatasetParameters).not.toHaveBeenCalled();
+    const comparisonCalls = vi.mocked(compareDatasets).mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: /刷新/ }));
+
+    await waitFor(() => expect(compareDatasets).toHaveBeenCalledTimes(comparisonCalls + 1));
+    expect(analyzeDatasetParameters).not.toHaveBeenCalled();
   }, 20_000);
 
   it("writes filter and detail pagination changes to URL while preserving Dataset selections", async () => {

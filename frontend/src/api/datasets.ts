@@ -14,6 +14,150 @@ export interface WaferYieldPoint {
 }
 
 export interface DatasetReference { dataset_id: number; version_no: number }
+export type DatasetAnalysisGroupBy = "DATASET";
+export type DatasetParameterAnalysisType = "DESCRIPTIVE" | "BOX_PLOT" | "HISTOGRAM" | "CAPABILITY";
+export type DatasetAnalysisOverallResult = "PASS" | "FAIL" | "UNKNOWN" | "ABORT";
+export interface DatasetParameterAnalysisFilters {
+  lot_ids: string[];
+  wafer_ids: string[];
+  bin_codes: string[];
+  overall_results: DatasetAnalysisOverallResult[];
+  source_ids: string[];
+}
+export interface DatasetParameterAnalysisRequest {
+  datasets: DatasetReference[];
+  group_by: DatasetAnalysisGroupBy;
+  filters: DatasetParameterAnalysisFilters;
+  parameters: string[];
+  analyses: DatasetParameterAnalysisType[];
+  histogram?: { bin_count: number };
+  capability?: { rule_code?: "CPK_POOLED_WITHIN_RUN_V1" | "CPK_POOLED_WITHIN_LOT_WAFER_V1" | null };
+}
+export interface DatasetParameterAnalysisFilterSummary extends DatasetParameterAnalysisFilters {
+  matched_unit_count: number;
+  candidate_measurement_count: number;
+}
+export interface DatasetAnalysisParameterIdentity {
+  name: string;
+  canonical_parameter_code: string | null;
+  unit: string | null;
+  program_lsl: number | null;
+  program_usl: number | null;
+  test_condition: string | null;
+  spec_set_ids: number[];
+  limit_source: string;
+}
+export interface DatasetMeasurementStatusCount { status: string; count: number }
+export interface DatasetDescriptiveStatistics {
+  row_count: number;
+  numeric_count: number;
+  excluded_count: number;
+  minimum: number | null;
+  maximum: number | null;
+  average: number | null;
+  sample_stddev: number | null;
+}
+export interface DatasetBoxPlotStatistics {
+  minimum: number;
+  q1: number;
+  median: number;
+  q3: number;
+  maximum: number;
+  lower_whisker: number;
+  upper_whisker: number;
+  outlier_count: number;
+  method: string;
+}
+export interface DatasetHistogramBin {
+  index: number;
+  lower_bound: number;
+  upper_bound: number;
+  count: number;
+  lower_inclusive: boolean;
+  upper_inclusive: boolean;
+}
+export interface DatasetHistogramStatistics {
+  bin_count: number;
+  requested_bin_count: number;
+  range_min: number | null;
+  range_max: number | null;
+  bins: DatasetHistogramBin[];
+  method: string;
+}
+export interface DatasetCapabilityStatistics {
+  status: string;
+  ppk_status: string;
+  cpk_status: string;
+  reason_codes: string[];
+  spec_mode: string | null;
+  lsl: number | null;
+  usl: number | null;
+  sample_count: number;
+  subgroup_count: number;
+  overall_sigma: number | null;
+  within_sigma: number | null;
+  ppl: number | null;
+  ppu: number | null;
+  ppk: number | null;
+  cpl: number | null;
+  cpu: number | null;
+  cpk: number | null;
+  rule_code: string | null;
+}
+export interface DatasetParameterAnalysis {
+  identity: DatasetAnalysisParameterIdentity;
+  status_counts: DatasetMeasurementStatusCount[];
+  descriptive: DatasetDescriptiveStatistics | null;
+  box_plot: DatasetBoxPlotStatistics | null;
+  histogram: DatasetHistogramStatistics | null;
+  capability: DatasetCapabilityStatistics | null;
+}
+export interface DatasetParameterAnalysisItem {
+  dataset_id: number;
+  version_no: number;
+  test_stage: string;
+  group_key: string;
+  filter_summary: DatasetParameterAnalysisFilterSummary;
+  parameters: DatasetParameterAnalysis[];
+}
+export interface DatasetParameterAnalysisResult {
+  contract_version: string;
+  group_by: string;
+  compatibility: string;
+  dataset_context: {
+    resolved_datasets: DatasetReference[];
+    test_stage: string;
+    current_published_verified: boolean;
+  };
+  filter_summary: {
+    normalized_filters: DatasetParameterAnalysisFilters;
+    filter_hash: string;
+  };
+  rule_context: {
+    spec_versions: string[];
+    bin_mapping_versions: string[];
+    evaluation_rule_versions: string[];
+    capability_rule_code: string | null;
+    capability_rule_approval_status: string;
+  };
+  capabilities: Array<{ code: string; status: string; reason_code: string | null }>;
+  counts: {
+    input_units: number;
+    included_units: number;
+    excluded_units: number;
+    missing_measurements: number;
+  };
+  sampling_summary: {
+    sampled: boolean;
+    method: string | null;
+    original_points: number;
+    returned_points: number;
+    preserved_out_of_spec_points: number;
+  };
+  warnings: string[];
+  computed_at: string;
+  items: DatasetParameterAnalysisItem[];
+}
 export interface DatasetParameterStatistic {
   name: string;
   unit: string | null;
@@ -154,6 +298,15 @@ export function compareDatasets(payload: {
       bin_codes: payload.bin_codes ?? [],
       parameters: payload.parameters ?? [],
     }),
+  });
+}
+
+export function analyzeDatasetParameters(
+  payload: DatasetParameterAnalysisRequest,
+): Promise<DatasetParameterAnalysisResult> {
+  return apiRequest("/api/v1/datasets/parameter-analysis", {
+    method: "POST",
+    body: JSON.stringify(payload),
   });
 }
 
