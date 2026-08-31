@@ -12,6 +12,7 @@ vi.mock("../../api/management", () => ({ getQualityManagementSummary: vi.fn() })
 vi.mock("../../components/EChart", () => ({
   EChart: ({ option }: { option: unknown }) => <div data-testid="quality-trend-chart" data-option={JSON.stringify(option)} />,
 }));
+vi.mock("./AnalysisRuleRegistryPanel", () => ({ AnalysisRuleRegistryPanel: () => <div data-testid="analysis-rule-registry">rule-registry</div> }));
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,
@@ -100,7 +101,7 @@ const qualitySummary: QualityManagementSummary = {
   }],
 };
 
-const renderDashboard = (searchParams = new URLSearchParams(), canOpenAnalytics = true) => {
+const renderDashboard = (searchParams = new URLSearchParams(), canOpenAnalytics = true, canReadManagement = true, canGovernRules = false) => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const props = {
     searchParams,
@@ -108,6 +109,8 @@ const renderDashboard = (searchParams = new URLSearchParams(), canOpenAnalytics 
     onOpenAnalytics: vi.fn(),
     onOpenJob: vi.fn(),
     canOpenAnalytics,
+    canReadManagement,
+    canGovernRules,
   };
   render(
     <QueryClientProvider client={queryClient}>
@@ -148,6 +151,16 @@ describe("QualityManagementDashboard", () => {
     expect(document.body).toHaveTextContent("按 Asia/Shanghai 业务日分组");
     expect(screen.getAllByText("上海业务日").length).toBeGreaterThan(0);
   }, 15_000);
+
+  it("shows Rule Registry only to RULE_GOVERN and does not request management data without MANAGEMENT_READ", async () => {
+    vi.mocked(getQualityManagementSummary).mockClear();
+    renderDashboard(new URLSearchParams(), false, false, true);
+
+    expect(await screen.findByTestId("analysis-rule-registry")).toBeInTheDocument();
+    expect(screen.getByText("当前仅开放 Rule Registry")).toBeInTheDocument();
+    expect(getQualityManagementSummary).not.toHaveBeenCalled();
+    expect(screen.queryByText("筛选条件（上海业务时间）")).not.toBeInTheDocument();
+  });
 
   it("preserves URL filters and drills through real Dataset and Job identities", async () => {
     const props = renderDashboard(new URLSearchParams({ product_name: "NCE-MOS", test_stage: "FT", from_utc: "2026-08-01T00:00:00Z" }));

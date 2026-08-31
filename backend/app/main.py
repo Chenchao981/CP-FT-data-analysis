@@ -6,6 +6,9 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 
+from app.api.analysis_rules import router as analysis_rules_router
+from app.api.analytics import router as analytics_router
+from app.api.analytics_exports import router as analytics_exports_router
 from app.api.auth import router as auth_router
 from app.api.catalog import router as catalog_router
 from app.api.cleaners import router as cleaners_router
@@ -19,21 +22,32 @@ from app.api.lifecycle import router as lifecycle_router
 from app.api.management import router as management_router
 from app.api.master_data import router as master_data_router
 from app.api.operations import router as operations_router
+from app.api.parameter_relationship import router as parameter_relationship_router
+from app.api.quality_evaluation import router as quality_evaluation_router
 from app.api.quick_analysis import router as quick_analysis_router
+from app.api.saved_analyses import router as saved_analyses_router
+from app.api.spatial_analysis import router as spatial_analysis_router
 from app.api.stage_data import _upload_root
 from app.api.stage_data import router as stage_data_router
+from app.api.wafer_summary import router as wafer_summary_router
 from app.api.worker_operations import router as worker_operations_router
 from app.core.config import get_settings
 from app.core.errors import DomainError
 from app.core.exception_handlers import domain_error_handler, validation_error_handler
 from app.core.logging import configure_logging
-from app.core.middleware import RequestContextMiddleware
+from app.core.middleware import AnalyticsFeatureFlagMiddleware, RequestContextMiddleware
 from app.domain.jobs import InMemoryJobService
 from app.domain.quick_analysis import InMemoryQuickAnalysisService
 from app.domain.quick_capacity import QuickCapacityPolicy
+from app.infrastructure.analytics_instant_risk_service import (
+    AnalyticsInstantRiskService,
+)
 from app.infrastructure.database import get_engine
 from app.infrastructure.formal_artifact_files import ManagedJobPathPolicy
 from app.infrastructure.source_catalog import SourceCatalog
+from app.infrastructure.sql_analysis_rule_service import SqlAnalysisRuleService
+from app.infrastructure.sql_analytics_export_service import SqlAnalyticsExportService
+from app.infrastructure.sql_analytics_service import SqlAnalyticsService
 from app.infrastructure.sql_auth_service import SqlAuthService
 from app.infrastructure.sql_cleaner_registry import SqlCleanerRegistry
 from app.infrastructure.sql_dataset_service import SqlDatasetService
@@ -47,8 +61,17 @@ from app.infrastructure.sql_m2_query_service import SqlM2QueryService
 from app.infrastructure.sql_management_service import SqlManagementService
 from app.infrastructure.sql_master_data_service import SqlMasterDataService
 from app.infrastructure.sql_operations_service import SqlOperationsService
+from app.infrastructure.sql_parameter_relationship_service import (
+    SqlParameterRelationshipService,
+)
+from app.infrastructure.sql_quality_evaluation_service import (
+    SqlQualityEvaluationService,
+)
 from app.infrastructure.sql_quick_analysis_service import SqlQuickAnalysisService
+from app.infrastructure.sql_saved_analysis_service import SqlSavedAnalysisService
+from app.infrastructure.sql_spatial_analysis_service import SqlSpatialAnalysisService
 from app.infrastructure.sql_stage_data_service import SqlStageDataService
+from app.infrastructure.sql_wafer_summary_service import SqlWaferSummaryService
 from app.infrastructure.sql_worker_operations_service import (
     SqlWorkerOperationsService,
 )
@@ -65,6 +88,7 @@ def create_app() -> FastAPI:
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
     )
+    application.add_middleware(AnalyticsFeatureFlagMiddleware)
     application.add_middleware(RequestContextMiddleware)
     application.add_exception_handler(DomainError, domain_error_handler)
     application.add_exception_handler(RequestValidationError, validation_error_handler)
@@ -73,8 +97,59 @@ def create_app() -> FastAPI:
         if settings.job_repository == "sql"
         else InMemoryJobService()
     )
+    application.state.analytics_feature_flags = settings.analytics_features.as_dict()
+    application.state.analysis_rule_service = (
+        SqlAnalysisRuleService(get_engine()) if os.getenv("TMS_DATABASE_URL") else None
+    )
     application.state.dataset_service = (
-        SqlDatasetService(get_engine()) if os.getenv("TMS_DATABASE_URL") else None
+        SqlDatasetService(
+            get_engine(), rule_service=application.state.analysis_rule_service
+        )
+        if os.getenv("TMS_DATABASE_URL")
+        else None
+    )
+    application.state.analytics_service = (
+        SqlAnalyticsService(get_engine()) if os.getenv("TMS_DATABASE_URL") else None
+    )
+    application.state.spatial_analysis_service = (
+        SqlSpatialAnalysisService(
+            get_engine(), rule_service=application.state.analysis_rule_service
+        )
+        if os.getenv("TMS_DATABASE_URL")
+        else None
+    )
+    application.state.parameter_relationship_service = (
+        SqlParameterRelationshipService(
+            get_engine(), rule_service=application.state.analysis_rule_service
+        )
+        if os.getenv("TMS_DATABASE_URL")
+        else None
+    )
+    application.state.quality_evaluation_service = (
+        SqlQualityEvaluationService(
+            get_engine(), rule_service=application.state.analysis_rule_service
+        )
+        if os.getenv("TMS_DATABASE_URL")
+        else None
+    )
+    application.state.analytics_instant_risk_service = (
+        AnalyticsInstantRiskService(
+            application.state.dataset_service,
+            application.state.quality_evaluation_service,
+        )
+        if os.getenv("TMS_DATABASE_URL")
+        else None
+    )
+    application.state.wafer_summary_service = (
+        SqlWaferSummaryService(get_engine()) if os.getenv("TMS_DATABASE_URL") else None
+    )
+    application.state.saved_analysis_service = (
+        SqlSavedAnalysisService(get_engine()) if os.getenv("TMS_DATABASE_URL") else None
+    )
+    application.state.analytics_export_service = (
+        SqlAnalyticsExportService(get_engine())
+        if os.getenv("TMS_DATABASE_URL")
+        else None
     )
     application.state.field_enrichment_service = (
         SqlFieldEnrichmentService(get_engine())
@@ -149,6 +224,44 @@ def create_app() -> FastAPI:
         datasets_router, prefix="/api/v1/datasets", tags=["datasets"]
     )
     application.include_router(
+        analytics_router, prefix="/api/v1/analytics", tags=["analytics"]
+    )
+    application.include_router(
+        analysis_rules_router,
+        prefix="/api/v1/analysis-rules",
+        tags=["analysis-rules"],
+    )
+    application.include_router(
+        spatial_analysis_router,
+        prefix="/api/v1/analytics/spatial",
+        tags=["analytics"],
+    )
+    application.include_router(
+        parameter_relationship_router,
+        prefix="/api/v1/analytics",
+        tags=["analytics"],
+    )
+    application.include_router(
+        quality_evaluation_router,
+        prefix="/api/v1/analytics/quality-evaluation",
+        tags=["analytics"],
+    )
+    application.include_router(
+        wafer_summary_router,
+        prefix="/api/v1/analytics/wafer-summary",
+        tags=["analytics"],
+    )
+    application.include_router(
+        saved_analyses_router,
+        prefix="/api/v1/analytics",
+        tags=["analytics"],
+    )
+    application.include_router(
+        analytics_exports_router,
+        prefix="/api/v1/analytics",
+        tags=["analytics"],
+    )
+    application.include_router(
         catalog_router, prefix="/api/v1/catalog", tags=["catalog"]
     )
     application.include_router(
@@ -161,21 +274,15 @@ def create_app() -> FastAPI:
     application.include_router(
         quick_analysis_router, prefix="/api/v1", tags=["quick-analysis"]
     )
-    application.include_router(
-        operations_router, prefix="/api/v1", tags=["operations"]
-    )
+    application.include_router(operations_router, prefix="/api/v1", tags=["operations"])
     application.include_router(
         worker_operations_router, prefix="/api/v1", tags=["worker-operations"]
     )
-    application.include_router(
-        management_router, prefix="/api/v1", tags=["management"]
-    )
+    application.include_router(management_router, prefix="/api/v1", tags=["management"])
     application.include_router(
         master_data_router, prefix="/api/v1", tags=["master-data"]
     )
-    application.include_router(
-        lifecycle_router, prefix="/api/v1", tags=["lifecycle"]
-    )
+    application.include_router(lifecycle_router, prefix="/api/v1", tags=["lifecycle"])
     return application
 
 

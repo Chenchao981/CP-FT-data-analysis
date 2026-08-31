@@ -16,6 +16,7 @@ import {
 import { formatShanghaiDate, formatUtcDateTime, recentShanghaiDayRange, shanghaiLocalInputToUtc, utcToShanghaiLocalInput } from "../../utils/dateTime";
 import { EChart } from "../../components/EChart";
 import { factoryNames } from "../capabilities/capabilityCatalog";
+import { AnalysisRuleRegistryPanel } from "./AnalysisRuleRegistryPanel";
 
 type QualityFilterValues = Omit<QualitySummaryRequest, "recent_limit" | "from_utc" | "to_utc"> & {
   from_local?: string;
@@ -28,6 +29,8 @@ export interface QualityManagementDashboardProps {
   onOpenAnalytics: (datasetId: number, versionNo: number) => void;
   onOpenJob: (jobId: number) => void;
   canOpenAnalytics: boolean;
+  canReadManagement?: boolean;
+  canGovernRules?: boolean;
 }
 
 const FILTER_KEYS = ["from_utc", "to_utc", "business_domain", "test_stage", "factory_code", "product_name", "lot_id"] as const;
@@ -70,7 +73,7 @@ const breakdownDimensions = [
   { key: "BUSINESS_DOMAIN", label: "按业务域" },
 ] as const;
 
-export function QualityManagementDashboard({ searchParams, onSearchParamsChange, onOpenAnalytics, onOpenJob, canOpenAnalytics }: QualityManagementDashboardProps) {
+export function QualityManagementDashboard({ searchParams, onSearchParamsChange, onOpenAnalytics, onOpenJob, canOpenAnalytics, canReadManagement = true, canGovernRules = false }: QualityManagementDashboardProps) {
   const [form] = Form.useForm<QualityFilterValues>();
   const searchKey = searchParams.toString();
   const request = useMemo<QualitySummaryRequest>(() => ({
@@ -84,6 +87,7 @@ export function QualityManagementDashboard({ searchParams, onSearchParamsChange,
     recent_limit: 20,
   }), [searchKey]);
   useEffect(() => {
+    if (!canReadManagement) return;
     form.resetFields();
     form.setFieldsValue({
       business_domain: request.business_domain,
@@ -94,10 +98,11 @@ export function QualityManagementDashboard({ searchParams, onSearchParamsChange,
       from_local: utcToShanghaiLocalInput(request.from_utc),
       to_local: utcToShanghaiLocalInput(request.to_utc),
     });
-  }, [form, request]);
+  }, [canReadManagement, form, request]);
   const summary = useQuery({
     queryKey: ["management", "quality-summary", request],
     queryFn: () => getQualityManagementSummary(request),
+    enabled: canReadManagement,
   });
   const data = summary.data;
   const trendOption = useMemo<EChartsOption>(() => ({
@@ -220,10 +225,11 @@ export function QualityManagementDashboard({ searchParams, onSearchParamsChange,
         <Typography.Title level={2}>质量与良率管理摘要</Typography.Title>
         <Typography.Text type="secondary">只基于后端返回的正式 Current 事实和已审批口径，UNKNOWN 不会被补成 FAIL 或零。</Typography.Text>
       </div>
-      <Button icon={<ReloadOutlined />} loading={summary.isFetching} onClick={() => void summary.refetch()}>刷新摘要</Button>
+      {canReadManagement && <Button icon={<ReloadOutlined />} loading={summary.isFetching} onClick={() => void summary.refetch()}>刷新摘要</Button>}
     </div>
 
-    {summary.isError && <Alert type="error" showIcon message="质量管理摘要加载失败" description="本页不展示底层连接或 SQL 详情；请稍后刷新。" className="review-alert" />}
+    {!canReadManagement && <><Form form={form} component={false} /><Alert type="info" showIcon message="当前仅开放 Rule Registry" description="当前账户拥有 RULE_GOVERN，但没有 MANAGEMENT_READ；质量摘要和筛选不会请求或展示。" className="review-alert" /></>}
+    {canReadManagement && summary.isError && <Alert type="error" showIcon message="质量管理摘要加载失败" description="本页不展示底层连接或 SQL 详情；请稍后刷新。" className="review-alert" />}
     {data && <>
       <Row gutter={[16, 16]} className="production-stats">
         {cards.map(([title, value, color]) => <Col key={title} xs={24} sm={12} lg={8} xl={4}><Card><Statistic title={title} value={value} valueStyle={{ color }} /></Card></Col>)}
@@ -235,7 +241,7 @@ export function QualityManagementDashboard({ searchParams, onSearchParamsChange,
       </Card>
     </>}
 
-    <Collapse
+    {canReadManagement && <Collapse
       className="review-filter-card"
       defaultActiveKey={["filters"]}
       items={[
@@ -267,7 +273,7 @@ export function QualityManagementDashboard({ searchParams, onSearchParamsChange,
           </Space>,
         }] : []),
       ]}
-    />
+    />}
 
     {data && <>
       <Card title="质量分解" className="production-table-card" style={{ marginBottom: 18 }}>
@@ -285,5 +291,6 @@ export function QualityManagementDashboard({ searchParams, onSearchParamsChange,
         <Table rowKey={(row) => `${row.dataset_id}-${row.version_no}`} columns={recentColumns} dataSource={data.recent_datasets} pagination={false} scroll={{ x: 1900 }} locale={{ emptyText: <Empty description="当前口径没有 Current Dataset" /> }} />
       </Card>
     </>}
+    {canGovernRules && <AnalysisRuleRegistryPanel />}
   </div>;
 }

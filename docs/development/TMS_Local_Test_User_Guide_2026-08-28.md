@@ -13,7 +13,7 @@
    - `worker_ready`
    - `frontend_ready`
 
-同时确认 `database` 与 `worker_database` 都是 `TMS_G0_DEV`，`schema_revision` 与 `worker_schema_revision` 都是当前仓库唯一 head `sql2014_0019`，数据库服务器身份也一致。只要其中一项不一致，就不要提交测试数据。
+同时确认 `database` 与 `worker_database` 都是 `TMS_G0_DEV`，`schema_revision` 与 `worker_schema_revision` 都是当前仓库唯一 head `sql2014_0023`，数据库服务器身份也一致。只要其中一项不一致，就不要提交测试数据。
 
 默认入口关闭登录验证并使用开发管理员身份，便于先验收功能。它仍连接 `.env.runtime.ps1` 指定的 SQL 开发库，上传任务会由常驻 Worker 自动处理。角色和越权验收必须使用 `start_tms_local_test.ps1 -UseConfiguredAuthentication`，不能用免登录结果代替。
 

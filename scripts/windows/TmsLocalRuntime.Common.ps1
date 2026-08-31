@@ -168,6 +168,27 @@ function Assert-TmsLocalDatabaseGuard {
     return $databaseName
 }
 
+function Resolve-TmsLocalAuthenticationContract {
+    param(
+        [switch]$UseConfiguredAuthentication
+    )
+
+    if (-not $UseConfiguredAuthentication) {
+        $env:TMS_AUTH_REQUIRED = 'false'
+        return [PSCustomObject]@{
+            Mode = 'DISABLED_ON_LOOPBACK'
+            AuthRequired = $false
+        }
+    }
+    if ([string]$env:TMS_AUTH_REQUIRED -notmatch '^(?i:true|1|yes|on)$') {
+        throw '-UseConfiguredAuthentication requires TMS_AUTH_REQUIRED=true in the runtime configuration.'
+    }
+    return [PSCustomObject]@{
+        Mode = 'CONFIGURED'
+        AuthRequired = $true
+    }
+}
+
 function Get-TmsLocalRoleContract {
     param(
         [Parameter(Mandatory = $true)]

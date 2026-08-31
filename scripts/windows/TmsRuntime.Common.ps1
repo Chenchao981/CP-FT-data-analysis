@@ -128,6 +128,92 @@ function Assert-TmsNoReparsePath {
     }
 }
 
+function Test-TmsPathWithinDirectory {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Directory
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path).TrimEnd([char[]]'\/')
+    $fullDirectory = [IO.Path]::GetFullPath($Directory).TrimEnd([char[]]'\/')
+    $directoryPrefix = $fullDirectory + [IO.Path]::DirectorySeparatorChar
+    return (
+        $fullPath.Equals($fullDirectory, [StringComparison]::OrdinalIgnoreCase) -or
+        $fullPath.StartsWith($directoryPrefix, [StringComparison]::OrdinalIgnoreCase)
+    )
+}
+
+function Resolve-TmsExternalRuntimePath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Name,
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('Directory', 'File')]
+        [string]$PathType,
+        [Parameter(Mandatory = $true)]
+        [string]$Workspace
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathRooted($Path)) {
+        throw "$Name must be a non-empty absolute path."
+    }
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd([char[]]'\/')
+    $root = [IO.Path]::GetPathRoot($full).TrimEnd([char[]]'\/')
+    if ([string]::IsNullOrWhiteSpace($full) -or $full -eq $root) {
+        throw "$Name cannot be a volume or share root."
+    }
+    $expectedPathType = if ($PathType -eq 'Directory') { 'Container' } else { 'Leaf' }
+    if (-not (Test-Path -LiteralPath $full -PathType $expectedPathType)) {
+        throw "$Name does not exist as a $($PathType.ToLowerInvariant()): $full"
+    }
+    if ($PathType -eq 'File') {
+        $parent = [IO.Path]::GetDirectoryName($full).TrimEnd([char[]]'\/')
+        if ($parent -eq $root) {
+            throw "$Name cannot be stored directly in a volume or share root."
+        }
+    }
+    Assert-TmsNoReparsePath -Name $Name -Path $full
+    if (Test-TmsPathWithinDirectory -Path $full -Directory $Workspace) {
+        throw "$Name must be outside the Release root."
+    }
+    if (
+        $PathType -eq 'Directory' -and
+        (Test-TmsPathWithinDirectory -Path $Workspace -Directory $full)
+    ) {
+        throw "$Name must not contain the Release root."
+    }
+    return $full
+}
+
+function Resolve-TmsExternalRuntimeContract {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Workspace,
+        [Parameter(Mandatory = $true)]
+        [string]$RuntimeHome,
+        [Parameter(Mandatory = $true)]
+        [string]$RuntimeConfigPath,
+        [Parameter(Mandatory = $true)]
+        [string]$PythonPath
+    )
+
+    $resolvedRuntimeHome = Resolve-TmsExternalRuntimePath -Name 'RuntimeHome' -Path $RuntimeHome `
+        -PathType Directory -Workspace $Workspace
+    $config = Resolve-TmsExternalRuntimePath -Name 'RuntimeConfigPath' `
+        -Path $RuntimeConfigPath -PathType File -Workspace $Workspace
+    $python = Resolve-TmsExternalRuntimePath -Name 'PythonPath' -Path $PythonPath `
+        -PathType File -Workspace $Workspace
+    return [PSCustomObject]@{
+        RuntimeHome = $resolvedRuntimeHome
+        RuntimeConfig = $config
+        Python = $python
+    }
+}
+
 function Assert-TmsManagedRootsDoNotOverlap {
     param(
         [Parameter(Mandatory = $true)]
@@ -162,6 +248,7 @@ function Get-TmsManagedRootsFromEnvironment {
         @('Upload', 'TMS_UPLOAD_ROOT'),
         @('Work', 'TMS_WORK_ROOT'),
         @('Quick', 'TMS_QUICK_WORK_ROOT'),
+        @('AnalyticsExport', 'TMS_ANALYTICS_EXPORT_ROOT'),
         @('Log', 'TMS_LOG_DIR')
     )) {
         $raw = [Environment]::GetEnvironmentVariable($definition[1])
@@ -343,8 +430,27 @@ function Get-TmsRuntimeContext {
     )
 
     $workspace = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
-    $runtimeConfig = Join-Path $workspace '.env.runtime.ps1'
-    $python = Join-Path $workspace '.conda-env\python.exe'
+    $runtimeHomeValue = [string]$env:TMS_RUNTIME_HOME
+    $runtimeConfigValue = [string]$env:TMS_RUNTIME_CONFIG_PATH
+    $pythonValue = [string]$env:TMS_PYTHON_PATH
+    $externalValues = @($runtimeHomeValue, $runtimeConfigValue, $pythonValue)
+    $externalValueCount = @($externalValues | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+    $externalRuntime = $externalValueCount -gt 0
+    if ($externalRuntime -and $externalValueCount -ne 3) {
+        throw 'TMS_RUNTIME_HOME, TMS_RUNTIME_CONFIG_PATH and TMS_PYTHON_PATH must be supplied together.'
+    }
+    if ($externalRuntime) {
+        $external = Resolve-TmsExternalRuntimeContract -Workspace $workspace `
+            -RuntimeHome $runtimeHomeValue -RuntimeConfigPath $runtimeConfigValue `
+            -PythonPath $pythonValue
+        $runtimeHome = $external.RuntimeHome
+        $runtimeConfig = $external.RuntimeConfig
+        $python = $external.Python
+    } else {
+        $runtimeHome = $workspace
+        $runtimeConfig = Join-Path $workspace '.env.runtime.ps1'
+        $python = Join-Path $workspace '.conda-env\python.exe'
+    }
     if (-not (Test-Path -LiteralPath $runtimeConfig -PathType Leaf)) {
         throw "Missing runtime configuration: $runtimeConfig"
     }
@@ -356,10 +462,12 @@ function Get-TmsRuntimeContext {
     return [PSCustomObject]@{
         Role = $Role
         Workspace = $workspace
+        RuntimeHome = $runtimeHome
         RuntimeConfig = $runtimeConfig
         Python = $python
         Backend = Join-Path $workspace 'backend'
-        LogDir = Join-Path $workspace 'data\logs'
+        LogDir = if ($externalRuntime) { Join-Path $runtimeHome 'logs' } else { Join-Path $workspace 'data\logs' }
+        ExternalRuntime = $externalRuntime
     }
 }
 
@@ -370,6 +478,12 @@ function Initialize-TmsRuntime {
     )
 
     Import-TmsRuntimeConfig -Path $Context.RuntimeConfig
+    if ($Context.ExternalRuntime) {
+        $env:PYTHONDONTWRITEBYTECODE = '1'
+        $env:PYTHONPATH = $Context.Backend
+        $env:TMS_LOG_DIR = $Context.LogDir
+        New-Item -ItemType Directory -Path $env:TMS_LOG_DIR -Force | Out-Null
+    }
     if ([string]$env:TMS_ENV -eq 'production') {
         Assert-TmsRuntimeConfigContainsNoSecretLiterals -Path $Context.RuntimeConfig
         [void](Assert-TmsProductionRuntime -Workspace $Context.Workspace)

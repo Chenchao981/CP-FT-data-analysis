@@ -1,21 +1,32 @@
 from __future__ import annotations
 
+import hashlib
+import json
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import asdict
+from threading import Barrier, Event, Lock
 from typing import Any
 
+import app.infrastructure.sql_dataset_service as sql_dataset_service_module
 import pytest
 from app.core.errors import DomainError
 from app.domain.auth import Principal
 from app.domain.datasets import (
     DatasetComparisonRequest,
-    DatasetParameterAnalysisRequest,
     DqGateResult,
     PublishDatasetVersionRequest,
 )
+from app.domain.datasets import (
+    DatasetParameterAnalysisRequest as _DatasetParameterAnalysisRequest,
+)
 from app.infrastructure.sql_dataset_service import (
     SqlDatasetService,
+    _analysis_filter_sql,
+    _histogram_spec_region,
     _parameter_analysis_filter_hash,
 )
+from pydantic import ValidationError
 
 _SYSTEM_ADMIN = Principal(
     1,
@@ -299,7 +310,7 @@ class FtChartConnection:
     def execute(self, statement, parameters=None):
         sql = str(statement)
         parameters = parameters or {}
-        if "SELECT DISTINCT tr.run_id" in sql:
+        if "SELECT DISTINCT tr.run_id,tr.lot_id,tr.tester_id" in sql:
             return Result(
                 rows=[
                     {
@@ -318,22 +329,34 @@ class FtChartConnection:
                     },
                 ]
             )
-        if "SELECT DISTINCT tid.sequence_no" in sql:
+        if "run_program_version_id" in sql and "tid.test_item_id" in sql:
             rows = [
                 {
+                    "run_id": 101,
+                    "run_program_version_id": 201,
+                    "test_item_id": 301,
+                    "program_version_id": 201,
+                    "step_code": "HVBCES",
                     "sequence_no": 1,
                     "raw_item_name": "HVBCES",
+                    "canonical_parameter_code": "HVBCES",
                     "unit_code": "kV",
-                    "lsl": 1.29,
-                    "usl": None,
+                    "program_lsl": 1.29,
+                    "program_usl": None,
                     "condition_json": '{"text":"VGE=0V"}',
                 },
                 {
+                    "run_id": 102,
+                    "run_program_version_id": 202,
+                    "test_item_id": 302,
+                    "program_version_id": 202,
+                    "step_code": "HVBCES",
                     "sequence_no": 1,
                     "raw_item_name": "HVBCES",
+                    "canonical_parameter_code": "HVBCES",
                     "unit_code": "kV",
-                    "lsl": 1.27,
-                    "usl": None,
+                    "program_lsl": 1.29,
+                    "program_usl": None,
                     "condition_json": '{"text":"VGE=0V"}',
                 },
             ]
@@ -342,9 +365,11 @@ class FtChartConnection:
             return Result(rows=rows)
         if "SELECT COUNT_BIG(*)" in sql:
             assert parameters["source_run_ids"] == (101,)
+            assert parameters["analysis_test_item_ids"] == (301,)
             return Result(scalar=3)
         if ";WITH points AS" in sql:
             assert parameters["source_run_ids"] == (101,)
+            assert parameters["analysis_test_item_ids"] == (301,)
             return Result(
                 rows=[
                     {
@@ -359,11 +384,47 @@ class FtChartConnection:
         raise AssertionError(sql)
 
 
+class FtSourceFallbackConnection(FtChartConnection):
+    def execute(self, statement, parameters=None):
+        sql = str(statement)
+        if "SELECT DISTINCT tr.run_id,tr.lot_id,tr.tester_id" in sql:
+            return Result(
+                rows=[
+                    {
+                        "run_id": 101,
+                        "lot_id": "LOT-1",
+                        "tester_id": "NCT-SHARED",
+                        "program_version_id": 201,
+                        "metadata_json": "{}",
+                    },
+                    {
+                        "run_id": 102,
+                        "lot_id": "LOT-1",
+                        "tester_id": "NCT-SHARED",
+                        "program_version_id": 202,
+                        "metadata_json": None,
+                    },
+                ]
+            )
+        return super().execute(statement, parameters)
+
+
+class FtChartIdentityConflictConnection(FtChartConnection):
+    def execute(self, statement, parameters=None):
+        sql = str(statement)
+        if "run_program_version_id" in sql and "tid.test_item_id" in sql:
+            result = super().execute(statement, parameters)
+            rows = [dict(row) for row in result.rows]
+            rows[1]["condition_json"] = '{"text":"VGE=0V","bias1":"2V"}'
+            return Result(rows=rows)
+        return super().execute(statement, parameters)
+
+
 class FtMultiLotSpecConnection:
     def execute(self, statement, parameters=None):
         sql = str(statement)
         parameters = parameters or {}
-        if "SELECT DISTINCT tr.run_id" in sql:
+        if "SELECT DISTINCT tr.run_id,tr.lot_id,tr.tester_id" in sql:
             rows = [
                 {
                     "run_id": 101,
@@ -385,23 +446,35 @@ class FtMultiLotSpecConnection:
             ):
                 rows = [row for row in rows if row["lot_id"] == parameters["lot_id"]]
             return Result(rows=rows)
-        if "SELECT DISTINCT tid.sequence_no" in sql:
+        if "run_program_version_id" in sql and "tid.test_item_id" in sql:
             rows = [
                 {
+                    "run_id": 101,
+                    "run_program_version_id": 201,
+                    "test_item_id": 301,
+                    "program_version_id": 201,
+                    "step_code": "HVBCES",
                     "sequence_no": 1,
                     "raw_item_name": "HVBCES",
+                    "canonical_parameter_code": "HVBCES",
                     "unit_code": "kV",
-                    "lsl": 1.29,
-                    "usl": None,
+                    "program_lsl": 1.29,
+                    "program_usl": None,
                     "condition_json": '{"text":"LOT-1 condition"}',
                     "lot_id": "LOT-1",
                 },
                 {
+                    "run_id": 102,
+                    "run_program_version_id": 202,
+                    "test_item_id": 302,
+                    "program_version_id": 202,
+                    "step_code": "HVBCES",
                     "sequence_no": 1,
                     "raw_item_name": "HVBCES",
+                    "canonical_parameter_code": "HVBCES",
                     "unit_code": "kV",
-                    "lsl": 1.17,
-                    "usl": None,
+                    "program_lsl": 1.17,
+                    "program_usl": None,
                     "condition_json": '{"text":"LOT-2 condition"}',
                     "lot_id": "LOT-2",
                 },
@@ -595,45 +668,131 @@ class CompareConnection:
         spec_ids: dict[int, int | None],
         aggregates: dict[int, dict[str, int]],
         parameter_rows: dict[int, list[dict[str, Any]]] | None = None,
+        identity_rows: dict[int, list[dict[str, Any]]] | None = None,
     ) -> None:
         self.stage = stage
         self.spec_ids = spec_ids
         self.aggregates = aggregates
         self.parameter_rows = parameter_rows or {}
+        self.identity_rows = identity_rows or {}
         self.executed: list[tuple[str, dict[str, object]]] = []
 
     def execute(self, statement, parameters=None):
         sql = str(statement)
         parameters = parameters or {}
         self.executed.append((sql, parameters))
-        dataset_id = int(parameters.get("dataset_id", 0))
-        if "FROM dataset.dataset_version dv" in sql and "d.supplier_id" in sql:
+        selected: list[tuple[int, int, int]] = []
+        ordinal = 1
+        while f"compare_dataset_id_{ordinal}" in parameters:
+            selected.append(
+                (
+                    ordinal,
+                    int(parameters[f"compare_dataset_id_{ordinal}"]),
+                    int(parameters[f"compare_version_no_{ordinal}"]),
+                )
+            )
+            ordinal += 1
+        if "COMPARE_CONTEXT_SET" in sql:
             return Result(
                 rows=[
                     {
+                        "ordinal_no": ordinal_no,
                         "dataset_version_id": dataset_id * 10,
                         "dataset_id": dataset_id,
-                        "version_no": int(parameters["version_no"]),
+                        "version_no": version_no,
                         "input_batch_id": dataset_id * 100,
                         "canonical_model_version": "1.0",
                         "status": "PUBLISHED",
                         "is_current": True,
+                        "unit_count": self.aggregates.get(dataset_id, {}).get(
+                            "unit_count", 0
+                        ),
                         "supplier_id": 2,
                         "product_id": 3,
                         "test_stage": self.stage,
                         "product_name": f"PRODUCT-{dataset_id}",
                         "spec_set_id": self.spec_ids[dataset_id],
                     }
+                    for ordinal_no, dataset_id, version_no in selected
                 ]
             )
-        if "COUNT_BIG(*) AS unit_count" in sql:
+        if "COMPARE_UNIT_AGGREGATE_SET" in sql:
             for result in ("PASS", "FAIL", "UNKNOWN", "ABORT"):
                 assert f"ur.overall_result='{result}'" in sql
             assert "CONVERT(bigint,1)" in sql
-            return Result(rows=[self.aggregates[dataset_id]])
-        if "COUNT_BIG(*) AS row_count" in sql:
-            assert "analysis_parameters" in parameters
-            return Result(rows=self.parameter_rows.get(dataset_id, []))
+            return Result(
+                rows=[
+                    {
+                        "ordinal_no": ordinal_no,
+                        "dataset_id": dataset_id,
+                        "version_no": version_no,
+                        **self.aggregates[dataset_id],
+                    }
+                    for ordinal_no, dataset_id, version_no in selected
+                ]
+            )
+        if "COMPARE_PARAMETER_IDENTITY_SET" in sql:
+            rows: list[dict[str, Any]] = []
+            for ordinal_no, dataset_id, version_no in selected:
+                if dataset_id in self.identity_rows:
+                    dataset_rows = self.identity_rows[dataset_id]
+                else:
+                    dataset_rows = []
+                    for sequence_no, row in enumerate(
+                        self.parameter_rows.get(dataset_id, []), start=1
+                    ):
+                        name = str(row["raw_item_name"])
+                        dataset_rows.append(
+                            {
+                                "run_id": dataset_id * 1_000,
+                                "run_program_version_id": dataset_id * 10,
+                                "test_item_id": dataset_id * 100 + sequence_no,
+                                "program_version_id": dataset_id * 10,
+                                "step_code": name,
+                                "sequence_no": sequence_no,
+                                "raw_item_name": name,
+                                "canonical_parameter_code": name,
+                                "unit_code": row["unit_code"],
+                                "program_lsl": row["program_lsl"],
+                                "program_usl": row["program_usl"],
+                                "condition_json": row["condition_json"],
+                            }
+                        )
+                rows.extend(
+                    {
+                        "ordinal_no": ordinal_no,
+                        "dataset_id": dataset_id,
+                        "version_no": version_no,
+                        **row,
+                    }
+                    for row in dataset_rows
+                )
+            return Result(rows=rows)
+        if "COMPARE_PARAMETER_AGGREGATE_SET" in sql:
+            assert "analysis_test_item_ids" in parameters
+            assert "m.test_item_id IN" in sql
+            assert "tid.raw_item_name IN" not in sql
+            rows = []
+            for ordinal_no, dataset_id, version_no in selected:
+                for sequence_no, row in enumerate(
+                    self.parameter_rows.get(dataset_id, []), start=1
+                ):
+                    measured = int(row["row_count"]) - int(row["missing_count"])
+                    rows.append(
+                        {
+                            "ordinal_no": ordinal_no,
+                            "dataset_id": dataset_id,
+                            "version_no": version_no,
+                            "test_item_id": dataset_id * 100 + sequence_no,
+                            **row,
+                            "numeric_sum": (
+                                float(row["average"]) * measured
+                                if row["average"] is not None
+                                else None
+                            ),
+                        }
+                    )
+            return Result(rows=rows)
         raise AssertionError(sql)
 
 
@@ -674,6 +833,26 @@ class DetailConnection:
             return Result(rows=[("1",), ("UNKNOWN",)])
         if "SELECT DISTINCT tid.raw_item_name" in sql:
             return Result(rows=[("P1",), ("P2",)])
+        if "run_program_version_id" in sql and "tid.test_item_id" in sql:
+            assert parameters["analysis_parameters"] == ("P1",)
+            return Result(
+                rows=[
+                    {
+                        "run_id": 1001,
+                        "run_program_version_id": 201,
+                        "test_item_id": 301,
+                        "program_version_id": 201,
+                        "step_code": "P1",
+                        "sequence_no": 1,
+                        "raw_item_name": "P1",
+                        "canonical_parameter_code": "P1",
+                        "unit_code": "V",
+                        "program_lsl": 0.0,
+                        "program_usl": 5.0,
+                        "condition_json": None,
+                    }
+                ]
+            )
         if sql.startswith("SELECT COUNT_BIG(*)"):
             return Result(scalar=3)
         if "SELECT ur.unit_id,ur.logical_unit_key" in sql:
@@ -698,7 +877,9 @@ class DetailConnection:
             )
         if "FROM test.measurement m" in sql:
             assert parameters["unit_ids"] == (101,)
-            assert parameters["detail_parameters"] == ("P1",)
+            assert parameters["detail_test_item_ids"] == (301,)
+            assert "m.test_item_id IN" in sql
+            assert "tid.raw_item_name IN" not in sql
             return Result(
                 rows=[
                     {
@@ -714,6 +895,38 @@ class DetailConnection:
                 ]
             )
         raise AssertionError(sql)
+
+
+class DetailIdentityConflictConnection(DetailConnection):
+    def execute(self, statement, parameters=None):
+        sql = str(statement)
+        if "run_program_version_id" in sql and "tid.test_item_id" in sql:
+            first = {
+                "run_id": 1001,
+                "run_program_version_id": 201,
+                "test_item_id": 301,
+                "program_version_id": 201,
+                "step_code": "STEP_P1",
+                "sequence_no": 1,
+                "raw_item_name": "P1",
+                "canonical_parameter_code": "P1",
+                "unit_code": "V",
+                "program_lsl": 0.0,
+                "program_usl": 5.0,
+                "condition_json": None,
+            }
+            return Result(
+                rows=[
+                    first,
+                    {
+                        **first,
+                        "test_item_id": 302,
+                        "step_code": "STEP_P1_ALT",
+                        "sequence_no": 2,
+                    },
+                ]
+            )
+        return super().execute(statement, parameters)
 
 
 def _analysis_aggregate_row(
@@ -764,6 +977,8 @@ class ParameterAnalysisConnection:
         box_rows: list[dict[str, Any]] | None = None,
         histogram_rows: list[dict[str, Any]] | None = None,
         subgroup_rows: list[dict[str, Any]] | None = None,
+        box_outlier_rows: list[dict[str, Any]] | None = None,
+        distribution_evidence_rows: list[dict[str, Any]] | None = None,
     ) -> None:
         self.stage_by_dataset = stage_by_dataset or {}
         self.status_by_dataset = status_by_dataset or {}
@@ -805,6 +1020,10 @@ class ParameterAnalysisConnection:
                     "range_max": 100.0,
                     "bin_index": 0,
                     "bin_value_count": 7,
+                    "representative_measurement_id": 9001,
+                    "representative_unit_id": 801,
+                    "representative_value": 1.0,
+                    "representative_spec_status": "IN_SPEC",
                 },
                 {
                     "raw_item_name": "P1",
@@ -812,10 +1031,64 @@ class ParameterAnalysisConnection:
                     "range_max": 100.0,
                     "bin_index": 19,
                     "bin_value_count": 1,
+                    "representative_measurement_id": 9002,
+                    "representative_unit_id": 802,
+                    "representative_value": 100.0,
+                    "representative_spec_status": "OUT_OF_SPEC",
                 },
             ]
         )
+        for row_number, histogram_row in enumerate(self.histogram_rows, start=1):
+            if int(histogram_row.get("bin_value_count") or 0) > 0:
+                histogram_row.setdefault(
+                    "representative_measurement_id", 9000 + row_number
+                )
+                histogram_row.setdefault("representative_unit_id", 800 + row_number)
+                histogram_row.setdefault(
+                    "representative_value", histogram_row["range_min"]
+                )
+                histogram_row.setdefault("representative_spec_status", "IN_SPEC")
         self.subgroup_rows = subgroup_rows or []
+        self.box_outlier_rows = (
+            box_outlier_rows
+            if box_outlier_rows is not None
+            else (
+                [
+                    {
+                        "raw_item_name": "P1",
+                        "measurement_id": 9002,
+                        "unit_id": 802,
+                        "value_numeric": float(self.box_rows[0]["maximum"]),
+                        "spec_status": "NO_SPEC",
+                        "original_points": int(self.box_rows[0]["outlier_count"]),
+                    }
+                ]
+                if self.box_rows and int(self.box_rows[0]["outlier_count"] or 0)
+                else []
+            )
+        )
+        self.distribution_evidence_rows = (
+            distribution_evidence_rows
+            if distribution_evidence_rows is not None
+            else [
+                {
+                    "raw_item_name": "P1",
+                    "measurement_id": 9001,
+                    "unit_id": 801,
+                    "value_numeric": 1.0,
+                    "spec_status": "IN_SPEC",
+                    "original_points": self.aggregate_rows[0]["numeric_count"],
+                },
+                {
+                    "raw_item_name": "P1",
+                    "measurement_id": 9002,
+                    "unit_id": 802,
+                    "value_numeric": 100.0,
+                    "spec_status": "OUT_OF_SPEC",
+                    "original_points": self.aggregate_rows[0]["numeric_count"],
+                },
+            ]
+        )
         self.executed: list[tuple[str, dict[str, object]]] = []
 
     @staticmethod
@@ -831,8 +1104,8 @@ class ParameterAnalysisConnection:
                 "raw_item_name": "P1",
                 "canonical_parameter_code": "P1",
                 "unit_code": "V",
-                "program_lsl": 0.0,
-                "program_usl": 10.0,
+                "program_lsl": 100.0,
+                "program_usl": 500.0,
                 "condition_json": '{"text":"VGS=0V"}',
             }
         ]
@@ -849,10 +1122,13 @@ class ParameterAnalysisConnection:
                 "wafer_id": "01",
                 "raw_item_name": "P1",
                 "spec_set_id": spec_set_id,
+                "version_code": "v1",
                 "spec_item_id": spec_set_id * 10 + 1,
                 "unit_code": "V",
                 "lsl": 0.0,
                 "usl": 10.0,
+                "lower_operator": ">=",
+                "upper_operator": "<=",
                 "condition_json": '{"text":"VGS=0V"}',
             }
         ]
@@ -862,6 +1138,77 @@ class ParameterAnalysisConnection:
         parameters = parameters or {}
         self.executed.append((sql, parameters))
         dataset_id = int(parameters.get("dataset_id", 1))
+        if "MULTI_PARAMETER_CONTEXT_IDENTITIES" in sql:
+            rows: list[dict[str, Any]] = []
+            ordinal = 1
+            while f"compare_dataset_id_{ordinal}" in parameters:
+                scoped_dataset_id = int(parameters[f"compare_dataset_id_{ordinal}"])
+                context = {
+                    "ordinal_no": ordinal,
+                    "dataset_version_id": scoped_dataset_id * 10,
+                    "access_batch_id": scoped_dataset_id * 100,
+                    "dataset_id": scoped_dataset_id,
+                    "version_no": int(parameters[f"compare_version_no_{ordinal}"]),
+                    "input_batch_id": scoped_dataset_id * 100,
+                    "canonical_model_version": "1.0",
+                    "status": self.status_by_dataset.get(
+                        scoped_dataset_id, "PUBLISHED"
+                    ),
+                    "is_current": self.current_by_dataset.get(scoped_dataset_id, True),
+                    "unit_count": 10,
+                    "supplier_id": 2,
+                    "product_id": 3,
+                    "test_stage": self.stage_by_dataset.get(scoped_dataset_id, "CP"),
+                    "product_name": f"PRODUCT-{scoped_dataset_id}",
+                    "spec_set_id": self.context_spec_by_dataset.get(
+                        scoped_dataset_id, 7
+                    ),
+                }
+                identity_rows = self.identity_rows_by_dataset.get(
+                    scoped_dataset_id, self._identity_rows()
+                )
+                if identity_rows:
+                    rows.extend({**context, **identity} for identity in identity_rows)
+                else:
+                    rows.append(
+                        {
+                            **context,
+                            **{
+                                field: None
+                                for field in (
+                                    "run_id",
+                                    "run_program_version_id",
+                                    "test_item_id",
+                                    "program_version_id",
+                                    "step_code",
+                                    "sequence_no",
+                                    "raw_item_name",
+                                    "canonical_parameter_code",
+                                    "unit_code",
+                                    "program_lsl",
+                                    "program_usl",
+                                    "condition_json",
+                                )
+                            },
+                        }
+                    )
+                ordinal += 1
+            return Result(rows=rows)
+        if "MULTI_PARAMETER_DESCRIPTIVE" in sql:
+            rows = []
+            ordinal = 1
+            while f"batch_dataset_id_{ordinal}" in parameters:
+                assert parameters[f"batch_test_item_ids_{ordinal}"] == (301,)
+                rows.extend(
+                    {
+                        **row,
+                        "ordinal_no": ordinal,
+                        "matched_unit_count": self.matched_unit_count,
+                    }
+                    for row in self.aggregate_rows
+                )
+                ordinal += 1
+            return Result(rows=rows)
         if "FROM dataset.dataset_version dv" in sql and "d.supplier_id" in sql:
             return Result(
                 rows=[
@@ -916,6 +1263,12 @@ class ParameterAnalysisConnection:
         if "AS status_measured" in sql:
             assert parameters["analysis_test_item_ids"] == (301,)
             return Result(rows=self.aggregate_rows)
+        if "BOX_OUTLIER_EVIDENCE" in sql:
+            assert parameters["analysis_test_item_ids"] == (301,)
+            return Result(rows=self.box_outlier_rows)
+        if "DISTRIBUTION_EVIDENCE" in sql:
+            assert parameters["analysis_test_item_ids"] == (301,)
+            return Result(rows=self.distribution_evidence_rows)
         if "quartiles AS" in sql:
             assert parameters["analysis_test_item_ids"] == (301,)
             return Result(rows=self.box_rows)
@@ -938,17 +1291,160 @@ class ParameterAnalysisConnection:
         raise AssertionError(sql)
 
 
+class _BlockingParameterAnalysisConnection(ParameterAnalysisConnection):
+    def __init__(
+        self,
+        *,
+        expected_aggregate_starts: int = 1,
+        fail_aggregate: bool = False,
+    ) -> None:
+        super().__init__()
+        self.expected_aggregate_starts = expected_aggregate_starts
+        self.fail_aggregate = fail_aggregate
+        self.aggregate_started = Event()
+        self.release_aggregate = Event()
+        self.aggregate_calls = 0
+        self._aggregate_lock = Lock()
+
+    def execute(self, statement, parameters=None):
+        result = super().execute(statement, parameters)
+        if "MULTI_PARAMETER_DESCRIPTIVE" in str(statement):
+            with self._aggregate_lock:
+                self.aggregate_calls += 1
+                if self.aggregate_calls >= self.expected_aggregate_starts:
+                    self.aggregate_started.set()
+            if not self.release_aggregate.wait(timeout=5):
+                raise AssertionError("timed out waiting to release parameter aggregate")
+            if self.fail_aggregate:
+                raise DomainError(
+                    "ANALYSIS_TEST_FAILURE",
+                    "parameter aggregate failed",
+                    409,
+                    details=[{"phase": "aggregate"}],
+                )
+        return result
+
+
+class _TrackingFlightEvent:
+    def __init__(self, wait_started: Event) -> None:
+        self._event = Event()
+        self._wait_started = wait_started
+
+    def wait(self, timeout=None):
+        self._wait_started.set()
+        return self._event.wait(timeout)
+
+    def set(self) -> None:
+        self._event.set()
+
+
+def _parameter_analysis_business_digest(result) -> str:
+    payload = asdict(result)
+    payload.pop("computed_at")
+    return hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+class _ApprovedParameterRuleService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def approved_rule_parameters(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        assert kwargs["supplier_id"] == 2
+        assert kwargs["product_id"] == 3
+        assert kwargs["parameter"] == "P1"
+        algorithm = str(kwargs["expected_algorithm_code"])
+        parameters: dict[str, object] = {
+            "missing_value_policy": "EXCLUDE_AND_COUNT",
+            "retest_policy": "EACH_ATTEMPT",
+            "outlier_policy": "MARK_ONLY",
+            "minimum_sample_size": 2,
+        }
+        if algorithm == "TUKEY_BOX_V1":
+            parameters["whisker_multiplier"] = 1.5
+        elif algorithm == "EQUAL_WIDTH_HISTOGRAM_V1":
+            parameters["histogram_bin_count"] = 20
+        elif algorithm == "CPK_POOLED_WITHIN_RUN_V1":
+            parameters.update(
+                sigma_definition="POOLED_WITHIN", subgroup_dimension="RUN"
+            )
+        elif algorithm == "CPK_POOLED_WITHIN_LOT_WAFER_V1":
+            parameters.update(
+                sigma_definition="POOLED_WITHIN", subgroup_dimension="LOT_WAFER"
+            )
+        elif algorithm != "NORMAL_FIT_MLE_V1":
+            raise AssertionError(algorithm)
+        return parameters
+
+
+class _DeniedParameterRuleService:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def approved_rule_parameters(self, **kwargs):
+        self.calls.append(dict(kwargs))
+        raise DomainError(
+            "ANALYSIS_RULE_NOT_APPROVED",
+            "requested rule is not approved for this exact scope",
+            409,
+            details=[
+                {
+                    "rule_code": kwargs["rule_code"],
+                    "version_code": kwargs["version_code"],
+                }
+            ],
+        )
+
+
+def DatasetParameterAnalysisRequest(**kwargs):
+    """Keep legacy fixtures concise while exercising exact Registry references."""
+    payload = dict(kwargs)
+    analyses = {
+        str(item.value if hasattr(item, "value") else item)
+        for item in payload.get("analyses", ["DESCRIPTIVE"])
+    }
+    if "BOX_PLOT" in analyses:
+        payload.setdefault("box_plot", {"rule_code": "BOX_RULE", "version_code": "v1"})
+    if "HISTOGRAM" in analyses:
+        payload["histogram"] = {
+            "rule_code": "HISTOGRAM_RULE",
+            "version_code": "v1",
+        }
+    if "NORMAL_FIT" in analyses:
+        payload.setdefault(
+            "normal_fit", {"rule_code": "NORMAL_FIT_RULE", "version_code": "v1"}
+        )
+    if "CAPABILITY" in analyses:
+        legacy = dict(payload.get("capability") or {})
+        method = str(
+            legacy.get("method")
+            or legacy.get("rule_code")
+            or "CPK_POOLED_WITHIN_RUN_V1"
+        )
+        rule_code = (
+            "CPK_LOT_WAFER_RULE"
+            if method == "CPK_POOLED_WITHIN_LOT_WAFER_V1"
+            else "CPK_RUN_RULE"
+        )
+        payload["capability"] = {
+            "method": method,
+            "rule_code": rule_code,
+            "version_code": "v1",
+        }
+    return _DatasetParameterAnalysisRequest(**payload)
+
+
 def _approved_parameter_analysis_service(connection) -> SqlDatasetService:
     return SqlDatasetService(
         Engine(connection),  # type: ignore[arg-type]
-        approved_parameter_analysis_rule_codes=frozenset(
-            {
-                "TUKEY_1_5_IQR_PERCENTILE_CONT_LINEAR_V1",
-                "EQUAL_WIDTH_FIXED_BINS_LAST_CLOSED_V1",
-                "CPK_POOLED_WITHIN_RUN_V1",
-                "CPK_POOLED_WITHIN_LOT_WAFER_V1",
-            }
-        ),
+        rule_service=_ApprovedParameterRuleService(),  # type: ignore[arg-type]
     )
 
 
@@ -1000,7 +1496,67 @@ def test_ft_charts_keep_source_file_runs_distinct_from_physical_tester() -> None
 
     assert result.source_options == ("SOURCE-RUN-A", "SOURCE-RUN-B")
     assert len(result.parameter_options) == 1
-    assert result.parameter_options[0].lsl is None
+    assert result.parameter_options[0].lsl == 1.29
+
+
+def test_ft_charts_use_run_identity_when_source_metadata_is_missing() -> None:
+    connection = FtSourceFallbackConnection()
+
+    result = SqlDatasetService(Engine(connection))._get_ft_chart_data(  # type: ignore[arg-type]
+        connection,  # type: ignore[arg-type]
+        {
+            "dataset_id": 1,
+            "version_no": 1,
+            "test_stage": "FT",
+            "product_name": "PRODUCT-1",
+            "spec_set_id": None,
+        },
+        {
+            "dataset_id": 1,
+            "version_no": 1,
+            "lot_id": None,
+            "wafer_id": None,
+            "source_id": "RUN-101",
+            "parameter": "HVBCES",
+        },
+        " FROM dataset.dataset_version dv JOIN dataset.dataset_version_run dvr "
+        "ON dvr.dataset_version_id=dv.dataset_version_id JOIN test.test_run tr "
+        "ON tr.processing_run_id=dvr.processing_run_id ",
+    )
+
+    assert result.source_options == ("RUN-101", "RUN-102")
+    assert result.selected_source_id == "RUN-101"
+    assert result.ft_total_point_count == 3
+    assert result.ft_parameter_points[0].source_id == "RUN-101"
+
+
+def test_ft_charts_fail_closed_on_same_name_condition_identity_conflict() -> None:
+    connection = FtChartIdentityConflictConnection()
+
+    with pytest.raises(DomainError) as error:
+        SqlDatasetService(Engine(connection))._get_ft_chart_data(  # type: ignore[arg-type]
+            connection,  # type: ignore[arg-type]
+            {
+                "dataset_id": 1,
+                "version_no": 1,
+                "test_stage": "FT",
+                "product_name": "PRODUCT-1",
+                "spec_set_id": None,
+            },
+            {
+                "dataset_id": 1,
+                "version_no": 1,
+                "lot_id": None,
+                "wafer_id": None,
+                "source_id": None,
+                "parameter": None,
+            },
+            " FROM dataset.dataset_version dv JOIN dataset.dataset_version_run dvr "
+            "ON dvr.dataset_version_id=dv.dataset_version_id JOIN test.test_run tr "
+            "ON tr.processing_run_id=dvr.processing_run_id ",
+        )
+
+    assert error.value.code == "ANALYSIS_PARAMETER_INCOMPATIBLE"
 
 
 def test_ft_charts_resolve_the_selected_source_run_spec_and_points() -> None:
@@ -1458,6 +2014,72 @@ def test_ft_compare_aggregates_without_inventing_unknown_yield() -> None:
     assert result.items[1].yield_rate == pytest.approx(0.7)
 
 
+def test_compare_eight_datasets_and_five_parameters_uses_four_set_queries() -> None:
+    dataset_ids = tuple(range(1, 9))
+    parameter_rows = [
+        {
+            "raw_item_name": f"P{index}",
+            "unit_code": "V",
+            "program_lsl": 0.0,
+            "program_usl": 5.0,
+            "condition_json": '{"text":"VGS=0V"}',
+            "row_count": 100,
+            "missing_count": 1,
+            "minimum": 0.1,
+            "maximum": 4.9,
+            "average": 2.5,
+        }
+        for index in range(1, 6)
+    ]
+    connection = CompareConnection(
+        stage="FT",
+        spec_ids={dataset_id: None for dataset_id in dataset_ids},
+        aggregates={
+            dataset_id: {
+                "unit_count": 100,
+                "pass_count": 0,
+                "fail_count": 0,
+                "unknown_count": 100,
+                "abort_count": 0,
+            }
+            for dataset_id in dataset_ids
+        },
+        parameter_rows={dataset_id: parameter_rows for dataset_id in dataset_ids},
+    )
+
+    result = SqlDatasetService(Engine(connection)).compare(  # type: ignore[arg-type]
+        DatasetComparisonRequest(
+            datasets=[
+                {"dataset_id": dataset_id, "version_no": 1}
+                for dataset_id in dataset_ids
+            ],
+            parameters=[f"P{index}" for index in range(1, 6)],
+        )
+    )
+
+    assert len(result.items) == 8
+    assert all(len(item.parameter_statistics) == 5 for item in result.items)
+    assert len(connection.executed) == 4
+    assert [
+        next(
+            marker
+            for marker in (
+                "COMPARE_CONTEXT_SET",
+                "COMPARE_UNIT_AGGREGATE_SET",
+                "COMPARE_PARAMETER_IDENTITY_SET",
+                "COMPARE_PARAMETER_AGGREGATE_SET",
+            )
+            if marker in sql
+        )
+        for sql, _ in connection.executed
+    ] == [
+        "COMPARE_CONTEXT_SET",
+        "COMPARE_UNIT_AGGREGATE_SET",
+        "COMPARE_PARAMETER_IDENTITY_SET",
+        "COMPARE_PARAMETER_AGGREGATE_SET",
+    ]
+
+
 def test_ft_compare_rejects_selected_parameter_unit_conflict() -> None:
     base_row = {
         "raw_item_name": "HVBCES",
@@ -1500,6 +2122,81 @@ def test_ft_compare_rejects_selected_parameter_unit_conflict() -> None:
         SqlDatasetService(Engine(connection)).compare(request)  # type: ignore[arg-type]
 
     assert error.value.code == "ANALYSIS_PARAMETER_INCOMPATIBLE"
+
+
+@pytest.mark.parametrize(
+    ("field", "conflicting_value"),
+    (
+        ("step_code", "STEP_P1_ALT"),
+        ("sequence_no", 2),
+        ("canonical_parameter_code", "P1_ALT"),
+        ("condition_json", '{"text":"VGS=0V","bias1":"2V"}'),
+    ),
+    ids=("step", "sequence", "canonical", "condition"),
+)
+def test_compare_fails_closed_on_same_name_identity_conflict(
+    field: str, conflicting_value: object
+) -> None:
+    parameter_row = {
+        "raw_item_name": "P1",
+        "unit_code": "V",
+        "program_lsl": 0.0,
+        "program_usl": 5.0,
+        "condition_json": '{"text":"VGS=0V"}',
+        "row_count": 2,
+        "missing_count": 0,
+        "minimum": 1.0,
+        "maximum": 2.0,
+        "average": 1.5,
+    }
+    first_identity = {
+        "run_id": 101,
+        "run_program_version_id": 201,
+        "test_item_id": 301,
+        "program_version_id": 201,
+        "step_code": "STEP_P1",
+        "sequence_no": 1,
+        "raw_item_name": "P1",
+        "canonical_parameter_code": "P1",
+        "unit_code": "V",
+        "program_lsl": 0.0,
+        "program_usl": 5.0,
+        "condition_json": '{"text":"VGS=0V"}',
+    }
+    second_identity = {
+        **first_identity,
+        "run_id": 102,
+        "run_program_version_id": 202,
+        "test_item_id": 302,
+        "program_version_id": 202,
+        field: conflicting_value,
+    }
+    connection = CompareConnection(
+        stage="FT",
+        spec_ids={1: None},
+        aggregates={
+            1: {
+                "unit_count": 2,
+                "pass_count": 2,
+                "fail_count": 0,
+                "unknown_count": 0,
+                "abort_count": 0,
+            }
+        },
+        parameter_rows={1: [parameter_row]},
+        identity_rows={1: [first_identity, second_identity]},
+    )
+
+    with pytest.raises(DomainError) as error:
+        SqlDatasetService(Engine(connection)).compare(  # type: ignore[arg-type]
+            DatasetComparisonRequest(
+                datasets=[{"dataset_id": 1, "version_no": 1}],
+                parameters=["P1"],
+            )
+        )
+
+    assert error.value.code == "ANALYSIS_PARAMETER_INCOMPATIBLE"
+    assert all("COUNT_BIG(*) AS row_count" not in sql for sql, _ in connection.executed)
 
 
 def test_compare_rejects_non_reconciling_status_aggregates() -> None:
@@ -1553,6 +2250,50 @@ def test_detail_page_uses_sql2014_pagination_and_preserves_nulls() -> None:
     assert "OFFSET :offset ROWS FETCH NEXT :page_size ROWS ONLY" in unit_query[0]
     assert "STRING_AGG" not in unit_query[0]
     assert "OPENJSON" not in unit_query[0]
+
+
+def test_detail_page_binds_measurements_to_exact_analysis_test_item_ids() -> None:
+    connection = DetailConnection()
+
+    result = SqlDatasetService(Engine(connection)).get_detail_page(  # type: ignore[arg-type]
+        1,
+        1,
+        page=1,
+        page_size=50,
+        parameters=("P1",),
+    )
+
+    assert result.items[0].measurements[0].parameter == "P1"
+    measurement_sql, measurement_parameters = next(
+        (sql, parameters)
+        for sql, parameters in connection.executed
+        if "FROM test.measurement m" in sql
+    )
+    assert measurement_parameters["detail_test_item_ids"] == (301,)
+    assert "m.test_item_id IN" in measurement_sql
+    assert "tid.raw_item_name IN" not in measurement_sql
+    identity_sql = next(
+        sql
+        for sql, _ in connection.executed
+        if "run_program_version_id" in sql and "tid.test_item_id" in sql
+    )
+    assert "tid.is_analysis_parameter=1" in identity_sql
+
+
+def test_detail_page_fails_closed_on_duplicate_same_name_step_identity() -> None:
+    connection = DetailIdentityConflictConnection()
+
+    with pytest.raises(DomainError) as error:
+        SqlDatasetService(Engine(connection)).get_detail_page(  # type: ignore[arg-type]
+            1,
+            1,
+            page=1,
+            page_size=50,
+            parameters=("P1",),
+        )
+
+    assert error.value.code == "ANALYSIS_PARAMETER_INCOMPATIBLE"
+    assert all("FROM test.measurement m" not in sql for sql, _ in connection.executed)
 
 
 def test_detail_page_allows_empty_page_beyond_total() -> None:
@@ -1621,10 +2362,10 @@ def test_parameter_analysis_returns_tukey_box_histogram_and_filter_summary() -> 
     assert result.dataset_context.resolved_datasets[0].dataset_id == 1
     assert len(result.filter_summary.filter_hash) == 64
     assert result.filter_summary.normalized_filters.source_ids == ("SOURCE-A",)
-    assert result.rule_context.spec_versions == ("SPEC_SET:7",)
+    assert result.rule_context.spec_versions == ("SPEC:7:v1",)
     assert result.rule_context.evaluation_rule_versions == (
-        "TUKEY_1_5_IQR_PERCENTILE_CONT_LINEAR_V1",
-        "EQUAL_WIDTH_FIXED_BINS_LAST_CLOSED_V1",
+        "RULE:BOX_RULE:v1:TUKEY_BOX_V1",
+        "RULE:HISTOGRAM_RULE:v1:EQUAL_WIDTH_HISTOGRAM_V1",
     )
     assert result.counts.input_units == 10
     assert result.counts.included_units == 8
@@ -1648,12 +2389,21 @@ def test_parameter_analysis_returns_tukey_box_histogram_and_filter_summary() -> 
     assert parameter.box_plot.lower_whisker == pytest.approx(1.0)
     assert parameter.box_plot.upper_whisker == pytest.approx(7.0)
     assert parameter.box_plot.outlier_count == 1
-    assert parameter.box_plot.method == "TUKEY_1_5_IQR_PERCENTILE_CONT_LINEAR_V1"
+    assert parameter.box_plot.method == "TUKEY_BOX_V1"
+    assert parameter.box_plot.outlier_sampling is not None
+    assert parameter.box_plot.outlier_sampling.original_points == 1
+    assert parameter.box_plot.outlier_sampling.returned_points == 1
+    assert parameter.box_plot.outlier_evidence[0].measurement_id == 9002
+    assert parameter.box_plot.outlier_evidence[0].drilldown_key == "UNIT:802"
     assert parameter.histogram is not None
     assert parameter.histogram.bin_count == 20
-    assert parameter.histogram.method == "EQUAL_WIDTH_FIXED_BINS_LAST_CLOSED_V1"
+    assert parameter.histogram.method == "EQUAL_WIDTH_HISTOGRAM_V1"
     assert sum(bucket.count for bucket in parameter.histogram.bins) == 8
     assert parameter.histogram.bins[-1].upper_inclusive is True
+    assert parameter.histogram.bins[-1].spec_region == "OUT_OF_SPEC"
+    assert parameter.histogram.bins[-1].aggregate_drilldown_context is not None
+    assert parameter.histogram.bins[-1].aggregate_drilldown_context.dataset_id == 1
+    assert parameter.histogram.bins[-1].aggregate_drilldown_context.parameter == "P1"
     aggregate_sql, aggregate_params = next(
         (sql, params)
         for sql, params in connection.executed
@@ -1675,6 +2425,9 @@ def test_parameter_analysis_filter_hash_is_order_independent_within_dimensions()
         bin_codes=("2", "1"),
         overall_results=("UNKNOWN", "PASS"),
         source_ids=("SOURCE-B", "SOURCE-A"),
+        tester_ids=("T2", "T1"),
+        program_versions=("P2", "P1"),
+        test_conditions=("C2", "C1"),
     )
     second = _parameter_analysis_filter_hash(
         lot_ids=("LOT-1", "LOT-2"),
@@ -1682,10 +2435,36 @@ def test_parameter_analysis_filter_hash_is_order_independent_within_dimensions()
         bin_codes=("1", "2"),
         overall_results=("PASS", "UNKNOWN"),
         source_ids=("SOURCE-A", "SOURCE-B"),
+        tester_ids=("T1", "T2"),
+        program_versions=("P1", "P2"),
+        test_conditions=("C1", "C2"),
     )
 
     assert first == second
     assert len(first) == 64
+
+
+def test_parameter_analysis_filter_sql_applies_every_unified_context_dimension() -> (
+    None
+):
+    sql, parameters, expanding = _analysis_filter_sql(
+        lot_ids=("LOT-1",),
+        wafer_ids=("W1",),
+        bin_codes=("1",),
+        overall_results=("FAIL",),
+        source_run_ids=(101,),
+        tester_ids=("T-1",),
+        program_versions=("P-1",),
+        condition_item_ids=(501,),
+    )
+
+    assert "tr.tester_id IN :tester_ids" in sql
+    assert "filter_pv.version_code IN :program_versions" in sql
+    assert "condition_m.test_item_id IN :condition_item_ids" in sql
+    assert parameters["tester_ids"] == ("T-1",)
+    assert parameters["program_versions"] == ("P-1",)
+    assert parameters["condition_item_ids"] == (501,)
+    assert {"tester_ids", "program_versions", "condition_item_ids"}.issubset(expanding)
 
 
 def test_parameter_analysis_box_and_histogram_are_stable_for_constant_values() -> None:
@@ -1745,6 +2524,105 @@ def test_parameter_analysis_box_and_histogram_are_stable_for_constant_values() -
     assert parameter.histogram.bins[0].count == 4
 
 
+def test_parameter_analysis_normal_fit_carries_bounded_observed_drilldown_evidence() -> (
+    None
+):
+    connection = ParameterAnalysisConnection()
+    request = DatasetParameterAnalysisRequest(
+        datasets=[{"dataset_id": 1, "version_no": 1}],
+        parameters=["P1"],
+        analyses=["NORMAL_FIT"],
+    )
+
+    result = _approved_parameter_analysis_service(connection).analyze_parameters(
+        request
+    )
+
+    normal_fit = result.items[0].parameters[0].normal_fit
+    assert normal_fit is not None
+    assert normal_fit.status == "AVAILABLE"
+    assert normal_fit.evidence_sampling is not None
+    assert normal_fit.evidence_sampling.original_points == 8
+    assert normal_fit.evidence_sampling.returned_points == 2
+    assert normal_fit.evidence_sampling.sampled is True
+    assert [point.drilldown_key for point in normal_fit.observed_evidence] == [
+        "UNIT:801",
+        "UNIT:802",
+    ]
+
+
+def test_parameter_analysis_box_outlier_evidence_is_bounded_and_traceable() -> None:
+    outlier_count = 250
+    connection = ParameterAnalysisConnection(
+        matched_unit_count=500,
+        candidate_measurement_count=500,
+        aggregate_rows=[
+            _analysis_aggregate_row(
+                row_count=500,
+                numeric_count=500,
+                minimum=-500.0,
+                maximum=500.0,
+                average=0.0,
+                sample_stddev=100.0,
+            )
+        ],
+        box_rows=[
+            {
+                "raw_item_name": "P1",
+                "minimum": -500.0,
+                "q1": -1.0,
+                "median": 0.0,
+                "q3": 1.0,
+                "maximum": 500.0,
+                "lower_whisker": -2.0,
+                "upper_whisker": 2.0,
+                "outlier_count": outlier_count,
+            }
+        ],
+        box_outlier_rows=[
+            {
+                "raw_item_name": "P1",
+                "measurement_id": 10_000 + index,
+                "unit_id": 20_000 + index,
+                "value_numeric": -500.0 + index,
+                "spec_status": "NO_SPEC",
+                "original_points": outlier_count,
+            }
+            for index in range(200)
+        ],
+    )
+    request = DatasetParameterAnalysisRequest(
+        datasets=[{"dataset_id": 1, "version_no": 1}],
+        parameters=["P1"],
+        analyses=["BOX_PLOT"],
+    )
+
+    result = _approved_parameter_analysis_service(connection).analyze_parameters(
+        request
+    )
+
+    box = result.items[0].parameters[0].box_plot
+    assert box is not None and box.outlier_sampling is not None
+    assert box.outlier_sampling.sampled is True
+    assert box.outlier_sampling.original_points == 250
+    assert box.outlier_sampling.returned_points == 200
+    assert box.outlier_evidence[0].measurement_id == 10_000
+    assert box.outlier_evidence[-1].drilldown_key == "UNIT:20199"
+
+
+def test_histogram_spec_regions_cover_missing_boundary_crossing_and_oos() -> None:
+    assert _histogram_spec_region(0.0, 1.0, lsl=None, usl=None) == "NO_SPEC"
+    assert _histogram_spec_region(0.0, 1.0, lsl=1.0, usl=5.0) == "OUT_OF_SPEC"
+    assert _histogram_spec_region(5.1, 6.0, lsl=1.0, usl=5.0) == "OUT_OF_SPEC"
+    assert _histogram_spec_region(5.0, 6.0, lsl=1.0, usl=5.0) == "CROSSES_SPEC"
+    assert _histogram_spec_region(0.5, 1.5, lsl=1.0, usl=5.0) == "CROSSES_SPEC"
+    assert _histogram_spec_region(1.0, 5.0, lsl=1.0, usl=5.0) == "IN_SPEC"
+    assert (
+        _histogram_spec_region(1.0, 1.0, lsl=1.0, usl=5.0, upper_inclusive=True)
+        == "IN_SPEC"
+    )
+
+
 def test_parameter_analysis_box_preserves_zero_lower_whisker_for_negative_outlier() -> (
     None
 ):
@@ -1792,43 +2670,12 @@ def test_parameter_analysis_box_preserves_zero_lower_whisker_for_negative_outlie
 
 
 def test_parameter_analysis_requires_explicit_capability_rule() -> None:
-    connection = ParameterAnalysisConnection(
-        matched_unit_count=40,
-        candidate_measurement_count=40,
-        aggregate_rows=[
-            _analysis_aggregate_row(
-                row_count=40,
-                numeric_count=40,
-                minimum=2.0,
-                maximum=8.0,
-                average=5.0,
-                sample_stddev=1.0,
-            )
-        ],
-    )
-    request = DatasetParameterAnalysisRequest(
-        datasets=[{"dataset_id": 1, "version_no": 1}],
-        parameters=["P1"],
-        analyses=["CAPABILITY"],
-    )
-
-    result = SqlDatasetService(Engine(connection)).analyze_parameters(request)  # type: ignore[arg-type]
-
-    capability = result.items[0].parameters[0].capability
-    assert capability is not None
-    assert capability.status == "NOT_ELIGIBLE"
-    assert capability.ppk_status == "NOT_REQUESTED"
-    assert capability.cpk_status == "NOT_REQUESTED"
-    assert capability.reason_codes == ("CAPABILITY_RULE_REQUIRED",)
-    assert capability.ppk is None
-    assert capability.cpk is None
-    assert capability.overall_sigma is None
-    assert capability.within_sigma is None
-    assert not any(
-        sql.startswith("SELECT DISTINCT tid.raw_item_name,ss.spec_set_id")
-        or " AS subgroup_key,MIN(" in sql
-        for sql, _ in connection.executed
-    )
+    with pytest.raises(ValidationError, match="exact rule_code and version_code"):
+        _DatasetParameterAnalysisRequest(
+            datasets=[{"dataset_id": 1, "version_no": 1}],
+            parameters=["P1"],
+            analyses=["CAPABILITY"],
+        )
 
 
 def test_parameter_analysis_explicit_run_rule_calculates_ppk_and_single_subgroup_cpk() -> (
@@ -1875,7 +2722,7 @@ def test_parameter_analysis_explicit_run_rule_calculates_ppk_and_single_subgroup
     assert capability.within_sigma == pytest.approx(2.0)
     assert capability.cpk == pytest.approx(5.0 / 6.0)
     assert capability.subgroup_count == 1
-    assert capability.rule_code == "CPK_POOLED_WITHIN_RUN_V1"
+    assert capability.rule_code == "CPK_RUN_RULE:v1"
 
 
 def test_parameter_analysis_uses_degree_of_freedom_weighted_pooled_sigma() -> None:
@@ -2212,7 +3059,7 @@ def test_parameter_analysis_rejects_reversed_formal_limits() -> None:
     with pytest.raises(DomainError) as error:
         _approved_parameter_analysis_service(connection).analyze_parameters(request)
 
-    assert error.value.code == "ANALYSIS_SPEC_CONTRACT_INVALID"
+    assert error.value.code == "ANALYSIS_SPEC_DIRECTION_INVALID"
 
 
 def test_parameter_analysis_rejects_missing_parameter_even_for_one_dataset() -> None:
@@ -2322,6 +3169,275 @@ def test_multi_dataset_parameter_analysis_applies_compatibility_gates(
 
     assert error.value.code == expected_code
     assert not any("AS status_measured" in sql for sql, _ in connection.executed)
+
+
+def test_multi_dataset_descriptive_batches_context_identity_and_exact_statistics() -> (
+    None
+):
+    connection = ParameterAnalysisConnection()
+    request = DatasetParameterAnalysisRequest(
+        datasets=[
+            {"dataset_id": 1, "version_no": 1},
+            {"dataset_id": 2, "version_no": 1},
+        ],
+        parameters=["P1"],
+        filters={
+            "lot_ids": ["LOT-1"],
+            "wafer_ids": ["01"],
+            "bin_codes": ["1"],
+            "overall_results": ["PASS"],
+            "tester_ids": ["TESTER-A"],
+            "program_versions": ["PROGRAM-V1"],
+        },
+    )
+
+    result = SqlDatasetService(Engine(connection)).analyze_parameters(request)  # type: ignore[arg-type]
+
+    assert len(connection.executed) == 2
+    identity_sql, identity_parameters = connection.executed[0]
+    aggregate_sql, aggregate_parameters = connection.executed[1]
+    assert "MULTI_PARAMETER_CONTEXT_IDENTITIES" in identity_sql
+    assert "MULTI_PARAMETER_DESCRIPTIVE" in aggregate_sql
+    assert identity_parameters["analysis_parameters"] == ("P1",)
+    assert identity_parameters["identity_lot_ids"] == ("LOT-1",)
+    assert identity_parameters["identity_tester_ids"] == ("TESTER-A",)
+    assert identity_parameters["identity_program_versions"] == ("PROGRAM-V1",)
+    for ordinal in (1, 2):
+        assert aggregate_parameters[f"batch_test_item_ids_{ordinal}"] == (301,)
+        assert aggregate_parameters[f"batch_lot_ids_{ordinal}"] == ("LOT-1",)
+        assert aggregate_parameters[f"batch_wafer_ids_{ordinal}"] == ("01",)
+        assert aggregate_parameters[f"batch_bin_codes_{ordinal}"] == ("1",)
+        assert aggregate_parameters[f"batch_overall_results_{ordinal}"] == ("PASS",)
+        assert aggregate_parameters[f"batch_tester_ids_{ordinal}"] == ("TESTER-A",)
+        assert aggregate_parameters[f"batch_program_versions_{ordinal}"] == (
+            "PROGRAM-V1",
+        )
+    assert result.counts.input_units == 20
+    assert result.counts.included_units == 16
+    assert result.counts.excluded_units == 4
+    assert [
+        item.filter_summary.candidate_measurement_count for item in result.items
+    ] == [
+        8,
+        8,
+    ]
+    assert [
+        item.parameters[0].descriptive.row_count  # type: ignore[union-attr]
+        for item in result.items
+    ] == [8, 8]
+
+
+def test_single_dataset_descriptive_combines_identity_but_keeps_bounded_preflight() -> (
+    None
+):
+    connection = ParameterAnalysisConnection()
+    request = DatasetParameterAnalysisRequest(
+        datasets=[{"dataset_id": 1, "version_no": 1}],
+        parameters=["P1"],
+        filters={
+            "lot_ids": ["LOT-1"],
+            "wafer_ids": ["01"],
+            "tester_ids": ["TESTER-A"],
+            "program_versions": ["PROGRAM-V1"],
+        },
+    )
+
+    result = SqlDatasetService(Engine(connection)).analyze_parameters(request)  # type: ignore[arg-type]
+
+    assert len(connection.executed) == 3
+    assert "MULTI_PARAMETER_CONTEXT_IDENTITIES" in connection.executed[0][0]
+    assert connection.executed[1][0].startswith(";WITH filtered_units AS")
+    assert "MULTI_PARAMETER_DESCRIPTIVE" in connection.executed[2][0]
+    assert result.counts.input_units == 10
+    assert result.counts.included_units == 8
+    assert result.counts.excluded_units == 2
+    assert result.items[0].filter_summary.candidate_measurement_count == 8
+    assert result.items[0].parameters[0].descriptive is not None
+    assert result.items[0].parameters[0].descriptive.row_count == 8
+
+
+def test_single_dataset_descriptive_reconciles_preflight_with_batch_aggregate() -> None:
+    connection = ParameterAnalysisConnection(candidate_measurement_count=7)
+    request = DatasetParameterAnalysisRequest(
+        datasets=[{"dataset_id": 1, "version_no": 1}],
+        parameters=["P1"],
+    )
+
+    with pytest.raises(DomainError) as error:
+        SqlDatasetService(Engine(connection)).analyze_parameters(request)  # type: ignore[arg-type]
+
+    assert error.value.code == "ANALYSIS_AGGREGATE_CONTRACT_INVALID"
+    assert error.value.message == (
+        "parameter preflight and aggregate counts do not reconcile"
+    )
+    assert len(connection.executed) == 3
+
+
+def test_identical_parameter_requests_share_only_inflight_read_and_keep_digest(
+    monkeypatch,
+) -> None:
+    waiter_started = Event()
+    monkeypatch.setattr(
+        sql_dataset_service_module,
+        "Event",
+        lambda: _TrackingFlightEvent(waiter_started),
+    )
+    connection = _BlockingParameterAnalysisConnection()
+    engine = Engine(connection)
+    request = DatasetParameterAnalysisRequest(
+        datasets=[{"dataset_id": 1, "version_no": 1}],
+        parameters=["P1"],
+    )
+    start = Barrier(3)
+
+    def invoke():
+        start.wait()
+        return SqlDatasetService(engine).analyze_parameters(request)  # type: ignore[arg-type]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(invoke)
+        second = executor.submit(invoke)
+        start.wait()
+        assert connection.aggregate_started.wait(timeout=5)
+        assert waiter_started.wait(timeout=5)
+        connection.release_aggregate.set()
+        first_result = first.result(timeout=5)
+        second_result = second.result(timeout=5)
+
+    assert first_result is second_result
+    assert connection.aggregate_calls == 1
+    assert first_result.counts == second_result.counts
+    first_digest = _parameter_analysis_business_digest(first_result)
+    assert first_digest == _parameter_analysis_business_digest(second_result)
+
+    later_result = SqlDatasetService(engine).analyze_parameters(request)  # type: ignore[arg-type]
+
+    assert later_result is not first_result
+    assert connection.aggregate_calls == 2
+    assert _parameter_analysis_business_digest(later_result) == first_digest
+    assert (
+        sum(
+            "MULTI_PARAMETER_CONTEXT_IDENTITIES" in sql
+            for sql, _ in connection.executed
+        )
+        == 2
+    )
+
+
+def test_different_parameter_requests_do_not_share_inflight_read() -> None:
+    connection = _BlockingParameterAnalysisConnection(expected_aggregate_starts=2)
+    engine = Engine(connection)
+    first_request = DatasetParameterAnalysisRequest(
+        datasets=[{"dataset_id": 1, "version_no": 1}],
+        parameters=["P1"],
+    )
+    second_request = DatasetParameterAnalysisRequest(
+        datasets=[{"dataset_id": 2, "version_no": 1}],
+        parameters=["P1"],
+    )
+    start = Barrier(3)
+
+    def invoke(request):
+        start.wait()
+        return SqlDatasetService(engine).analyze_parameters(request)  # type: ignore[arg-type]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(invoke, first_request)
+        second = executor.submit(invoke, second_request)
+        start.wait()
+        assert connection.aggregate_started.wait(timeout=5)
+        connection.release_aggregate.set()
+        first_result = first.result(timeout=5)
+        second_result = second.result(timeout=5)
+
+    assert connection.aggregate_calls == 2
+    assert first_result.dataset_context.resolved_datasets[0].dataset_id == 1
+    assert second_result.dataset_context.resolved_datasets[0].dataset_id == 2
+    assert (
+        sum(
+            "MULTI_PARAMETER_CONTEXT_IDENTITIES" in sql
+            for sql, _ in connection.executed
+        )
+        == 2
+    )
+
+
+def test_parameter_singleflight_propagates_fresh_error_and_deletes_failed_entry(
+    monkeypatch,
+) -> None:
+    waiter_started = Event()
+    monkeypatch.setattr(
+        sql_dataset_service_module,
+        "Event",
+        lambda: _TrackingFlightEvent(waiter_started),
+    )
+    connection = _BlockingParameterAnalysisConnection(fail_aggregate=True)
+    engine = Engine(connection)
+    request = DatasetParameterAnalysisRequest(
+        datasets=[{"dataset_id": 1, "version_no": 1}],
+        parameters=["P1"],
+    )
+    start = Barrier(3)
+
+    def invoke():
+        start.wait()
+        return SqlDatasetService(engine).analyze_parameters(request)  # type: ignore[arg-type]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(invoke)
+        second = executor.submit(invoke)
+        start.wait()
+        assert connection.aggregate_started.wait(timeout=5)
+        assert waiter_started.wait(timeout=5)
+        connection.release_aggregate.set()
+        first_error = first.exception(timeout=5)
+        second_error = second.exception(timeout=5)
+
+    assert isinstance(first_error, DomainError)
+    assert isinstance(second_error, DomainError)
+    assert first_error is not second_error
+    assert first_error.code == second_error.code == "ANALYSIS_TEST_FAILURE"
+    assert first_error.details == second_error.details == [{"phase": "aggregate"}]
+    assert connection.aggregate_calls == 1
+
+    connection.fail_aggregate = False
+    result = SqlDatasetService(engine).analyze_parameters(request)  # type: ignore[arg-type]
+
+    assert result.counts.included_units == 8
+    assert connection.aggregate_calls == 2
+
+
+def test_multi_dataset_descriptive_keeps_per_dataset_workload_limit() -> None:
+    connection = ParameterAnalysisConnection(
+        aggregate_rows=[
+            _analysis_aggregate_row(
+                row_count=2_000_001,
+                numeric_count=2_000_001,
+                measured_count=2_000_001,
+            )
+        ]
+    )
+    request = DatasetParameterAnalysisRequest(
+        datasets=[
+            {"dataset_id": 1, "version_no": 1},
+            {"dataset_id": 2, "version_no": 1},
+        ],
+        parameters=["P1"],
+    )
+
+    with pytest.raises(DomainError) as error:
+        SqlDatasetService(Engine(connection)).analyze_parameters(request)  # type: ignore[arg-type]
+
+    assert error.value.code == "ANALYSIS_WORKLOAD_LIMIT_EXCEEDED"
+    assert error.value.details == [
+        {
+            "dataset_id": 1,
+            "version_no": 1,
+            "actual": 2_000_001,
+            "limit": 2_000_000,
+        }
+    ]
+    assert len(connection.executed) == 2
 
 
 def test_multi_dataset_parameter_analysis_rejects_step_identity_conflict() -> None:
@@ -2452,6 +3568,17 @@ def test_parameter_analysis_rejects_workloads_above_bounded_limit() -> None:
 
     assert error.value.code == "ANALYSIS_WORKLOAD_LIMIT_EXCEEDED"
     assert error.value.status_code == 422
+    assert error.value.details == [
+        {
+            "dataset_id": 1,
+            "version_no": 1,
+            "actual": 2_000_001,
+            "limit": 2_000_000,
+        }
+    ]
+    assert len(connection.executed) == 2
+    assert "MULTI_PARAMETER_CONTEXT_IDENTITIES" in connection.executed[0][0]
+    assert "MULTI_PARAMETER_DESCRIPTIVE" not in connection.executed[1][0]
 
 
 @pytest.mark.parametrize(
@@ -2481,12 +3608,12 @@ def test_parameter_analysis_rejects_missing_requested_aggregates(
 @pytest.mark.parametrize(
     ("analysis", "rule_code"),
     [
-        ("BOX_PLOT", "TUKEY_1_5_IQR_PERCENTILE_CONT_LINEAR_V1"),
-        ("HISTOGRAM", "EQUAL_WIDTH_FIXED_BINS_LAST_CLOSED_V1"),
+        ("BOX_PLOT", "BOX_RULE"),
+        ("HISTOGRAM", "HISTOGRAM_RULE"),
     ],
     ids=("box-plot", "histogram"),
 )
-def test_parameter_analysis_owner_gate_rejects_unapproved_fixed_method_before_sql(
+def test_parameter_analysis_registry_gate_rejects_unapproved_exact_scope(
     analysis: str, rule_code: str
 ) -> None:
     connection = ParameterAnalysisConnection()
@@ -2496,16 +3623,31 @@ def test_parameter_analysis_owner_gate_rejects_unapproved_fixed_method_before_sq
         analyses=[analysis],
     )
 
+    denied = _DeniedParameterRuleService()
     with pytest.raises(DomainError) as error:
-        SqlDatasetService(Engine(connection)).analyze_parameters(request)  # type: ignore[arg-type]
+        SqlDatasetService(
+            Engine(connection),
+            rule_service=denied,  # type: ignore[arg-type]
+        ).analyze_parameters(request)
 
     assert error.value.code == "ANALYSIS_RULE_NOT_APPROVED"
     assert error.value.status_code == 409
-    assert error.value.details == [{"rule_code": rule_code}]
-    assert connection.executed == []
+    assert error.value.details == [{"rule_code": rule_code, "version_code": "v1"}]
+    assert denied.calls[0] == {
+        "rule_code": rule_code,
+        "version_code": "v1",
+        "test_stage": "CP",
+        "expected_algorithm_code": (
+            "TUKEY_BOX_V1" if analysis == "BOX_PLOT" else "EQUAL_WIDTH_HISTOGRAM_V1"
+        ),
+        "supplier_id": 2,
+        "product_id": 3,
+        "parameter": "P1",
+    }
+    assert len(connection.executed) == 1
 
 
-def test_parameter_analysis_owner_gate_rejects_unapproved_rule_before_sql() -> None:
+def test_parameter_analysis_registry_gate_rejects_unapproved_capability_scope() -> None:
     connection = ParameterAnalysisConnection()
     request = DatasetParameterAnalysisRequest(
         datasets=[{"dataset_id": 1, "version_no": 1}],
@@ -2514,11 +3656,19 @@ def test_parameter_analysis_owner_gate_rejects_unapproved_rule_before_sql() -> N
         capability={"rule_code": "CPK_POOLED_WITHIN_RUN_V1"},
     )
 
+    denied = _DeniedParameterRuleService()
     with pytest.raises(DomainError) as error:
-        SqlDatasetService(Engine(connection)).analyze_parameters(request)  # type: ignore[arg-type]
+        SqlDatasetService(
+            Engine(connection),
+            rule_service=denied,  # type: ignore[arg-type]
+        ).analyze_parameters(request)
 
     assert error.value.code == "ANALYSIS_RULE_NOT_APPROVED"
-    assert connection.executed == []
+    assert denied.calls[0]["expected_algorithm_code"] == "CPK_POOLED_WITHIN_RUN_V1"
+    assert denied.calls[0]["supplier_id"] == 2
+    assert denied.calls[0]["product_id"] == 3
+    assert denied.calls[0]["parameter"] == "P1"
+    assert len(connection.executed) == 1
 
 
 def test_parameter_analysis_rejects_partial_formal_spec_scope_coverage() -> None:
@@ -2663,14 +3813,25 @@ def test_parameter_analysis_all_statistics_bind_exact_resolved_test_item_id() ->
         capability={"rule_code": "CPK_POOLED_WITHIN_RUN_V1"},
     )
 
-    _approved_parameter_analysis_service(connection).analyze_parameters(request)
+    result = _approved_parameter_analysis_service(connection).analyze_parameters(
+        request
+    )
+
+    capability = result.items[0].parameters[0].capability
+    assert capability is not None
+    assert capability.drilldown_context is not None
+    assert capability.drilldown_context.dataset_id == 1
+    assert capability.drilldown_context.version_no == 1
+    assert capability.drilldown_context.parameter == "P1"
 
     measurement_queries = [
         (sql, parameters)
         for sql, parameters in connection.executed
         if "JOIN test.measurement m" in sql
     ]
-    assert len(measurement_queries) == 6
+    assert len(measurement_queries) == 8
+    assert any("BOX_OUTLIER_EVIDENCE" in sql for sql, _ in measurement_queries)
+    assert any("DISTRIBUTION_EVIDENCE" in sql for sql, _ in measurement_queries)
     assert all(
         parameters["analysis_test_item_ids"] == (301,)
         for _, parameters in measurement_queries

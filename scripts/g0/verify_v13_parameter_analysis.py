@@ -16,6 +16,7 @@ from pathlib import Path
 from time import perf_counter_ns
 from typing import Any, Protocol
 
+from pydantic import ValidationError
 from sqlalchemy import Engine, text
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -23,27 +24,37 @@ BACKEND = ROOT / "backend"
 if str(BACKEND) not in sys.path:
     sys.path.insert(0, str(BACKEND))
 
+from app.core.errors import DomainError
 from app.domain.datasets import (
+    DatasetCapabilityMethod,
     DatasetParameterAnalysisRequest,
     DatasetParameterAnalysisType,
 )
+from app.domain.parameter_relationship import (
+    ParameterCorrelationMethod,
+    ParameterRelationshipAnalysis,
+    ParameterRelationshipRequest,
+)
 from app.infrastructure.database import get_engine
 from app.infrastructure.sql_dataset_service import SqlDatasetService
+from app.infrastructure.sql_parameter_relationship_service import (
+    SqlParameterRelationshipService,
+)
 
 EXPECTED_DATABASE = "TMS_G0_DEV"
-EXPECTED_SCHEMA_REVISION = "sql2014_0019"
+EXPECTED_SCHEMA_REVISION = "sql2014_0023"
 DEFAULT_WARM_RUNS = 5
-DEFAULT_HISTOGRAM_BIN_COUNT = 20
 MAX_WARM_RUNS = 100
 MAX_CANDIDATE_MEASUREMENTS = 2_000_000
 MAX_CANDIDATES = 200
 MAX_STAGE_CANDIDATES_EXAMINED = 20
-_TECHNICAL_G0_APPROVED_PARAMETER_ANALYSIS_RULE_CODES = frozenset(
-    {
-        "TUKEY_1_5_IQR_PERCENTILE_CONT_LINEAR_V1",
-        "EQUAL_WIDTH_FIXED_BINS_LAST_CLOSED_V1",
-    }
-)
+_OWNER_GATE_VERSION = "g0-owner-gate-probe"
+_OWNER_GATE_RULE_CODES = {
+    DatasetParameterAnalysisType.BOX_PLOT: "G0_UNAPPROVED_BOX_RULE",
+    DatasetParameterAnalysisType.HISTOGRAM: "G0_UNAPPROVED_HISTOGRAM_RULE",
+    DatasetParameterAnalysisType.CAPABILITY: "G0_UNAPPROVED_CAPABILITY_RULE",
+    ParameterRelationshipAnalysis.CORRELATION: "G0_UNAPPROVED_CORRELATION_RULE",
+}
 _MEASUREMENT_STATUSES = (
     "MEASURED",
     "OVER_RANGE",
@@ -165,6 +176,10 @@ class DatabaseSnapshot:
     canonical_summary_digest: str
     current_group_count: int
     current_summary_digest: str
+    current_catalog_row_count: int
+    current_catalog_digest: str
+    rule_catalog_counts: Mapping[str, int]
+    rule_catalog_digest: str
 
     def public(self) -> dict[str, Any]:
         return {
@@ -176,6 +191,14 @@ class DatabaseSnapshot:
             "current": {
                 "summary_group_count": self.current_group_count,
                 "summary_sha256": self.current_summary_digest,
+            },
+            "current_catalog": {
+                "row_count": self.current_catalog_row_count,
+                "summary_sha256": self.current_catalog_digest,
+            },
+            "rule_catalog": {
+                "counts": dict(self.rule_catalog_counts),
+                "summary_sha256": self.rule_catalog_digest,
             },
         }
 
@@ -189,10 +212,6 @@ class IndependentStatistics:
     maximum: float | None
     average: float | None
     sample_stddev: float | None
-    box_values: Mapping[str, float] | None
-    outlier_count: int
-    histogram_total: int
-    histogram_non_empty_bin_count: int
 
 
 def _assert_read_only_sql(sql: str) -> None:
@@ -477,10 +496,137 @@ def _current_summary_rows(connection: SqlConnection) -> tuple[tuple[Any, ...], .
     return tuple(tuple(row[field] for field in fields) for row in rows)
 
 
+def _current_catalog_rows(connection: SqlConnection) -> tuple[tuple[Any, ...], ...]:
+    rows = (
+        connection.execute(
+            text(
+                "SELECT DISTINCT d.dataset_id,dv.dataset_version_id,dv.version_no,"
+                "d.test_stage,tr.lot_id FROM dataset.dataset d "
+                "JOIN dataset.dataset_version dv ON dv.dataset_id=d.dataset_id "
+                "LEFT JOIN dataset.dataset_version_run dvr "
+                "ON dvr.dataset_version_id=dv.dataset_version_id "
+                "LEFT JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
+                "AND tr.lot_id IS NOT NULL WHERE dv.status='PUBLISHED' "
+                "AND dv.is_current=1 ORDER BY d.dataset_id,dv.dataset_version_id,"
+                "dv.version_no,d.test_stage,tr.lot_id"
+            )
+        )
+        .mappings()
+        .all()
+    )
+    fields = (
+        "dataset_id",
+        "dataset_version_id",
+        "version_no",
+        "test_stage",
+        "lot_id",
+    )
+    return tuple(tuple(row[field] for field in fields) for row in rows)
+
+
+def _rule_catalog_rows(
+    connection: SqlConnection,
+) -> tuple[tuple[tuple[Any, ...], ...], dict[str, int]]:
+    queries: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+        (
+            "rule_set",
+            (
+                "SELECT evaluation_rule_set_id,rule_code,evaluation_type,active,"
+                "business_owner_user_id,technical_owner_user_id,"
+                "quality_validator_user_id FROM evaluation.rule_set "
+                "ORDER BY evaluation_rule_set_id"
+            ),
+            (
+                "evaluation_rule_set_id",
+                "rule_code",
+                "evaluation_type",
+                "active",
+                "business_owner_user_id",
+                "technical_owner_user_id",
+                "quality_validator_user_id",
+            ),
+        ),
+        (
+            "rule_version",
+            (
+                "SELECT evaluation_rule_version_id,evaluation_rule_set_id,version_code,"
+                "implementation_version,status,activation_status,effective_from_utc,"
+                "effective_to_utc,supersedes_rule_version_id "
+                "FROM evaluation.rule_version ORDER BY evaluation_rule_version_id"
+            ),
+            (
+                "evaluation_rule_version_id",
+                "evaluation_rule_set_id",
+                "version_code",
+                "implementation_version",
+                "status",
+                "activation_status",
+                "effective_from_utc",
+                "effective_to_utc",
+                "supersedes_rule_version_id",
+            ),
+        ),
+        (
+            "rule_approval_record",
+            (
+                "SELECT rule_approval_id,evaluation_rule_version_id,approval_role,"
+                "approver_user_id,decision,golden_manifest_sha256,decided_at_utc "
+                "FROM evaluation.rule_approval_record ORDER BY rule_approval_id"
+            ),
+            (
+                "rule_approval_id",
+                "evaluation_rule_version_id",
+                "approval_role",
+                "approver_user_id",
+                "decision",
+                "golden_manifest_sha256",
+                "decided_at_utc",
+            ),
+        ),
+        (
+            "rule_activation",
+            (
+                "SELECT rule_activation_id,evaluation_rule_version_id,test_stage,"
+                "supplier_id,product_id,parameter_pattern,active,activated_by_user_id,"
+                "activated_at_utc,effective_from_utc,effective_to_utc "
+                "FROM evaluation.rule_activation ORDER BY rule_activation_id"
+            ),
+            (
+                "rule_activation_id",
+                "evaluation_rule_version_id",
+                "test_stage",
+                "supplier_id",
+                "product_id",
+                "parameter_pattern",
+                "active",
+                "activated_by_user_id",
+                "activated_at_utc",
+                "effective_from_utc",
+                "effective_to_utc",
+            ),
+        ),
+    )
+    catalog: list[tuple[Any, ...]] = []
+    counts: dict[str, int] = {}
+    active_activation_count = 0
+    for table_name, query, fields in queries:
+        rows = connection.execute(text(query)).mappings().all()
+        counts[table_name] = len(rows)
+        if table_name == "rule_activation":
+            active_activation_count = sum(bool(row["active"]) for row in rows)
+        catalog.extend(
+            (table_name, *(row[field] for field in fields)) for row in rows
+        )
+    counts["active_rule_activation"] = active_activation_count
+    return tuple(catalog), counts
+
+
 def _database_snapshot(connection: SqlConnection) -> DatabaseSnapshot:
     counts = _snapshot_counts(connection)
     canonical_rows = _canonical_summary_rows(connection)
     current_rows = _current_summary_rows(connection)
+    current_catalog_rows = _current_catalog_rows(connection)
+    rule_catalog_rows, rule_catalog_counts = _rule_catalog_rows(connection)
     return DatabaseSnapshot(
         counts=counts,
         canonical_group_count=len(canonical_rows),
@@ -489,6 +635,14 @@ def _database_snapshot(connection: SqlConnection) -> DatabaseSnapshot:
         ),
         current_group_count=len(current_rows),
         current_summary_digest=_redacted_digest("v13-current-summary", current_rows),
+        current_catalog_row_count=len(current_catalog_rows),
+        current_catalog_digest=_redacted_digest(
+            "v13-current-catalog", current_catalog_rows
+        ),
+        rule_catalog_counts=rule_catalog_counts,
+        rule_catalog_digest=_redacted_digest(
+            "v13-rule-catalog", rule_catalog_rows
+        ),
     )
 
 
@@ -499,6 +653,18 @@ def _assert_snapshot_unchanged(
         raise VerificationError(
             "READ_ONLY_SNAPSHOT_DRIFT",
             "验收期间 Canonical/Current 关键计数或摘要 digest 发生变化，结果作废",
+        )
+
+
+def _assert_zero_approval_owner_gate(snapshot: DatabaseSnapshot) -> None:
+    approval_count = int(snapshot.rule_catalog_counts["rule_approval_record"])
+    active_activation_count = int(
+        snapshot.rule_catalog_counts["active_rule_activation"]
+    )
+    if approval_count != 0 or active_activation_count != 0:
+        raise VerificationError(
+            "OWNER_GATE_BASELINE_NOT_ZERO",
+            "v1.3 零审批开发库验收要求无审批记录且无激活 Rule",
         )
 
 
@@ -655,129 +821,6 @@ def _candidate_identity_is_compatible(
     return len(canonical_codes) == 1 and len(signatures) == 1
 
 
-def _formal_spec_rows(
-    connection: SqlConnection, candidate: AnalysisCandidate
-) -> tuple[Mapping[str, Any], ...]:
-    if candidate.test_stage == "CP":
-        joins = (
-            "JOIN mdm.spec_set ss ON ss.spec_set_id=dv.spec_set_id "
-            "AND ss.status='RELEASED' "
-            "JOIN mdm.spec_item si ON si.spec_set_id=ss.spec_set_id "
-            "AND si.test_item_id=tid.test_item_id "
-        )
-    else:
-        joins = (
-            "JOIN mdm.spec_binding sb ON sb.active=1 "
-            "AND sb.program_version_id=tr.program_version_id "
-            "AND (sb.product_id IS NULL OR sb.product_id=tr.product_id) "
-            "AND (sb.supplier_id IS NULL OR sb.supplier_id=tr.supplier_id) "
-            "AND (sb.test_stage IS NULL OR sb.test_stage=tr.test_stage) "
-            "JOIN mdm.spec_set ss ON ss.spec_set_id=sb.spec_set_id "
-            "AND ss.status='RELEASED' "
-            "JOIN mdm.spec_item si ON si.spec_set_id=ss.spec_set_id "
-            "AND si.test_item_id=tid.test_item_id "
-        )
-    return tuple(
-        connection.execute(
-            text(
-                "SELECT DISTINCT ss.spec_set_id,tid.unit_code AS program_unit_code,"
-                "tid.condition_json AS program_condition_json,"
-                "si.unit_code AS spec_unit_code,si.lsl,si.usl,"
-                "si.condition_json AS spec_condition_json "
-                "FROM dataset.dataset_version dv "
-                "JOIN dataset.dataset_version_run dvr "
-                "ON dvr.dataset_version_id=dv.dataset_version_id "
-                "JOIN test.test_run tr "
-                "ON tr.processing_run_id=dvr.processing_run_id "
-                "JOIN mdm.test_item_definition tid "
-                "ON tid.program_version_id=tr.program_version_id "
-                + joins
-                + "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
-                "AND dv.status='PUBLISHED' AND dv.is_current=1 "
-                "AND tid.is_analysis_parameter=1 "
-                "AND tid.raw_item_name=:parameter_name "
-                "ORDER BY ss.spec_set_id"
-            ),
-            {
-                "dataset_id": candidate.dataset_id,
-                "version_no": candidate.version_no,
-                "parameter_name": candidate.parameter_name,
-            },
-        )
-        .mappings()
-        .all()
-    )
-
-
-def _formal_spec_coverage(
-    connection: SqlConnection, candidate: AnalysisCandidate
-) -> FormalSpecCoverage:
-    rows = _formal_spec_rows(connection, candidate)
-    if not rows:
-        return FormalSpecCoverage(
-            status="SKIP",
-            reason_code="FORMAL_RELEASED_SPEC_NOT_FOUND",
-            signature_count=0,
-            signature_digest=None,
-        )
-    spec_ids: set[int] = set()
-    signatures: set[tuple[Any, ...]] = set()
-    context_mismatch = False
-    reversed_limits = False
-    for row in rows:
-        spec_ids.add(int(row["spec_set_id"]))
-        program_unit = (
-            str(row["program_unit_code"]).strip() or None
-            if row["program_unit_code"] is not None
-            else None
-        )
-        spec_unit = (
-            str(row["spec_unit_code"]).strip() or None
-            if row["spec_unit_code"] is not None
-            else None
-        )
-        program_condition = _condition_text(row["program_condition_json"])
-        spec_condition = _condition_text(row["spec_condition_json"])
-        lsl = _optional_float(row["lsl"], code="FORMAL_SPEC_VALUE_INVALID")
-        usl = _optional_float(row["usl"], code="FORMAL_SPEC_VALUE_INVALID")
-        context_mismatch = context_mismatch or (
-            program_unit != spec_unit or program_condition != spec_condition
-        )
-        reversed_limits = reversed_limits or (
-            lsl is not None and usl is not None and lsl > usl
-        )
-        signatures.add((spec_unit, lsl, usl, spec_condition))
-    digest = _redacted_digest("v13-formal-spec-signature", sorted(signatures, key=str))
-    if reversed_limits:
-        return FormalSpecCoverage(
-            status="FAIL",
-            reason_code="FORMAL_SPEC_LIMITS_REVERSED",
-            signature_count=len(signatures),
-            signature_digest=digest,
-        )
-    if len(spec_ids) != 1 or len(signatures) != 1 or context_mismatch:
-        return FormalSpecCoverage(
-            status="SKIP",
-            reason_code="FORMAL_SPEC_CONTEXT_AMBIGUOUS",
-            signature_count=len(signatures),
-            signature_digest=digest,
-        )
-    signature = next(iter(signatures))
-    if signature[1] is None and signature[2] is None:
-        return FormalSpecCoverage(
-            status="SKIP",
-            reason_code="FORMAL_SPEC_LIMIT_MISSING",
-            signature_count=1,
-            signature_digest=digest,
-        )
-    return FormalSpecCoverage(
-        status="PASS",
-        reason_code="FORMAL_SPEC_AVAILABLE",
-        signature_count=1,
-        signature_digest=digest,
-    )
-
-
 def _select_stage_candidates(
     connection: SqlConnection,
     candidates: Sequence[AnalysisCandidate],
@@ -787,7 +830,6 @@ def _select_stage_candidates(
         "FT": None,
     }
     for stage in ("CP", "FT"):
-        fallback: tuple[AnalysisCandidate, FormalSpecCoverage] | None = None
         examined = 0
         for candidate in candidates:
             if candidate.test_stage != stage:
@@ -801,15 +843,36 @@ def _select_stage_candidates(
                 or not _candidate_identity_is_compatible(connection, candidate)
             ):
                 continue
-            coverage = _formal_spec_coverage(connection, candidate)
-            if fallback is None:
-                fallback = (candidate, coverage)
-            if coverage.status == "PASS":
-                selected[stage] = (candidate, coverage)
-                break
-        if selected[stage] is None:
-            selected[stage] = fallback
+            selected[stage] = (
+                candidate,
+                FormalSpecCoverage(
+                    status="SKIP",
+                    reason_code="FORMAL_SPEC_NOT_REQUIRED_FOR_DESCRIPTIVE",
+                    signature_count=0,
+                    signature_digest=None,
+                ),
+            )
+            break
     return selected
+
+
+def _select_relationship_y_parameter(
+    connection: SqlConnection,
+    candidates: Sequence[AnalysisCandidate],
+    selected: AnalysisCandidate,
+) -> str | None:
+    for candidate in candidates:
+        if (
+            candidate.dataset_id != selected.dataset_id
+            or candidate.version_no != selected.version_no
+            or candidate.parameter_name == selected.parameter_name
+            or candidate.numeric_count < 1
+            or candidate.measurement_count > MAX_CANDIDATE_MEASUREMENTS
+        ):
+            continue
+        if _candidate_identity_is_compatible(connection, candidate):
+            return candidate.parameter_name
+    return None
 
 
 def _descriptive_statistics(
@@ -865,104 +928,9 @@ def _descriptive_statistics(
     return row, statuses
 
 
-def _box_statistics(
-    connection: SqlConnection, candidate: AnalysisCandidate
-) -> Mapping[str, Any] | None:
-    row = (
-        connection.execute(
-            text(
-                ";WITH numeric_values AS ("
-                "SELECT m.value_numeric FROM dataset.dataset_version dv "
-                "JOIN dataset.dataset_version_run dvr "
-                "ON dvr.dataset_version_id=dv.dataset_version_id "
-                "JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
-                "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
-                "JOIN test.measurement m ON m.unit_id=ur.unit_id "
-                "JOIN mdm.test_item_definition tid ON tid.test_item_id=m.test_item_id "
-                "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
-                "AND dv.status='PUBLISHED' AND dv.is_current=1 "
-                "AND tid.raw_item_name=:parameter_name "
-                "AND m.measurement_status='MEASURED' AND m.value_numeric IS NOT NULL),"
-                "quartiles AS (SELECT value_numeric,"
-                "PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY value_numeric) OVER() AS q1,"
-                "PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY value_numeric) "
-                "OVER() AS median,"
-                "PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY value_numeric) OVER() AS q3 "
-                "FROM numeric_values) "
-                "SELECT MIN(value_numeric) AS minimum,MAX(q1) AS q1,"
-                "MAX(median) AS median,MAX(q3) AS q3,MAX(value_numeric) AS maximum,"
-                "MIN(CASE WHEN value_numeric>=q1-1.5*(q3-q1) THEN value_numeric END) "
-                "AS lower_whisker,"
-                "MAX(CASE WHEN value_numeric<=q3+1.5*(q3-q1) THEN value_numeric END) "
-                "AS upper_whisker,"
-                "SUM(CASE WHEN value_numeric<q1-1.5*(q3-q1) "
-                "OR value_numeric>q3+1.5*(q3-q1) "
-                "THEN CONVERT(bigint,1) ELSE 0 END) AS outlier_count "
-                "FROM quartiles"
-            ),
-            {
-                "dataset_id": candidate.dataset_id,
-                "version_no": candidate.version_no,
-                "parameter_name": candidate.parameter_name,
-            },
-        )
-        .mappings()
-        .one()
-    )
-    return None if row["minimum"] is None else row
-
-
-def _histogram_count_statistics(
-    connection: SqlConnection,
-    candidate: AnalysisCandidate,
-    *,
-    bin_count: int,
-) -> tuple[int, int]:
-    row = (
-        connection.execute(
-            text(
-                ";WITH numeric_values AS ("
-                "SELECT m.value_numeric FROM dataset.dataset_version dv "
-                "JOIN dataset.dataset_version_run dvr "
-                "ON dvr.dataset_version_id=dv.dataset_version_id "
-                "JOIN test.test_run tr ON tr.processing_run_id=dvr.processing_run_id "
-                "JOIN test.unit_result ur ON ur.run_id=tr.run_id "
-                "JOIN test.measurement m ON m.unit_id=ur.unit_id "
-                "JOIN mdm.test_item_definition tid ON tid.test_item_id=m.test_item_id "
-                "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
-                "AND dv.status='PUBLISHED' AND dv.is_current=1 "
-                "AND tid.raw_item_name=:parameter_name "
-                "AND m.measurement_status='MEASURED' AND m.value_numeric IS NOT NULL),"
-                "bounds AS (SELECT MIN(value_numeric) AS range_min,"
-                "MAX(value_numeric) AS range_max FROM numeric_values),"
-                "bucketed AS (SELECT CASE WHEN b.range_min=b.range_max THEN 0 "
-                "WHEN v.value_numeric=b.range_max THEN :histogram_bin_count-1 "
-                "ELSE CONVERT(int,FLOOR((v.value_numeric-b.range_min)*"
-                ":histogram_bin_count/NULLIF(b.range_max-b.range_min,0))) END "
-                "AS bin_index FROM numeric_values v CROSS JOIN bounds b),"
-                "bins AS (SELECT bin_index,COUNT_BIG(*) AS bin_value_count "
-                "FROM bucketed GROUP BY bin_index) "
-                "SELECT COALESCE(SUM(bin_value_count),0) AS histogram_total,"
-                "COUNT_BIG(*) AS non_empty_bin_count FROM bins"
-            ),
-            {
-                "dataset_id": candidate.dataset_id,
-                "version_no": candidate.version_no,
-                "parameter_name": candidate.parameter_name,
-                "histogram_bin_count": bin_count,
-            },
-        )
-        .mappings()
-        .one()
-    )
-    return int(row["histogram_total"] or 0), int(row["non_empty_bin_count"] or 0)
-
-
 def _independent_statistics(
     connection: SqlConnection,
     candidate: AnalysisCandidate,
-    *,
-    bin_count: int,
 ) -> IndependentStatistics:
     row, status_counts = _descriptive_statistics(connection, candidate)
     row_count = int(row["row_count"] or 0)
@@ -976,33 +944,6 @@ def _independent_statistics(
         raise VerificationError(
             "INDEPENDENT_AGGREGATE_INVALID", "独立 SQL 描述统计计数无法对账"
         )
-    box_row = _box_statistics(connection, candidate) if numeric_count else None
-    box_values = None
-    outlier_count = 0
-    if box_row is not None:
-        fields = (
-            "minimum",
-            "q1",
-            "median",
-            "q3",
-            "maximum",
-            "lower_whisker",
-            "upper_whisker",
-        )
-        box_values = {
-            field: float(
-                _optional_float(box_row[field], code="INDEPENDENT_BOX_INVALID")
-            )
-            for field in fields
-        }
-        outlier_count = int(box_row["outlier_count"] or 0)
-    histogram_total, non_empty_bins = _histogram_count_statistics(
-        connection, candidate, bin_count=bin_count
-    )
-    if histogram_total != numeric_count:
-        raise VerificationError(
-            "INDEPENDENT_HISTOGRAM_INVALID", "独立 SQL 直方图分箱合计无法对账"
-        )
     return IndependentStatistics(
         row_count=row_count,
         numeric_count=numeric_count,
@@ -1013,33 +954,17 @@ def _independent_statistics(
         sample_stddev=_optional_float(
             row["sample_stddev"], code="INDEPENDENT_STATISTIC_INVALID"
         ),
-        box_values=box_values,
-        outlier_count=outlier_count,
-        histogram_total=histogram_total,
-        histogram_non_empty_bin_count=non_empty_bins,
     )
 
 
 def _analysis_request(candidate: AnalysisCandidate) -> DatasetParameterAnalysisRequest:
-    request = DatasetParameterAnalysisRequest(
+    return DatasetParameterAnalysisRequest(
         datasets=[
             {"dataset_id": candidate.dataset_id, "version_no": candidate.version_no}
         ],
         parameters=[candidate.parameter_name],
-        analyses=[
-            DatasetParameterAnalysisType.DESCRIPTIVE,
-            DatasetParameterAnalysisType.BOX_PLOT,
-            DatasetParameterAnalysisType.HISTOGRAM,
-            DatasetParameterAnalysisType.CAPABILITY,
-        ],
-        histogram={"bin_count": DEFAULT_HISTOGRAM_BIN_COUNT},
+        analyses=[DatasetParameterAnalysisType.DESCRIPTIVE],
     )
-    if request.capability.rule_code is not None:
-        raise VerificationError(
-            "CAPABILITY_RULE_NOT_ALLOWED",
-            "首批真实 SQL 验收不得自动选择 Cpk/Ppk 规则",
-        )
-    return request
 
 
 def _response_digest(response: Any) -> str:
@@ -1112,6 +1037,190 @@ def _run_invocations(
     }
 
 
+def _parameter_gate_request(
+    candidate: AnalysisCandidate,
+    analysis: DatasetParameterAnalysisType,
+    *,
+    exact_unapproved_reference: bool,
+) -> DatasetParameterAnalysisRequest:
+    values: dict[str, Any] = {
+        "datasets": [
+            {"dataset_id": candidate.dataset_id, "version_no": candidate.version_no}
+        ],
+        "parameters": [candidate.parameter_name],
+        "analyses": [analysis],
+    }
+    if exact_unapproved_reference:
+        config: dict[str, Any] = {
+            "rule_code": _OWNER_GATE_RULE_CODES[analysis],
+            "version_code": _OWNER_GATE_VERSION,
+        }
+        if analysis == DatasetParameterAnalysisType.CAPABILITY:
+            config["method"] = next(iter(DatasetCapabilityMethod))
+        values[
+            {
+                DatasetParameterAnalysisType.BOX_PLOT: "box_plot",
+                DatasetParameterAnalysisType.HISTOGRAM: "histogram",
+                DatasetParameterAnalysisType.CAPABILITY: "capability",
+            }[analysis]
+        ] = config
+    return DatasetParameterAnalysisRequest(**values)
+
+
+def _relationship_gate_request(
+    candidate: AnalysisCandidate,
+    y_parameter: str,
+    *,
+    exact_unapproved_reference: bool,
+) -> ParameterRelationshipRequest:
+    values: dict[str, Any] = {
+        "datasets": [
+            {"dataset_id": candidate.dataset_id, "version_no": candidate.version_no}
+        ],
+        "x_parameter": candidate.parameter_name,
+        "y_parameters": [y_parameter],
+        "analyses": [ParameterRelationshipAnalysis.CORRELATION],
+    }
+    if exact_unapproved_reference:
+        values["correlation"] = {
+            "method": ParameterCorrelationMethod.PEARSON_PAIRWISE_V1,
+            "rule_code": _OWNER_GATE_RULE_CODES[
+                ParameterRelationshipAnalysis.CORRELATION
+            ],
+            "version_code": _OWNER_GATE_VERSION,
+        }
+    return ParameterRelationshipRequest(**values)
+
+
+def _assert_rule_reference_required(
+    request_factory: Callable[[], Any], *, expected_message: str
+) -> dict[str, Any]:
+    try:
+        request_factory()
+    except ValidationError as exc:
+        messages = tuple(str(item.get("msg") or "") for item in exc.errors())
+        if not any(expected_message in message for message in messages):
+            raise VerificationError(
+                "ANALYSIS_RULE_REFERENCE_GATE_MISMATCH",
+                "Owner-gated 分析缺少精确 Rule 时返回了非预期校验错误",
+            ) from exc
+    else:
+        raise VerificationError(
+            "ANALYSIS_RULE_REFERENCE_GATE_MISMATCH",
+            "Owner-gated 分析缺少精确 Rule 时未失败关闭",
+        )
+    return {
+        "status": "PASS",
+        "reason_code": "ANALYSIS_RULE_REFERENCES_REQUIRED",
+        "database_statement_count": 0,
+    }
+
+
+def _run_unapproved_rule_gate(
+    invocation: Callable[[], Any],
+    audit: ReadOnlyAudit,
+    *,
+    warm_runs: int,
+) -> dict[str, Any]:
+    statement_counts: list[int] = []
+    for _ in range(warm_runs + 1):
+        statements_before = audit.statement_count
+        try:
+            invocation()
+        except DomainError as exc:
+            if exc.code != "ANALYSIS_RULE_NOT_APPROVED":
+                raise VerificationError(
+                    "ANALYSIS_RULE_APPROVAL_GATE_MISMATCH",
+                    "Owner-gated 分析返回了非预期 Rule 审批错误",
+                ) from exc
+        else:
+            raise VerificationError(
+                "ANALYSIS_RULE_APPROVAL_GATE_MISMATCH",
+                "零审批开发库错误执行了 Owner-gated 分析",
+            )
+        statement_count = audit.statement_count - statements_before
+        if statement_count < 1:
+            raise VerificationError(
+                "ANALYSIS_RULE_APPROVAL_GATE_MISMATCH",
+                "Owner-gated 分析未经过数据库审批门禁",
+            )
+        statement_counts.append(statement_count)
+    return {
+        "status": "PASS",
+        "reason_code": "ANALYSIS_RULE_NOT_APPROVED",
+        "invocation_count": len(statement_counts),
+        "sql_statement_counts": sorted(set(statement_counts)),
+        "stable_across_invocations": len(set(statement_counts)) == 1,
+    }
+
+
+def _verify_owner_gates(
+    parameter_service: Any,
+    relationship_service: Any,
+    audit: ReadOnlyAudit,
+    candidate: AnalysisCandidate,
+    relationship_y_parameter: str,
+    *,
+    warm_runs: int,
+) -> dict[str, Any]:
+    gates: dict[str, Any] = {}
+    for analysis in (
+        DatasetParameterAnalysisType.BOX_PLOT,
+        DatasetParameterAnalysisType.HISTOGRAM,
+        DatasetParameterAnalysisType.CAPABILITY,
+    ):
+        missing_reference = _assert_rule_reference_required(
+            lambda analysis=analysis: _parameter_gate_request(
+                candidate, analysis, exact_unapproved_reference=False
+            ),
+            expected_message=(
+                f"{analysis.value} requires an exact rule_code and version_code"
+            ),
+        )
+        request = _parameter_gate_request(
+            candidate, analysis, exact_unapproved_reference=True
+        )
+        unapproved = _run_unapproved_rule_gate(
+            lambda request=request: parameter_service.analyze_parameters(request),
+            audit,
+            warm_runs=warm_runs,
+        )
+        gates[analysis.value] = {
+            "status": "PASS",
+            "missing_reference_gate": missing_reference,
+            "unapproved_reference_gate": unapproved,
+        }
+
+    missing_correlation = _assert_rule_reference_required(
+        lambda: _relationship_gate_request(
+            candidate,
+            relationship_y_parameter,
+            exact_unapproved_reference=False,
+        ),
+        expected_message="CORRELATION requires an exact rule version",
+    )
+    correlation_request = _relationship_gate_request(
+        candidate,
+        relationship_y_parameter,
+        exact_unapproved_reference=True,
+    )
+    unapproved_correlation = _run_unapproved_rule_gate(
+        lambda: relationship_service.relationship(correlation_request),
+        audit,
+        warm_runs=warm_runs,
+    )
+    gates[ParameterRelationshipAnalysis.CORRELATION.value] = {
+        "status": "PASS",
+        "missing_reference_gate": missing_correlation,
+        "unapproved_reference_gate": unapproved_correlation,
+    }
+    return {
+        "status": "PASS",
+        "zero_approval_expected": True,
+        "gates": gates,
+    }
+
+
 def _assert_optional_float_equal(
     actual: float | None,
     expected: float | None,
@@ -1124,37 +1233,6 @@ def _assert_optional_float_equal(
         raise VerificationError("ANALYSIS_SQL_MISMATCH", f"{field} 与独立 SQL 无法对账")
     if not math.isclose(float(actual), float(expected), rel_tol=1e-9, abs_tol=1e-9):
         raise VerificationError("ANALYSIS_SQL_MISMATCH", f"{field} 与独立 SQL 无法对账")
-
-
-def _assert_capability_rule_gate(capability: Any, *, numeric_count: int) -> None:
-    null_fields = (
-        "spec_mode",
-        "lsl",
-        "usl",
-        "overall_sigma",
-        "within_sigma",
-        "ppl",
-        "ppu",
-        "ppk",
-        "cpl",
-        "cpu",
-        "cpk",
-        "rule_code",
-    )
-    if (
-        capability is None
-        or capability.status != "NOT_ELIGIBLE"
-        or capability.ppk_status != "NOT_REQUESTED"
-        or capability.cpk_status != "NOT_REQUESTED"
-        or tuple(capability.reason_codes) != ("CAPABILITY_RULE_REQUIRED",)
-        or int(capability.sample_count) != numeric_count
-        or int(capability.subgroup_count) != 0
-        or any(getattr(capability, field) is not None for field in null_fields)
-    ):
-        raise VerificationError(
-            "CAPABILITY_RULE_GATE_MISMATCH",
-            "未指定已批准规则时 Capability 未严格失败关闭",
-        )
 
 
 def _reconcile_response(
@@ -1191,13 +1269,17 @@ def _reconcile_response(
                 normalized_filters.bin_codes,
                 normalized_filters.overall_results,
                 normalized_filters.source_ids,
+                normalized_filters.tester_ids,
+                normalized_filters.program_versions,
+                normalized_filters.test_conditions,
             )
         )
         or len(response.filter_summary.filter_hash) != 64
+        or tuple(response.rule_context.evaluation_rule_versions)
         or response.rule_context.capability_rule_code is not None
         or response.rule_context.capability_rule_approval_status != "NOT_REQUESTED"
-        or capability_context.get("CAPABILITY") != ("GATED", "CAPABILITY_RULE_REQUIRED")
-        or tuple(response.warnings) != ("CAPABILITY_RULE_REQUIRED",)
+        or capability_context != {"DESCRIPTIVE": ("AVAILABLE", None)}
+        or tuple(response.warnings)
         or response.sampling_summary.sampled
         or response.sampling_summary.method is not None
         or response.sampling_summary.original_points != 0
@@ -1221,9 +1303,16 @@ def _reconcile_response(
             "参数分析响应超出所选 Current Dataset 范围",
         )
     parameter = item.parameters[0]
-    if parameter.identity.name != candidate.parameter_name:
+    if (
+        parameter.identity.name != candidate.parameter_name
+        or parameter.box_plot is not None
+        or parameter.histogram is not None
+        or parameter.normal_fit is not None
+        or parameter.capability is not None
+    ):
         raise VerificationError(
-            "ANALYSIS_RESPONSE_PARAMETER_MISMATCH", "参数分析响应返回了非目标参数"
+            "ANALYSIS_RESPONSE_PARAMETER_MISMATCH",
+            "DESCRIPTIVE 响应返回了非目标参数或 Owner-gated 结果",
         )
     actual_statuses = {row.status: int(row.count) for row in parameter.status_counts}
     if actual_statuses != dict(independent.status_counts):
@@ -1246,50 +1335,6 @@ def _reconcile_response(
             getattr(descriptive, field), getattr(independent, field), field=field
         )
 
-    box_plot = parameter.box_plot
-    if independent.numeric_count > 0:
-        if box_plot is None or independent.box_values is None:
-            raise VerificationError(
-                "ANALYSIS_BOX_SQL_MISMATCH", "箱线图统计与独立 SQL 无法对账"
-            )
-        for field, expected in independent.box_values.items():
-            _assert_optional_float_equal(
-                getattr(box_plot, field), expected, field=field
-            )
-        if (
-            int(box_plot.outlier_count) != independent.outlier_count
-            or box_plot.method != "TUKEY_1_5_IQR_PERCENTILE_CONT_LINEAR_V1"
-        ):
-            raise VerificationError(
-                "ANALYSIS_BOX_SQL_MISMATCH", "Tukey Whisker/异常点与独立 SQL 无法对账"
-            )
-    elif box_plot is not None:
-        raise VerificationError(
-            "ANALYSIS_BOX_SQL_MISMATCH", "无数值样本时不得伪造箱线图统计"
-        )
-
-    histogram = parameter.histogram
-    histogram_total = (
-        sum(int(item.count) for item in histogram.bins) if histogram is not None else -1
-    )
-    if (
-        histogram is None
-        or int(histogram.requested_bin_count) != DEFAULT_HISTOGRAM_BIN_COUNT
-        or histogram.method != "EQUAL_WIDTH_FIXED_BINS_LAST_CLOSED_V1"
-        or histogram_total != independent.histogram_total
-        or histogram_total != independent.numeric_count
-    ):
-        raise VerificationError(
-            "ANALYSIS_HISTOGRAM_SQL_MISMATCH", "直方图 count 合计与独立 SQL 无法对账"
-        )
-    _assert_capability_rule_gate(
-        parameter.capability, numeric_count=independent.numeric_count
-    )
-    if parameter.identity.limit_source != "NOT_EVALUATED":
-        raise VerificationError(
-            "CAPABILITY_RULE_GATE_MISMATCH",
-            "未指定规则时不得解析或暴露 formal capability limits",
-        )
     if (
         response.counts.included_units != item.filter_summary.matched_unit_count
         or response.counts.input_units < response.counts.included_units
@@ -1311,9 +1356,6 @@ def _reconcile_response(
             "maximum": independent.maximum,
             "average": independent.average,
             "sample_stddev": independent.sample_stddev,
-            "box_values": independent.box_values,
-            "outlier_count": independent.outlier_count,
-            "histogram_total": independent.histogram_total,
         },
     )
     return {
@@ -1326,24 +1368,13 @@ def _reconcile_response(
             "maximum",
             "average",
             "sample_stddev",
-            "percentile_cont_q1_median_q3",
-            "tukey_whiskers",
-            "outlier_count",
-            "histogram_count_sum",
         ],
         "row_count": independent.row_count,
         "numeric_count": independent.numeric_count,
         "status_count_total": sum(independent.status_counts.values()),
-        "histogram_count_total": independent.histogram_total,
-        "histogram_non_empty_bin_count": independent.histogram_non_empty_bin_count,
         "aggregate_summary_sha256": aggregate_digest,
-        "capability_rule_gate": {
-            "status": "PASS",
-            "reason_code": "CAPABILITY_RULE_REQUIRED",
-            "ppk_status": "NOT_REQUESTED",
-            "cpk_status": "NOT_REQUESTED",
-            "all_sigma_and_indices_null": True,
-        },
+        "positive_analysis": "DESCRIPTIVE",
+        "owner_gated_outputs_absent": True,
     }
 
 
@@ -1366,11 +1397,13 @@ def _public_candidate(candidate: AnalysisCandidate) -> dict[str, Any]:
 
 def _verify_stage(
     engine: Connectable,
-    service: Any,
+    parameter_service: Any,
+    relationship_service: Any,
     audit: ReadOnlyAudit,
     *,
     stage: str,
     selection: tuple[AnalysisCandidate, FormalSpecCoverage] | None,
+    relationship_y_parameter: str | None,
     warm_runs: int,
 ) -> dict[str, Any]:
     if selection is None:
@@ -1382,39 +1415,55 @@ def _verify_stage(
             "formal_spec_coverage": {
                 "status": "SKIP",
                 "reason_code": "STAGE_CANDIDATE_NOT_FOUND",
+                "used_by_descriptive": False,
             },
             "service_invocations": None,
             "sql_reconciliation": None,
+            "owner_gates": None,
         }
     candidate, formal_coverage = selection
     try:
-        with engine.connect() as connection:
-            independent = _independent_statistics(
-                connection,
-                candidate,
-                bin_count=DEFAULT_HISTOGRAM_BIN_COUNT,
+        if relationship_y_parameter is None:
+            raise VerificationError(
+                "RELATIONSHIP_GATE_PARAMETER_NOT_FOUND",
+                "所选 Dataset 缺少第二个可用于 Correlation 门禁的分析参数",
             )
+        with engine.connect() as connection:
+            independent = _independent_statistics(connection, candidate)
         request = _analysis_request(candidate)
         response, invocation_evidence = _run_invocations(
-            service, request, audit, warm_runs=warm_runs
+            parameter_service, request, audit, warm_runs=warm_runs
         )
         if response is None or invocation_evidence["status"] != "PASS":
             reconciliation = None
+            owner_gates = None
             functional_status = "FAIL"
             reason_code = str(invocation_evidence["reason_code"])
         else:
             reconciliation = _reconcile_response(response, candidate, independent)
+            owner_gates = _verify_owner_gates(
+                parameter_service,
+                relationship_service,
+                audit,
+                candidate,
+                relationship_y_parameter,
+                warm_runs=warm_runs,
+            )
             functional_status = "PASS"
-            reason_code = "ANALYSIS_AND_SQL_RECONCILED"
+            reason_code = "DESCRIPTIVE_RECONCILED_OWNER_GATES_CLOSED"
     except VerificationError as exc:
         return {
             "test_stage": stage,
             "status": "FAIL",
             "reason_code": exc.code,
             "candidate": _public_candidate(candidate),
-            "formal_spec_coverage": formal_coverage.public(),
+            "formal_spec_coverage": {
+                **formal_coverage.public(),
+                "used_by_descriptive": False,
+            },
             "service_invocations": None,
             "sql_reconciliation": None,
+            "owner_gates": None,
         }
     except Exception as exc:  # noqa: BLE001 - stage boundary redacts message
         return {
@@ -1423,25 +1472,27 @@ def _verify_stage(
             "reason_code": "STAGE_VERIFICATION_FAILED",
             "exception_type": type(exc).__name__,
             "candidate": _public_candidate(candidate),
-            "formal_spec_coverage": formal_coverage.public(),
+            "formal_spec_coverage": {
+                **formal_coverage.public(),
+                "used_by_descriptive": False,
+            },
             "service_invocations": None,
             "sql_reconciliation": None,
+            "owner_gates": None,
         }
-    if functional_status == "FAIL" or formal_coverage.status == "FAIL":
-        status = "FAIL"
-    elif formal_coverage.status == "SKIP":
-        status = "SKIP"
-        reason_code = formal_coverage.reason_code
-    else:
-        status = "PASS"
+    status = "FAIL" if functional_status == "FAIL" else "PASS"
     return {
         "test_stage": stage,
         "status": status,
         "reason_code": reason_code,
         "candidate": _public_candidate(candidate),
-        "formal_spec_coverage": formal_coverage.public(),
+        "formal_spec_coverage": {
+            **formal_coverage.public(),
+            "used_by_descriptive": False,
+        },
         "service_invocations": invocation_evidence,
         "sql_reconciliation": reconciliation,
+        "owner_gates": owner_gates,
     }
 
 
@@ -1455,12 +1506,11 @@ def _overall_status(stages: Sequence[Mapping[str, Any]]) -> str:
 
 
 def _technical_g0_dataset_service(engine: Any) -> SqlDatasetService:
-    return SqlDatasetService(
-        engine,
-        approved_parameter_analysis_rule_codes=(
-            _TECHNICAL_G0_APPROVED_PARAMETER_ANALYSIS_RULE_CODES
-        ),
-    )
+    return SqlDatasetService(engine)
+
+
+def _technical_g0_relationship_service(engine: Any) -> SqlParameterRelationshipService:
+    return SqlParameterRelationshipService(engine)
 
 
 def verify(
@@ -1468,6 +1518,9 @@ def verify(
     *,
     warm_runs: int = DEFAULT_WARM_RUNS,
     dataset_service_factory: Callable[[Any], Any] = _technical_g0_dataset_service,
+    relationship_service_factory: Callable[
+        [Any], Any
+    ] = _technical_g0_relationship_service,
 ) -> dict[str, Any]:
     if warm_runs < 1 or warm_runs > MAX_WARM_RUNS:
         raise VerificationError(
@@ -1479,6 +1532,7 @@ def verify(
     with engine.connect() as connection:
         identity = _identity(connection)
         before = _database_snapshot(connection)
+        _assert_zero_approval_owner_gate(before)
 
     primary_error: Exception | None = None
     stage_evidence: list[dict[str, Any]] = []
@@ -1487,19 +1541,30 @@ def verify(
         "CP": None,
         "FT": None,
     }
+    relationship_y_parameters: dict[str, str | None] = {"CP": None, "FT": None}
     try:
         with engine.connect() as connection:
             candidates = _candidate_rows(connection)
             candidate_count = len(candidates)
             selected = _select_stage_candidates(connection, candidates)
-        service = dataset_service_factory(engine)
+            for stage, selection in selected.items():
+                if selection is not None:
+                    relationship_y_parameters[stage] = (
+                        _select_relationship_y_parameter(
+                            connection, candidates, selection[0]
+                        )
+                    )
+        parameter_service = dataset_service_factory(engine)
+        relationship_service = relationship_service_factory(engine)
         stage_evidence = [
             _verify_stage(
                 engine,
-                service,
+                parameter_service,
+                relationship_service,
                 audit,
                 stage=stage,
                 selection=selected[stage],
+                relationship_y_parameter=relationship_y_parameters[stage],
                 warm_runs=warm_runs,
             )
             for stage in ("CP", "FT")
@@ -1528,14 +1593,15 @@ def verify(
             ),
             "cold_candidate": "first invocation in this process; caches are not flushed",
             "warm_runs": warm_runs,
-            "elapsed_scope": "SqlDatasetService.analyze_parameters call only",
-            "reconciliation": (
-                "independent read-only SQL for descriptive aggregates, SQL Server "
-                "PERCENTILE_CONT Tukey box plot, and histogram count sum"
+            "elapsed_scope": (
+                "DESCRIPTIVE SqlDatasetService.analyze_parameters invocations only"
             ),
-            "capability": (
-                "CAPABILITY is requested without a rule; the verifier requires the "
-                "CAPABILITY_RULE_REQUIRED fail-closed response and never selects a rule"
+            "reconciliation": (
+                "independent read-only SQL for DESCRIPTIVE counts and aggregates"
+            ),
+            "owner_gates": (
+                "BOX_PLOT, HISTOGRAM, CAPABILITY and CORRELATION require exact Rule "
+                "references; deterministic probe references must remain NOT_APPROVED"
             ),
             "decision": "FAIL precedes SKIP; both CP and FT require covered candidates",
         },
@@ -1553,6 +1619,16 @@ def verify(
             "blocked_statement_count": audit.blocked_statement_count,
             "canonical_current_counts_unchanged": True,
             "canonical_current_summary_digests_unchanged": True,
+            "current_catalog_snapshot_unchanged": True,
+            "rule_catalog_snapshot_unchanged": True,
+            "owner_gate_baseline": {
+                "rule_approval_record_count": int(
+                    before.rule_catalog_counts["rule_approval_record"]
+                ),
+                "active_rule_activation_count": int(
+                    before.rule_catalog_counts["active_rule_activation"]
+                ),
+            },
             "snapshot_before": before.public(),
             "snapshot_after": after.public(),
         },

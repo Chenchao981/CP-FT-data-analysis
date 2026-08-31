@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from app.core.errors import DomainError
 from sqlalchemy import text
 
 from scripts.g0 import verify_v13_parameter_analysis as verifier
@@ -18,14 +20,18 @@ from scripts.g0.verify_v13_parameter_analysis import (
     ReadOnlyAudit,
     VerificationError,
     _analysis_request,
-    _assert_capability_rule_gate,
     _assert_read_only_sql,
+    _assert_rule_reference_required,
     _assert_snapshot_unchanged,
+    _assert_zero_approval_owner_gate,
     _identity,
     _overall_status,
+    _parameter_gate_request,
     _ReadOnlyConnection,
     _reconcile_response,
+    _relationship_gate_request,
     _run_invocations,
+    _run_unapproved_rule_gate,
 )
 
 
@@ -49,7 +55,7 @@ class IdentityConnection:
         self,
         *,
         database: str = "TMS_G0_DEV",
-        revision: str = "sql2014_0019",
+        revision: str = "sql2014_0023",
         version: str = "12.0.6449.1",
         edition: int = 3,
         banner: str = "Microsoft SQL Server 2014",
@@ -106,44 +112,7 @@ def _independent() -> IndependentStatistics:
         maximum=100.0,
         average=17.285714285714285,
         sample_stddev=36.51222918412068,
-        box_values={
-            "minimum": 1.0,
-            "q1": 2.5,
-            "median": 4.0,
-            "q3": 5.5,
-            "maximum": 100.0,
-            "lower_whisker": 1.0,
-            "upper_whisker": 6.0,
-        },
-        outlier_count=1,
-        histogram_total=7,
-        histogram_non_empty_bin_count=3,
     )
-
-
-def _capability_gate(**updates: Any) -> SimpleNamespace:
-    values: dict[str, Any] = {
-        "status": "NOT_ELIGIBLE",
-        "ppk_status": "NOT_REQUESTED",
-        "cpk_status": "NOT_REQUESTED",
-        "reason_codes": ("CAPABILITY_RULE_REQUIRED",),
-        "spec_mode": None,
-        "lsl": None,
-        "usl": None,
-        "sample_count": 7,
-        "subgroup_count": 0,
-        "overall_sigma": None,
-        "within_sigma": None,
-        "ppl": None,
-        "ppu": None,
-        "ppk": None,
-        "cpl": None,
-        "cpu": None,
-        "cpk": None,
-        "rule_code": None,
-    }
-    values.update(updates)
-    return SimpleNamespace(**values)
 
 
 def _response(candidate: AnalysisCandidate | None = None) -> SimpleNamespace:
@@ -152,7 +121,7 @@ def _response(candidate: AnalysisCandidate | None = None) -> SimpleNamespace:
     parameter = SimpleNamespace(
         identity=SimpleNamespace(
             name=selected.parameter_name,
-            limit_source="NOT_EVALUATED",
+            limit_source="PROGRAM_METADATA",
             spec_set_ids=(),
         ),
         status_counts=tuple(
@@ -168,21 +137,10 @@ def _response(candidate: AnalysisCandidate | None = None) -> SimpleNamespace:
             average=independent.average,
             sample_stddev=independent.sample_stddev,
         ),
-        box_plot=SimpleNamespace(
-            **dict(independent.box_values or {}),
-            outlier_count=independent.outlier_count,
-            method="TUKEY_1_5_IQR_PERCENTILE_CONT_LINEAR_V1",
-        ),
-        histogram=SimpleNamespace(
-            requested_bin_count=20,
-            method="EQUAL_WIDTH_FIXED_BINS_LAST_CLOSED_V1",
-            bins=(
-                SimpleNamespace(count=2),
-                SimpleNamespace(count=4),
-                SimpleNamespace(count=1),
-            ),
-        ),
-        capability=_capability_gate(),
+        box_plot=None,
+        histogram=None,
+        normal_fit=None,
+        capability=None,
     )
     return SimpleNamespace(
         contract_version="PARAMETER_ANALYSIS_V1",
@@ -205,28 +163,21 @@ def _response(candidate: AnalysisCandidate | None = None) -> SimpleNamespace:
                 bin_codes=(),
                 overall_results=(),
                 source_ids=(),
+                tester_ids=(),
+                program_versions=(),
+                test_conditions=(),
             ),
             filter_hash="a" * 64,
         ),
         rule_context=SimpleNamespace(
             spec_versions=(),
             bin_mapping_versions=(),
-            evaluation_rule_versions=(
-                "TUKEY_1_5_IQR_PERCENTILE_CONT_LINEAR_V1",
-                "EQUAL_WIDTH_FIXED_BINS_LAST_CLOSED_V1",
-            ),
+            evaluation_rule_versions=(),
             capability_rule_code=None,
             capability_rule_approval_status="NOT_REQUESTED",
         ),
         capabilities=(
             SimpleNamespace(code="DESCRIPTIVE", status="AVAILABLE", reason_code=None),
-            SimpleNamespace(code="BOX_PLOT", status="AVAILABLE", reason_code=None),
-            SimpleNamespace(code="HISTOGRAM", status="AVAILABLE", reason_code=None),
-            SimpleNamespace(
-                code="CAPABILITY",
-                status="GATED",
-                reason_code="CAPABILITY_RULE_REQUIRED",
-            ),
         ),
         counts=SimpleNamespace(
             input_units=9,
@@ -241,7 +192,7 @@ def _response(candidate: AnalysisCandidate | None = None) -> SimpleNamespace:
             returned_points=0,
             preserved_out_of_spec_points=0,
         ),
-        warnings=("CAPABILITY_RULE_REQUIRED",),
+        warnings=(),
         computed_at="2026-08-30T00:00:00+00:00",
         items=(
             SimpleNamespace(
@@ -300,14 +251,14 @@ def test_read_only_connection_blocks_before_database_execution() -> None:
 def test_identity_requires_exact_database_revision_and_sql_server() -> None:
     assert _identity(IdentityConnection()) == {
         "database": "TMS_G0_DEV",
-        "schema_revision": "sql2014_0019",
+        "schema_revision": "sql2014_0023",
         "database_engine": "Microsoft SQL Server",
         "product_major": 12,
         "engine_edition": 3,
     }
     with pytest.raises(VerificationError, match="TMS_G0_DEV"):
         _identity(IdentityConnection(database="TMS_PROD"))
-    with pytest.raises(VerificationError, match="sql2014_0019"):
+    with pytest.raises(VerificationError, match="sql2014_0023"):
         _identity(IdentityConnection(revision="sql2014_0018"))
     with pytest.raises(VerificationError, match="Microsoft SQL Server"):
         _identity(IdentityConnection(banner="PostgreSQL"))
@@ -328,6 +279,16 @@ def _snapshot(*, current_digest: str = "b") -> DatabaseSnapshot:
         canonical_summary_digest="a",
         current_group_count=1,
         current_summary_digest=current_digest,
+        current_catalog_row_count=1,
+        current_catalog_digest="catalog",
+        rule_catalog_counts={
+            "rule_set": 0,
+            "rule_version": 0,
+            "rule_approval_record": 0,
+            "rule_activation": 0,
+            "active_rule_activation": 0,
+        },
+        rule_catalog_digest="rules",
     )
 
 
@@ -338,19 +299,41 @@ def test_snapshot_rejects_same_count_summary_membership_drift() -> None:
     assert exc.value.code == "READ_ONLY_SNAPSHOT_DRIFT"
 
 
-def test_analysis_request_contains_all_four_analyses_but_no_capability_rule() -> None:
+def test_zero_approval_owner_gate_rejects_approval_or_active_activation() -> None:
+    _assert_zero_approval_owner_gate(_snapshot())
+    baseline = _snapshot()
+    approved = replace(
+        baseline,
+        rule_catalog_counts={
+            **baseline.rule_catalog_counts,
+            "rule_approval_record": 1,
+        },
+    )
+    with pytest.raises(VerificationError) as approval_error:
+        _assert_zero_approval_owner_gate(approved)
+    assert approval_error.value.code == "OWNER_GATE_BASELINE_NOT_ZERO"
+
+    active = replace(
+        baseline,
+        rule_catalog_counts={
+            **baseline.rule_catalog_counts,
+            "active_rule_activation": 1,
+        },
+    )
+    with pytest.raises(VerificationError) as activation_error:
+        _assert_zero_approval_owner_gate(active)
+    assert activation_error.value.code == "OWNER_GATE_BASELINE_NOT_ZERO"
+
+
+def test_analysis_request_is_descriptive_only_without_rule_reference() -> None:
     request = _analysis_request(_candidate())
-    assert {item.value for item in request.analyses} == {
-        "DESCRIPTIVE",
-        "BOX_PLOT",
-        "HISTOGRAM",
-        "CAPABILITY",
-    }
-    assert request.histogram.bin_count == 20
+    assert [item.value for item in request.analyses] == ["DESCRIPTIVE"]
+    assert request.box_plot.rule_code is None
+    assert request.histogram.rule_code is None
     assert request.capability.rule_code is None
 
 
-def test_technical_g0_service_explicitly_approves_only_fixed_chart_methods(
+def test_technical_g0_service_does_not_bypass_registry_approval(
     monkeypatch,
 ) -> None:
     captured: dict[str, Any] = {}
@@ -366,36 +349,94 @@ def test_technical_g0_service_explicitly_approves_only_fixed_chart_methods(
 
     assert verifier._technical_g0_dataset_service(engine) is service
     assert captured["engine"] is engine
-    assert captured["approved_parameter_analysis_rule_codes"] == frozenset(
-        {
-            "TUKEY_1_5_IQR_PERCENTILE_CONT_LINEAR_V1",
-            "EQUAL_WIDTH_FIXED_BINS_LAST_CLOSED_V1",
-        }
+    assert captured == {"engine": engine}
+
+
+def test_technical_relationship_service_does_not_bypass_registry_approval(
+    monkeypatch,
+) -> None:
+    captured: dict[str, Any] = {}
+    engine = object()
+    service = object()
+
+    def fake_service_factory(received_engine, **kwargs):
+        captured["engine"] = received_engine
+        captured.update(kwargs)
+        return service
+
+    monkeypatch.setattr(
+        verifier, "SqlParameterRelationshipService", fake_service_factory
     )
 
-
-def test_capability_without_rule_must_be_strictly_not_requested() -> None:
-    _assert_capability_rule_gate(_capability_gate(), numeric_count=7)
-    with pytest.raises(VerificationError) as exc:
-        _assert_capability_rule_gate(
-            _capability_gate(ppk=1.23, ppk_status="ELIGIBLE"), numeric_count=7
-        )
-    assert exc.value.code == "CAPABILITY_RULE_GATE_MISMATCH"
+    assert verifier._technical_g0_relationship_service(engine) is service
+    assert captured == {"engine": engine}
 
 
-def test_reconcile_checks_descriptive_box_histogram_and_capability_gate() -> None:
+@pytest.mark.parametrize("analysis", ["BOX_PLOT", "HISTOGRAM", "CAPABILITY"])
+def test_parameter_owner_gate_requires_reference_and_rejects_unapproved(
+    analysis: str,
+) -> None:
+    analysis_type = verifier.DatasetParameterAnalysisType(analysis)
+    missing = _assert_rule_reference_required(
+        lambda: _parameter_gate_request(
+            _candidate(), analysis_type, exact_unapproved_reference=False
+        ),
+        expected_message=f"{analysis} requires an exact rule_code and version_code",
+    )
+    assert missing == {
+        "status": "PASS",
+        "reason_code": "ANALYSIS_RULE_REFERENCES_REQUIRED",
+        "database_statement_count": 0,
+    }
+
+    request = _parameter_gate_request(
+        _candidate(), analysis_type, exact_unapproved_reference=True
+    )
+    assert request.analyses == [analysis_type]
+    audit = ReadOnlyAudit()
+
+    def reject() -> None:
+        audit.statement_count += 2
+        raise DomainError("ANALYSIS_RULE_NOT_APPROVED", "redacted", 409)
+
+    unapproved = _run_unapproved_rule_gate(reject, audit, warm_runs=3)
+    assert unapproved["status"] == "PASS"
+    assert unapproved["reason_code"] == "ANALYSIS_RULE_NOT_APPROVED"
+    assert unapproved["invocation_count"] == 4
+    assert unapproved["sql_statement_counts"] == [2]
+
+
+def test_correlation_owner_gate_requires_reference_and_rejects_unapproved() -> None:
+    missing = _assert_rule_reference_required(
+        lambda: _relationship_gate_request(
+            _candidate(), "VTH", exact_unapproved_reference=False
+        ),
+        expected_message="CORRELATION requires an exact rule version",
+    )
+    assert missing["reason_code"] == "ANALYSIS_RULE_REFERENCES_REQUIRED"
+
+    request = _relationship_gate_request(
+        _candidate(), "VTH", exact_unapproved_reference=True
+    )
+    assert [item.value for item in request.analyses] == ["CORRELATION"]
+    audit = ReadOnlyAudit()
+
+    def reject() -> None:
+        audit.statement_count += 3
+        raise DomainError("ANALYSIS_RULE_NOT_APPROVED", "redacted", 409)
+
+    unapproved = _run_unapproved_rule_gate(reject, audit, warm_runs=1)
+    assert unapproved["invocation_count"] == 2
+    assert unapproved["sql_statement_counts"] == [3]
+
+
+def test_reconcile_checks_descriptive_and_absence_of_owner_gated_outputs() -> None:
     evidence = _reconcile_response(_response(), _candidate(), _independent())
     assert evidence["status"] == "PASS"
     assert evidence["row_count"] == 9
     assert evidence["numeric_count"] == 7
-    assert evidence["histogram_count_total"] == 7
-    assert evidence["capability_rule_gate"] == {
-        "status": "PASS",
-        "reason_code": "CAPABILITY_RULE_REQUIRED",
-        "ppk_status": "NOT_REQUESTED",
-        "cpk_status": "NOT_REQUESTED",
-        "all_sigma_and_indices_null": True,
-    }
+    assert evidence["positive_analysis"] == "DESCRIPTIVE"
+    assert evidence["owner_gated_outputs_absent"] is True
     assert "RDSON" not in json.dumps(evidence)
 
 
@@ -410,15 +451,12 @@ def test_reconcile_allows_dataset_spec_context_without_formal_capability_limits(
     assert evidence["status"] == "PASS"
 
 
-def test_reconcile_fails_when_histogram_total_does_not_match_sql() -> None:
+def test_reconcile_rejects_unrequested_owner_gated_output() -> None:
     response = _response()
-    response.items[0].parameters[0].histogram.bins = (
-        SimpleNamespace(count=2),
-        SimpleNamespace(count=4),
-    )
+    response.items[0].parameters[0].histogram = SimpleNamespace(bins=())
     with pytest.raises(VerificationError) as exc:
         _reconcile_response(response, _candidate(), _independent())
-    assert exc.value.code == "ANALYSIS_HISTOGRAM_SQL_MISMATCH"
+    assert exc.value.code == "ANALYSIS_RESPONSE_PARAMETER_MISMATCH"
 
 
 class CountingService:
@@ -427,6 +465,7 @@ class CountingService:
         self.calls = 0
 
     def analyze_parameters(self, request) -> Any:
+        assert [item.value for item in request.analyses] == ["DESCRIPTIVE"]
         assert request.capability.rule_code is None
         self.calls += 1
         return self.response
@@ -454,25 +493,16 @@ def test_invocations_default_shape_and_support_thirty_warm_runs() -> None:
     assert evidence["response_summary_sha256"]
 
 
-def test_formal_spec_absence_and_stage_absence_are_skip_not_pass(monkeypatch) -> None:
-    candidate = _candidate()
-    monkeypatch.setattr(verifier, "_formal_spec_rows", lambda connection, item: ())
-    coverage = verifier._formal_spec_coverage(SimpleNamespace(), candidate)
-    assert coverage == FormalSpecCoverage(
-        status="SKIP",
-        reason_code="FORMAL_RELEASED_SPEC_NOT_FOUND",
-        signature_count=0,
-        signature_digest=None,
-    )
+def test_stage_absence_is_skip_not_pass() -> None:
     assert _overall_status([{"status": "PASS"}, {"status": "SKIP"}]) == "SKIP"
     assert _overall_status([{"status": "FAIL"}, {"status": "SKIP"}]) == "FAIL"
 
 
-def test_stage_selector_prefers_compatible_candidate_with_formal_spec(
+def test_stage_selector_uses_first_compatible_candidate_without_current_spec_lookup(
     monkeypatch,
 ) -> None:
-    cp_without_spec = _candidate("CP")
-    cp_with_spec = AnalysisCandidate(
+    cp_candidate = _candidate("CP")
+    later_cp_candidate = AnalysisCandidate(
         dataset_id=12,
         dataset_version_id=102,
         version_no=1,
@@ -485,19 +515,14 @@ def test_stage_selector_prefers_compatible_candidate_with_formal_spec(
     monkeypatch.setattr(
         verifier, "_candidate_identity_is_compatible", lambda connection, item: True
     )
-
-    def coverage(connection, item):
-        del connection
-        if item is cp_without_spec:
-            return FormalSpecCoverage("SKIP", "FORMAL_RELEASED_SPEC_NOT_FOUND", 0, None)
-        return FormalSpecCoverage("PASS", "FORMAL_SPEC_AVAILABLE", 1, "digest")
-
-    monkeypatch.setattr(verifier, "_formal_spec_coverage", coverage)
     selected = verifier._select_stage_candidates(
-        SimpleNamespace(), (cp_without_spec, cp_with_spec, ft_with_spec)
+        SimpleNamespace(), (cp_candidate, later_cp_candidate, ft_with_spec)
     )
-    assert selected["CP"] is not None and selected["CP"][0] is cp_with_spec
+    assert selected["CP"] is not None and selected["CP"][0] is cp_candidate
     assert selected["FT"] is not None and selected["FT"][0] is ft_with_spec
+    assert selected["CP"][1] == FormalSpecCoverage(
+        "SKIP", "FORMAL_SPEC_NOT_REQUIRED_FOR_DESCRIPTIVE", 0, None
+    )
 
 
 def test_warm_run_validation_accepts_thirty_and_rejects_out_of_range() -> None:

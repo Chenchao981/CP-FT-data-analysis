@@ -15,7 +15,7 @@ export interface WaferYieldPoint {
 
 export interface DatasetReference { dataset_id: number; version_no: number }
 export type DatasetAnalysisGroupBy = "DATASET";
-export type DatasetParameterAnalysisType = "DESCRIPTIVE" | "BOX_PLOT" | "HISTOGRAM" | "CAPABILITY";
+export type DatasetParameterAnalysisType = "DESCRIPTIVE" | "BOX_PLOT" | "HISTOGRAM" | "NORMAL_FIT" | "CAPABILITY";
 export type DatasetAnalysisOverallResult = "PASS" | "FAIL" | "UNKNOWN" | "ABORT";
 export interface DatasetParameterAnalysisFilters {
   lot_ids: string[];
@@ -23,15 +23,25 @@ export interface DatasetParameterAnalysisFilters {
   bin_codes: string[];
   overall_results: DatasetAnalysisOverallResult[];
   source_ids: string[];
+  tester_ids: string[];
+  program_versions: string[];
+  test_conditions: string[];
 }
+export interface DatasetAnalysisRuleReference {
+  rule_code?: string | null;
+  version_code?: string | null;
+}
+export type DatasetCapabilityMethod = "CPK_POOLED_WITHIN_RUN_V1" | "CPK_POOLED_WITHIN_LOT_WAFER_V1";
 export interface DatasetParameterAnalysisRequest {
   datasets: DatasetReference[];
   group_by: DatasetAnalysisGroupBy;
   filters: DatasetParameterAnalysisFilters;
   parameters: string[];
   analyses: DatasetParameterAnalysisType[];
-  histogram?: { bin_count: number };
-  capability?: { rule_code?: "CPK_POOLED_WITHIN_RUN_V1" | "CPK_POOLED_WITHIN_LOT_WAFER_V1" | null };
+  box_plot?: DatasetAnalysisRuleReference;
+  histogram?: DatasetAnalysisRuleReference;
+  normal_fit?: DatasetAnalysisRuleReference;
+  capability?: DatasetAnalysisRuleReference & { method?: DatasetCapabilityMethod | null };
 }
 export interface DatasetParameterAnalysisFilterSummary extends DatasetParameterAnalysisFilters {
   matched_unit_count: number;
@@ -46,6 +56,13 @@ export interface DatasetAnalysisParameterIdentity {
   test_condition: string | null;
   spec_set_ids: number[];
   limit_source: string;
+  formal_lsl: number | null;
+  formal_usl: number | null;
+  formal_lower_operator: string | null;
+  formal_upper_operator: string | null;
+  formal_spec_status: "RESOLVED" | "NO_SPEC";
+  formal_spec_reason_codes: string[];
+  formal_spec_versions: string[];
 }
 export interface DatasetMeasurementStatusCount { status: string; count: number }
 export interface DatasetDescriptiveStatistics {
@@ -57,6 +74,18 @@ export interface DatasetDescriptiveStatistics {
   average: number | null;
   sample_stddev: number | null;
 }
+export interface DatasetMeasurementEvidence {
+  measurement_id: number;
+  value: number;
+  drilldown_key: string;
+  spec_status: "IN_SPEC" | "OUT_OF_SPEC" | "NO_SPEC";
+}
+export interface DatasetEvidenceSampling {
+  sampled: boolean;
+  method: string;
+  original_points: number;
+  returned_points: number;
+}
 export interface DatasetBoxPlotStatistics {
   minimum: number;
   q1: number;
@@ -67,12 +96,25 @@ export interface DatasetBoxPlotStatistics {
   upper_whisker: number;
   outlier_count: number;
   method: string;
+  outlier_evidence: DatasetMeasurementEvidence[];
+  outlier_sampling: DatasetEvidenceSampling | null;
 }
 export interface DatasetHistogramBin {
   index: number;
   lower_bound: number;
   upper_bound: number;
   count: number;
+  lower_inclusive: boolean;
+  upper_inclusive: boolean;
+  spec_region: "IN_SPEC" | "OUT_OF_SPEC" | "CROSSES_SPEC" | "NO_SPEC";
+  aggregate_drilldown_context: DatasetMeasurementAggregateContext | null;
+}
+export interface DatasetMeasurementAggregateContext {
+  dataset_id: number;
+  version_no: number;
+  parameter: string;
+  lower_bound: number | null;
+  upper_bound: number | null;
   lower_inclusive: boolean;
   upper_inclusive: boolean;
 }
@@ -83,6 +125,21 @@ export interface DatasetHistogramStatistics {
   range_max: number | null;
   bins: DatasetHistogramBin[];
   method: string;
+}
+export interface DatasetNormalFitPoint {
+  x: number;
+  probability_density: number;
+}
+export interface DatasetNormalFitStatistics {
+  status: string;
+  reason_code: string | null;
+  sample_count: number;
+  mean: number | null;
+  standard_deviation: number | null;
+  points: DatasetNormalFitPoint[];
+  method: "NORMAL_FIT_MLE_V1";
+  observed_evidence: DatasetMeasurementEvidence[];
+  evidence_sampling: DatasetEvidenceSampling | null;
 }
 export interface DatasetCapabilityStatistics {
   status: string;
@@ -103,6 +160,7 @@ export interface DatasetCapabilityStatistics {
   cpu: number | null;
   cpk: number | null;
   rule_code: string | null;
+  drilldown_context: DatasetMeasurementAggregateContext | null;
 }
 export interface DatasetParameterAnalysis {
   identity: DatasetAnalysisParameterIdentity;
@@ -111,6 +169,7 @@ export interface DatasetParameterAnalysis {
   box_plot: DatasetBoxPlotStatistics | null;
   histogram: DatasetHistogramStatistics | null;
   capability: DatasetCapabilityStatistics | null;
+  normal_fit: DatasetNormalFitStatistics | null;
 }
 export interface DatasetParameterAnalysisItem {
   dataset_id: number;

@@ -26,7 +26,7 @@ $workerReadyFile = Join-Path $stateDirectory 'worker.ready.json'
 $apiUrl = 'http://127.0.0.1:8000/api/v1/health/ready'
 $frontendUrl = 'http://127.0.0.1:5173/'
 $expectedDatabase = 'TMS_G0_DEV'
-$expectedSchemaRevision = 'sql2014_0019'
+$expectedSchemaRevision = 'sql2014_0023'
 
 . (Join-Path $PSScriptRoot 'TmsRuntime.Common.ps1')
 . (Join-Path $PSScriptRoot 'TmsLocalRuntime.Common.ps1')
@@ -261,8 +261,10 @@ if ($env:TMS_JOB_REPOSITORY -ne 'sql') {
 }
 $configuredDatabase = Assert-TmsLocalDatabaseGuard -Python $python -ExpectedDatabase $expectedDatabase
 $env:TMS_ENV = 'development'
-if (-not $UseConfiguredAuthentication) { $env:TMS_AUTH_REQUIRED = 'false' }
-$authenticationMode = if ($UseConfiguredAuthentication) { 'CONFIGURED' } else { 'DISABLED_ON_LOOPBACK' }
+$authenticationContract = Resolve-TmsLocalAuthenticationContract `
+    -UseConfiguredAuthentication:$UseConfiguredAuthentication
+$authenticationMode = [string]$authenticationContract.Mode
+$authRequired = [bool]$authenticationContract.AuthRequired
 $env:PYTHONIOENCODING = 'utf-8'
 if ([string]::IsNullOrWhiteSpace($env:TMS_LOG_DIR)) {
     $env:TMS_LOG_DIR = Join-Path $workspace 'data\logs'
@@ -283,6 +285,7 @@ if ($ValidateOnly) {
         expected_schema_revision = $expectedSchemaRevision
         job_repository = $env:TMS_JOB_REPOSITORY
         authentication = $authenticationMode
+        auth_required = $authRequired
         status = 'VALID'
     }
     return
@@ -310,6 +313,8 @@ try {
             }
         }
         if (
+            -not (@($priorState.PSObject.Properties.Name) -contains 'auth_required') -or
+            [bool]$priorState.auth_required -ne $authRequired -or
             [string]$priorState.authentication -ne $authenticationMode -or
             [string]$priorState.expected_database -ne $expectedDatabase -or
             [string]$priorState.expected_schema_revision -ne $expectedSchemaRevision
@@ -354,6 +359,7 @@ try {
         started_at_utc = [DateTime]::UtcNow.ToString('o')
         updated_at_utc = [DateTime]::UtcNow.ToString('o')
         authentication = $authenticationMode
+        auth_required = $authRequired
         expected_database = $expectedDatabase
         expected_schema_revision = $expectedSchemaRevision
         database_server = $null

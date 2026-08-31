@@ -98,7 +98,6 @@ def parameter_analysis(
             principal,
             version_no=reference.version_no,
         )
-    instance.assert_parameter_analysis_rules_approved(payload)
     return asdict(instance.analyze_parameters(payload))
 
 

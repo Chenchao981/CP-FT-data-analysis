@@ -1,6 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$RuntimeConfig,
+    [string]$RuntimeHome,
+    [string]$PythonPath,
     [string]$ExpectedServiceAccount,
     [switch]$SkipAclCheck
 )
@@ -55,11 +57,30 @@ $workspace = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 if ([string]::IsNullOrWhiteSpace($RuntimeConfig)) {
     $RuntimeConfig = Join-Path $workspace '.env.runtime.ps1'
 }
-if (-not (Test-Path -LiteralPath $RuntimeConfig -PathType Leaf)) {
+$externalRuntime = (
+    -not [string]::IsNullOrWhiteSpace($RuntimeHome) -or
+    -not [string]::IsNullOrWhiteSpace($PythonPath)
+)
+if ($externalRuntime) {
+    if ([string]::IsNullOrWhiteSpace($RuntimeHome) -or [string]::IsNullOrWhiteSpace($PythonPath)) {
+        throw 'RuntimeHome, RuntimeConfig and PythonPath must be supplied together.'
+    }
+    $external = Resolve-TmsExternalRuntimeContract -Workspace $workspace `
+        -RuntimeHome $RuntimeHome -RuntimeConfigPath $RuntimeConfig `
+        -PythonPath $PythonPath
+    $RuntimeConfig = $external.RuntimeConfig
+    $runtimeLogDirectory = Join-Path $external.RuntimeHome 'logs'
+    if (-not (Test-Path -LiteralPath $runtimeLogDirectory -PathType Container)) {
+        throw 'External RuntimeHome must contain an existing logs directory.'
+    }
+} elseif (-not (Test-Path -LiteralPath $RuntimeConfig -PathType Leaf)) {
     throw "Runtime configuration does not exist: $RuntimeConfig"
 }
 $RuntimeConfig = (Resolve-Path -LiteralPath $RuntimeConfig).Path
 Import-TmsRuntimeConfig -Path $RuntimeConfig
+if ($externalRuntime) {
+    $env:TMS_LOG_DIR = $runtimeLogDirectory
+}
 Assert-TmsRuntimeConfigContainsNoSecretLiterals -Path $RuntimeConfig
 $roots = @(Assert-TmsProductionRuntime -Workspace $workspace)
 

@@ -12,7 +12,10 @@ from pathlib import Path
 
 import pytest
 
+import scripts.release.build_tms_release as release_builder
 from scripts.release.build_tms_release import (
+    ReleaseValidationError,
+    _validate_ready_payload,
     build_release,
     get_schema_head,
     inspect_release_archive,
@@ -34,9 +37,26 @@ M4_POWERSHELL_FILES = (
     WINDOWS_SCRIPTS / "get_tms_scheduled_task_status.ps1",
     WINDOWS_SCRIPTS / "uninstall_tms_scheduled_tasks.ps1",
     WINDOWS_SCRIPTS / "run_tms_formal_cleanup.ps1",
+    WINDOWS_SCRIPTS / "run_tms_analytics_export_worker.ps1",
+    WINDOWS_SCRIPTS / "run_tms_analytics_export_cleanup.ps1",
     WINDOWS_SCRIPTS / "start_tms_runtime.ps1",
     ROOT / "docs" / "examples" / "TMS.production.runtime.example.ps1",
 )
+
+
+def _minimal_release_source(tmp_path: Path) -> Path:
+    root = tmp_path / "release-source"
+    for relative in sorted(
+        release_builder.ROOT_FILES | release_builder.EXPLICIT_FILES
+    ):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# release discovery fixture\n", encoding="utf-8")
+    for prefix, _suffixes in release_builder.ROOT_PREFIX_RULES:
+        (root / prefix).mkdir(parents=True, exist_ok=True)
+    launcher = root / "scripts" / "windows" / "start_tms_runtime.ps1"
+    launcher.write_text("# production launcher fixture\n", encoding="utf-8")
+    return root
 
 
 def _ps_literal(value: str | Path) -> str:
@@ -78,7 +98,8 @@ def _run_powershell(
 
 def _write_production_runtime(tmp_path: Path, *, overlap: bool = False) -> Path:
     directories = {
-        name: tmp_path / name for name in ("source", "upload", "work", "quick", "logs")
+        name: tmp_path / name
+        for name in ("source", "upload", "work", "quick", "analytics", "logs")
     }
     for directory in directories.values():
         directory.mkdir()
@@ -117,6 +138,7 @@ def _write_production_runtime(tmp_path: Path, *, overlap: bool = False) -> Path:
         "TMS_UPLOAD_ROOT": str(directories["upload"]),
         "TMS_WORK_ROOT": str(directories["work"]),
         "TMS_QUICK_WORK_ROOT": str(directories["quick"]),
+        "TMS_ANALYTICS_EXPORT_ROOT": str(directories["analytics"]),
         "TMS_LOG_DIR": str(directories["logs"]),
     }
     runtime = tmp_path / "runtime.ps1"
@@ -160,7 +182,7 @@ def test_production_preflight_accepts_strong_separated_runtime(tmp_path: Path) -
 
     assert completed.returncode == 0, completed.stderr + completed.stdout
     assert "VALID" in completed.stdout
-    assert "sql2014_0019" in completed.stdout
+    assert "sql2014_0023" in completed.stdout
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows production runtime contract")
@@ -204,7 +226,8 @@ def test_python_production_config_requires_exact_release_head(
     from app.core.config import get_settings
 
     directories = {
-        name: tmp_path / name for name in ("source", "upload", "work", "quick", "logs")
+        name: tmp_path / name
+        for name in ("source", "upload", "work", "quick", "analytics", "logs")
     }
     for directory in directories.values():
         directory.mkdir()
@@ -223,6 +246,7 @@ def test_python_production_config_requires_exact_release_head(
         "TMS_UPLOAD_ROOT": str(directories["upload"]),
         "TMS_WORK_ROOT": str(directories["work"]),
         "TMS_QUICK_WORK_ROOT": str(directories["quick"]),
+        "TMS_ANALYTICS_EXPORT_ROOT": str(directories["analytics"]),
         "TMS_LOG_DIR": str(directories["logs"]),
         "TMS_SOURCE_ROOTS_JSON": json.dumps([{"path": str(directories["source"])}]),
     }
@@ -234,6 +258,11 @@ def test_python_production_config_requires_exact_release_head(
         get_settings.cache_clear()
         monkeypatch.setenv("TMS_EXPECTED_SCHEMA_REVISION", "sql2014_0017")
         with pytest.raises(RuntimeError, match="release head"):
+            get_settings()
+        get_settings.cache_clear()
+        monkeypatch.setenv("TMS_EXPECTED_SCHEMA_REVISION", get_schema_head(ROOT))
+        monkeypatch.delenv("TMS_ANALYTICS_EXPORT_ROOT")
+        with pytest.raises(RuntimeError, match="TMS_ANALYTICS_EXPORT_ROOT"):
             get_settings()
     finally:
         get_settings.cache_clear()
@@ -434,13 +463,22 @@ def test_scheduled_tasks_keep_formal_and_quick_cleanup_separate() -> None:
     assert "[string]$FormalCleanupMode = 'DryRun'" in installer
     assert "TMS-QuickCleanup" in installer
     assert "TMS-FormalCleanup" in installer
+    assert "TMS-AnalyticsExportWorker" in installer
+    assert "start_tms_runtime.ps1" in installer
+    assert "-RuntimeHome" in installer
+    assert "-RuntimeConfigPath" in installer
+    assert "-PythonPath" in installer
     assert "run_tms_cleanup.ps1" in installer
     assert "run_tms_formal_cleanup.ps1" in installer
     assert "TMS-FormalCleanup" in status
+    assert "TMS-AnalyticsExportWorker" in status
+    assert "ACTION_ROLE" in status
+    assert "EXTERNAL_" in status
     assert "ExpectedFormalCleanupMode = 'DryRun'" in status
     assert "ExpectedCleanupMode = 'DryRun'" in status
     assert "CLEANUP_MODE" in status
     assert "TMS-FormalCleanup" in uninstaller
+    assert "TMS-AnalyticsExportWorker" in uninstaller
     assert "scripts\\run_formal_artifact_cleanup.py" in formal_wrapper
     assert "if ($Delete)" in formal_wrapper
     assert "$arguments += '--delete'" in formal_wrapper
@@ -474,12 +512,131 @@ def test_release_is_reproducible_inspected_and_launcher_smoked(tmp_path: Path) -
         == hashlib.sha256(second.read_bytes()).digest()
     )
     assert first_manifest == second_manifest
-    assert first_manifest["schema_revision"] == "sql2014_0019"
+    assert first_manifest["schema_revision"] == "sql2014_0023"
     inspected = inspect_release_archive(first)
     assert inspected == first_manifest
     with zipfile.ZipFile(first) as archive:
         names = archive.namelist()
     assert ".env.runtime.ps1" not in names
     assert not any(name.startswith("data/") for name in names)
+    assert not any(".test." in name.casefold() for name in names)
+    assert not any(".spec." in name.casefold() for name in names)
+    assert not any(name in release_builder.WINDOWS_LOCAL_ACCEPTANCE_FILES for name in names)
+    assert {
+        "scripts/windows/get_tms_scheduled_task_status.ps1",
+        "scripts/windows/install_tms_scheduled_tasks.ps1",
+        "scripts/windows/run_tms_analytics_export_cleanup.ps1",
+        "scripts/windows/run_tms_analytics_export_worker.ps1",
+        "scripts/windows/run_tms_api.ps1",
+        "scripts/windows/run_tms_cleanup.ps1",
+        "scripts/windows/run_tms_formal_cleanup.ps1",
+        "scripts/windows/run_tms_worker.ps1",
+        "scripts/windows/start_tms_runtime.ps1",
+        "scripts/windows/test_tms_migration_readiness.ps1",
+        "scripts/windows/test_tms_production_preflight.ps1",
+        "scripts/windows/test_tms_runtime_health.ps1",
+        "scripts/windows/uninstall_tms_scheduled_tasks.ps1",
+    }.issubset(names)
     assert "scripts/windows/run_tms_formal_cleanup.ps1" in names
     assert "scripts/run_formal_artifact_cleanup.py" in names
+
+
+def test_release_discovery_excludes_untracked_scratch_and_frontend_tests(
+    tmp_path: Path,
+) -> None:
+    root = _minimal_release_source(tmp_path)
+    production = root / "frontend" / "src" / "feature.ts"
+    production.write_text("export const production = true;\n", encoding="utf-8")
+    excluded = (
+        root / "backend" / "app" / "scratch.py",
+        root / "frontend" / "src" / "scratch.ts",
+        root / "frontend" / "src" / "scratch.test.ts",
+        root / "frontend" / "src" / "feature.spec.tsx",
+        root / "frontend" / "src" / "__tests__" / "fixture.ts",
+        root / "frontend" / "src" / "fixtures" / "mock.ts",
+    )
+    for path in excluded:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("export const testOnly = true;\n", encoding="utf-8")
+
+    # The temporary source is not a Git checkout: every allowed-suffix file is
+    # effectively untracked, so discovery must rely on the release policy itself.
+    names = {
+        path.relative_to(root).as_posix()
+        for path in release_builder.discover_release_files(root)
+    }
+
+    assert "frontend/src/feature.ts" in names
+    assert not {
+        path.relative_to(root).as_posix() for path in excluded
+    }.intersection(names)
+
+
+@pytest.mark.parametrize("target_kind", ["root", "nested-child"])
+def test_release_discovery_rejects_reparse_source_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, target_kind: str
+) -> None:
+    root = _minimal_release_source(tmp_path)
+    if target_kind == "root":
+        reparse_target = root
+    else:
+        reparse_target = root / "frontend" / "src" / "linked-source"
+        reparse_target.mkdir(parents=True)
+        (reparse_target / "outside.ts").write_text(
+            "export const outside = true;\n", encoding="utf-8"
+        )
+    original = release_builder._is_reparse_point
+    monkeypatch.setattr(
+        release_builder,
+        "_is_reparse_point",
+        lambda path: path == reparse_target or original(path),
+    )
+
+    with pytest.raises(ReleaseValidationError, match="reparse point"):
+        release_builder.discover_release_files(root)
+
+
+def test_release_runtime_smoke_accepts_only_exact_dev_ready_target() -> None:
+    assert _validate_ready_payload(
+        {
+            "status": "ready",
+            "database": "TMS_G0_DEV",
+            "schema_revision": "sql2014_0023",
+        }
+    ) == {
+        "status": "ready",
+        "database": "TMS_G0_DEV",
+        "schema_revision": "sql2014_0023",
+    }
+    for payload in (
+        {
+            "status": "starting",
+            "database": "TMS_G0_DEV",
+            "schema_revision": "sql2014_0023",
+        },
+        {"status": "ready", "database": "NCE_TMS", "schema_revision": "sql2014_0023"},
+        {
+            "status": "ready",
+            "database": "TMS_G0_DEV",
+            "schema_revision": "sql2014_0021",
+        },
+    ):
+        with pytest.raises(ReleaseValidationError, match="readiness target"):
+            _validate_ready_payload(payload)
+
+
+def test_release_runtime_smoke_always_stops_and_revalidates_manifest() -> None:
+    source = (ROOT / "scripts" / "release" / "build_tms_release.py").read_text(
+        encoding="utf-8-sig"
+    )
+    smoke = source[
+        source.index("def smoke_unpacked_launcher(") : source.index("def main()")
+    ]
+
+    assert "finally:\n                    _stop_process_tree(process)" in smoke
+    assert (
+        "finally:\n            _validate_unpacked_launcher(powershell, launcher)"
+        in smoke
+    )
+    assert '"-ListenAddress"' in smoke
+    assert '"127.0.0.1"' in smoke

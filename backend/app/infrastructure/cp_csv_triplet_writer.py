@@ -21,7 +21,13 @@ from app.infrastructure.initial_import_staging import (
     prepare_atomic_stage,
     record_atomic_stage,
 )
+from app.infrastructure.sql_bin_mapping_materializer import (
+    materialize_processing_run_bin_mappings,
+)
 from app.infrastructure.sql_master_data_service import observe_product_crosswalk
+from app.infrastructure.sql_spec_evaluation_materializer import (
+    materialize_processing_run_spec_evaluations,
+)
 
 CP_MULTI_LOT_SPEC_BINDING_REQUIRED = "CP_MULTI_LOT_SPEC_BINDING_REQUIRED"
 
@@ -1069,6 +1075,18 @@ class CpCsvTripletWriter:
                         measurement_parameters.clear()
             if measurement_parameters:
                 connection.execute(insert_measurement, measurement_parameters)
+
+            materialize_processing_run_bin_mappings(
+                connection,
+                processing_run_id=processing_run_id,
+            )
+            materialize_processing_run_spec_evaluations(
+                connection,
+                processing_run_id=processing_run_id,
+                explicit_run_spec_set_ids={
+                    run_id: int(spec_set_id) for run_id in run_ids.values()
+                },
+            )
 
             dataset_code = f"CP-BATCH-{import_batch_id}"
             dataset_id = connection.execute(

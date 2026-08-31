@@ -32,6 +32,6 @@ def test_existing_release_bootstrap_requires_current_atomic_schema() -> None:
     script = (
         ROOT / "scripts" / "g0" / "bootstrap_existing_cleaner_releases.py"
     ).read_text(encoding="utf-8-sig")
-    assert 'revision != "sql2014_0019"' in script
+    assert 'revision != "sql2014_0023"' in script
     assert "Cleaner version checksum collision" in script
     assert "artifact_uri=:artifact_uri" in script

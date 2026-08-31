@@ -63,11 +63,15 @@ $apiDatabaseServer = $null
 $workerDatabase = $null
 $workerSchemaRevision = $null
 $workerDatabaseServer = $null
+$authRequired = $null
 
 if ($statePresent) {
     $state = Read-TmsLocalJsonFile -Path $statePath
     if ([string]$state.workspace -ne $workspace) {
         throw 'The local test state belongs to a different workspace.'
+    }
+    if (@($state.PSObject.Properties.Name) -contains 'auth_required') {
+        $authRequired = [bool]$state.auth_required
     }
     $processes = @($state.processes | ForEach-Object {
         $running = if ([string]::IsNullOrWhiteSpace($node)) {
@@ -132,6 +136,7 @@ $allReady = (
     $apiReady -and
     $frontendReady -and
     $workerReady -and
+    $null -ne $authRequired -and
     @($processes).Count -eq 3 -and
     @($processes | Where-Object { -not $_.running }).Count -eq 0
 )
@@ -144,6 +149,7 @@ $result = [PSCustomObject]@{
     frontend_ready = $frontendReady
     worker_ready = $workerReady
     worker_draining = $workerDraining
+    auth_required = $authRequired
     database = $database
     schema_revision = $schemaRevision
     worker_database = $workerDatabase
@@ -157,7 +163,7 @@ $result = [PSCustomObject]@{
 if ($AsJson) {
     $result | ConvertTo-Json -Depth 5
 } else {
-    $result | Select-Object mode, state_present, state_status, all_ready, api_ready, frontend_ready, worker_ready, worker_draining, database, schema_revision, worker_database, worker_schema_revision, database_server, frontend_url | Format-List
+    $result | Select-Object mode, state_present, state_status, all_ready, api_ready, frontend_ready, worker_ready, worker_draining, auth_required, database, schema_revision, worker_database, worker_schema_revision, database_server, frontend_url | Format-List
     $processes | Format-Table -AutoSize
 }
 if ($RequireReady -and -not $allReady) { exit 1 }

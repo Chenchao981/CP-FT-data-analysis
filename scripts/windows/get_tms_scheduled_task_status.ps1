@@ -2,11 +2,16 @@
 param(
     [string]$TaskPath = '\NCE\TMS\',
     [string]$ApiUrl = 'http://127.0.0.1:8000/api/v1/health/ready',
+    [string]$RuntimeHome,
+    [string]$RuntimeConfigPath,
+    [string]$PythonPath,
     [string]$ExpectedUser,
     [ValidateSet('DryRun', 'Delete')]
     [string]$ExpectedCleanupMode = 'DryRun',
     [ValidateSet('DryRun', 'Delete')]
     [string]$ExpectedFormalCleanupMode = 'DryRun',
+    [ValidateSet('DryRun', 'Delete')]
+    [string]$ExpectedAnalyticsExportCleanupMode = 'DryRun',
     [switch]$ProbeApi,
     [switch]$ProbeRuntime,
     [switch]$RequireAll
@@ -19,13 +24,24 @@ if ($TaskPath -notmatch '^\\[A-Za-z0-9_.-]+(?:\\[A-Za-z0-9_.-]+)*\\$') {
 }
 $workspace = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$launcherScript = Join-Path $PSScriptRoot 'start_tms_runtime.ps1'
 $expectedScripts = @{
-    'TMS-API' = Join-Path $PSScriptRoot 'run_tms_api.ps1'
-    'TMS-Worker' = Join-Path $PSScriptRoot 'run_tms_worker.ps1'
-    'TMS-QuickCleanup' = Join-Path $PSScriptRoot 'run_tms_cleanup.ps1'
-    'TMS-FormalCleanup' = Join-Path $PSScriptRoot 'run_tms_formal_cleanup.ps1'
+    'TMS-API' = $launcherScript
+    'TMS-Worker' = $launcherScript
+    'TMS-AnalyticsExportWorker' = $launcherScript
+    'TMS-AnalyticsExportCleanup' = $launcherScript
+    'TMS-QuickCleanup' = $launcherScript
+    'TMS-FormalCleanup' = $launcherScript
 }
-$taskNames = @('TMS-API', 'TMS-Worker', 'TMS-QuickCleanup', 'TMS-FormalCleanup')
+$expectedRoles = @{
+    'TMS-API' = 'API'
+    'TMS-Worker' = 'Worker'
+    'TMS-AnalyticsExportWorker' = 'AnalyticsExportWorker'
+    'TMS-AnalyticsExportCleanup' = 'AnalyticsExportCleanup'
+    'TMS-QuickCleanup' = 'QuickCleanup'
+    'TMS-FormalCleanup' = 'FormalCleanup'
+}
+$taskNames = @('TMS-API', 'TMS-Worker', 'TMS-AnalyticsExportWorker', 'TMS-AnalyticsExportCleanup', 'TMS-QuickCleanup', 'TMS-FormalCleanup')
 $results = foreach ($taskName in $taskNames) {
     $task = Get-ScheduledTask -TaskName $taskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
     if ($null -eq $task) {
@@ -59,6 +75,26 @@ $results = foreach ($taskName in $taskNames) {
         if ([string]$action.Arguments -notlike "*`"$expectedScript`"*") {
             $definitionErrors.Add('ACTION_SCRIPT')
         }
+        if ([string]$action.Arguments -notmatch "(?i)(?:^|\s)-Role\s+$([regex]::Escape($expectedRoles[$taskName]))(?:\s|$)") {
+            $definitionErrors.Add('ACTION_ROLE')
+        }
+        foreach ($externalArgument in @(
+            @('RuntimeHome', $RuntimeHome),
+            @('RuntimeConfigPath', $RuntimeConfigPath),
+            @('PythonPath', $PythonPath)
+        )) {
+            if ([string]$action.Arguments -notmatch "(?i)(?:^|\s)-$($externalArgument[0])(?:\s|$)") {
+                $definitionErrors.Add("EXTERNAL_$($externalArgument[0].ToUpperInvariant())")
+            } elseif (
+                -not [string]::IsNullOrWhiteSpace([string]$externalArgument[1]) -and
+                ([string]$action.Arguments).IndexOf(
+                    [string]$externalArgument[1],
+                    [StringComparison]::OrdinalIgnoreCase
+                ) -lt 0
+            ) {
+                $definitionErrors.Add("EXTERNAL_$($externalArgument[0].ToUpperInvariant())_PATH")
+            }
+        }
         if ([string]$action.Arguments -match '(?i)(password|\bpwd\b|jwt|bearer|token|secret)') {
             $definitionErrors.Add('SECRET_IN_ARGUMENTS')
         }
@@ -70,6 +106,11 @@ $results = foreach ($taskName in $taskNames) {
         } elseif ($taskName -eq 'TMS-FormalCleanup') {
             $cleanupMode = if ([string]$action.Arguments -match '(?i)(?:^|\s)-Delete(?:\s|$)') { 'Delete' } else { 'DryRun' }
             if ($cleanupMode -ne $ExpectedFormalCleanupMode) {
+                $definitionErrors.Add('CLEANUP_MODE')
+            }
+        } elseif ($taskName -eq 'TMS-AnalyticsExportCleanup') {
+            $cleanupMode = if ([string]$action.Arguments -match '(?i)(?:^|\s)-Delete(?:\s|$)') { 'Delete' } else { 'DryRun' }
+            if ($cleanupMode -ne $ExpectedAnalyticsExportCleanupMode) {
                 $definitionErrors.Add('CLEANUP_MODE')
             }
         }
@@ -107,7 +148,11 @@ $results = foreach ($taskName in $taskNames) {
 }
 $results
 
-$logDir = Join-Path $workspace 'data\logs'
+$logDir = if ([string]::IsNullOrWhiteSpace($RuntimeHome)) {
+    Join-Path $workspace 'data\logs'
+} else {
+    Join-Path $RuntimeHome 'logs'
+}
 if (Test-Path -LiteralPath $logDir -PathType Container) {
     Get-ChildItem -LiteralPath $logDir -Filter '*.jsonl*' -File | Sort-Object Name | ForEach-Object {
         [PSCustomObject]@{

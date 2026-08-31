@@ -50,14 +50,18 @@ vi.mock("./features/analytics/AnalyticsWorkbench", () => ({
 vi.mock("./features/quick-analysis/QuickAnalysisWorkbench", () => ({ QuickAnalysisWorkbench: () => <div>quick-analysis</div> }));
 vi.mock("./features/operations/OperationsConsistency", () => ({ OperationsConsistency: () => <div>operations</div> }));
 vi.mock("./features/management/QualityManagementDashboard", () => ({
-  QualityManagementDashboard: ({ searchParams, onSearchParamsChange, onOpenAnalytics, onOpenJob, canOpenAnalytics }: {
+  QualityManagementDashboard: ({ searchParams, onSearchParamsChange, onOpenAnalytics, onOpenJob, canOpenAnalytics, canReadManagement, canGovernRules }: {
     searchParams: URLSearchParams;
     onSearchParamsChange: (params: URLSearchParams) => void;
     onOpenAnalytics: (datasetId: number, versionNo: number) => void;
     onOpenJob: (jobId: number) => void;
     canOpenAnalytics: boolean;
+    canReadManagement: boolean;
+    canGovernRules: boolean;
   }) => <div>
     <span>{`quality:${searchParams.toString()}:analytics-${canOpenAnalytics}`}</span>
+    <span>{`quality-management-${canReadManagement}`}</span>
+    <span>{`quality-govern-${canGovernRules}`}</span>
     <button onClick={() => onSearchParamsChange(new URLSearchParams({ test_stage: "FT", lot_id: "LOT-8" }))}>quality-filter</button>
     <button onClick={() => onOpenAnalytics(31, 2)}>quality-analytics</button>
     <button onClick={() => onOpenJob(96)}>quality-job</button>
@@ -288,7 +292,7 @@ describe("App navigation and deep links", () => {
     expect(window.location.pathname).toBe("/analytics");
   }, 15_000);
 
-  it("allows RULE_GOVERN to read Crosswalk without granting the management summary", async () => {
+  it("allows RULE_GOVERN to manage Crosswalk and Rule Registry without requesting the management summary", async () => {
     vi.mocked(useAuth).mockReturnValue(authFor(["RULE_GOVERN"]));
     window.history.replaceState({}, "", "/master-data/product-crosswalks?status=PENDING&page=1");
 
@@ -296,11 +300,15 @@ describe("App navigation and deep links", () => {
 
     expect(await screen.findByText("crosswalk:status=PENDING&page=1")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "产品 Crosswalk" })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "质量管理摘要" })).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "质量管理摘要" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "crosswalk-page" }));
     await waitFor(() => expect(window.location.search).toBe("?status=PENDING&page=2"));
     expect(await screen.findByText("crosswalk:status=PENDING&page=2")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("link", { name: "质量管理摘要" }));
+    expect(await screen.findByText("quality-govern-true")).toBeInTheDocument();
+    expect(screen.getByText("quality-management-false")).toBeInTheDocument();
   }, 15_000);
 
   it("fails closed for a management deep link without MANAGEMENT_READ", async () => {

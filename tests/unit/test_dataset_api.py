@@ -43,11 +43,13 @@ from app.domain.datasets import (
     WaferOption,
     WaferYieldPoint,
 )
+from app.infrastructure.sql_dataset_service import _normal_fit_statistics
 from app.main import create_app
 from fastapi.testclient import TestClient
 
-_BOX_PLOT_METHOD = "TUKEY_1_5_IQR_PERCENTILE_CONT_LINEAR_V1"
-_HISTOGRAM_METHOD = "EQUAL_WIDTH_FIXED_BINS_LAST_CLOSED_V1"
+_BOX_PLOT_RULE = "BOX_RULE:v1"
+_HISTOGRAM_RULE = "HISTOGRAM_RULE:v1"
+_NORMAL_FIT_RULE = "NORMAL_FIT_RULE:v1"
 
 
 class StubDatasetService:
@@ -67,11 +69,21 @@ class StubDatasetService:
         analyses = {item.value for item in request.analyses}
         required_rules: set[str] = set()
         if "BOX_PLOT" in analyses:
-            required_rules.add(_BOX_PLOT_METHOD)
+            required_rules.add(
+                f"{request.box_plot.rule_code}:{request.box_plot.version_code}"
+            )
         if "HISTOGRAM" in analyses:
-            required_rules.add(_HISTOGRAM_METHOD)
+            required_rules.add(
+                f"{request.histogram.rule_code}:{request.histogram.version_code}"
+            )
+        if "NORMAL_FIT" in analyses:
+            required_rules.add(
+                f"{request.normal_fit.rule_code}:{request.normal_fit.version_code}"
+            )
         if request.capability.rule_code is not None:
-            required_rules.add(request.capability.rule_code.value)
+            required_rules.add(
+                f"{request.capability.rule_code}:{request.capability.version_code}"
+            )
         normalized = tuple(sorted(required_rules))
         self.approval_calls.append(normalized)
         missing_rules = sorted(
@@ -255,6 +267,7 @@ class StubDatasetService:
     def analyze_parameters(
         self, request: DatasetParameterAnalysisRequest
     ) -> DatasetParameterAnalysisResult:
+        self.assert_parameter_analysis_rules_approved(request)
         self.parameter_analysis_request = request
         filters = request.filters
         return DatasetParameterAnalysisResult(
@@ -283,6 +296,9 @@ class StubDatasetService:
                         item.value for item in filters.overall_results
                     ),
                     source_ids=tuple(filters.source_ids),
+                    tester_ids=tuple(filters.tester_ids),
+                    program_versions=tuple(filters.program_versions),
+                    test_conditions=tuple(filters.test_conditions),
                 ),
                 filter_hash="a" * 64,
             ),
@@ -331,6 +347,9 @@ class StubDatasetService:
                             item.value for item in filters.overall_results
                         ),
                         source_ids=tuple(filters.source_ids),
+                        tester_ids=tuple(filters.tester_ids),
+                        program_versions=tuple(filters.program_versions),
+                        test_conditions=tuple(filters.test_conditions),
                         matched_unit_count=8,
                         candidate_measurement_count=8,
                     ),
@@ -749,6 +768,9 @@ def test_parameter_analysis_accepts_multi_dataset_and_echoes_filter_summary() ->
                 "bin_codes": ["1"],
                 "overall_results": ["PASS", "FAIL"],
                 "source_ids": ["SOURCE-A"],
+                "tester_ids": ["TESTER-A"],
+                "program_versions": ["PROGRAM-1"],
+                "test_conditions": ["VGS=0V"],
             },
             "parameters": [" P1 "],
             "analyses": ["DESCRIPTIVE"],
@@ -787,6 +809,9 @@ def test_parameter_analysis_accepts_multi_dataset_and_echoes_filter_summary() ->
         "bin_codes": ["1"],
         "overall_results": ["PASS", "FAIL"],
         "source_ids": ["SOURCE-A"],
+        "tester_ids": ["TESTER-A"],
+        "program_versions": ["PROGRAM-1"],
+        "test_conditions": ["VGS=0V"],
         "matched_unit_count": 8,
         "candidate_measurement_count": 8,
     }
@@ -795,6 +820,46 @@ def test_parameter_analysis_accepts_multi_dataset_and_echoes_filter_summary() ->
     assert stub.parameter_analysis_request.parameters == ["P1"]
     assert stub.parameter_analysis_request.filters.source_ids == ["SOURCE-A"]
     assert stub.approval_calls == [()]
+
+
+def test_identical_parameter_analysis_requests_recheck_every_dataset_access() -> None:
+    class CountingDatasetService(StubDatasetService):
+        def __init__(self) -> None:
+            super().__init__()
+            self.analysis_calls = 0
+
+        def analyze_parameters(
+            self, request: DatasetParameterAnalysisRequest
+        ) -> DatasetParameterAnalysisResult:
+            self.analysis_calls += 1
+            return super().analyze_parameters(request)
+
+    app = create_app()
+    stub = CountingDatasetService()
+    app.state.dataset_service = stub
+    client = TestClient(app)
+    payload = {
+        "datasets": [
+            {"dataset_id": 11, "version_no": 2},
+            {"dataset_id": 12, "version_no": 3},
+        ],
+        "parameters": ["P1"],
+        "analyses": ["DESCRIPTIVE"],
+    }
+
+    responses = [
+        client.post("/api/v1/datasets/parameter-analysis", json=payload)
+        for _ in range(2)
+    ]
+
+    assert [response.status_code for response in responses] == [200, 200]
+    assert [(call[0], call[3]) for call in stub.access_calls] == [
+        (11, 2),
+        (12, 3),
+        (11, 2),
+        (12, 3),
+    ]
+    assert stub.analysis_calls == 2
 
 
 @pytest.mark.parametrize(
@@ -883,7 +948,7 @@ def test_parameter_analysis_requires_dataset_read_permission() -> None:
 def test_parameter_analysis_api_preserves_explicit_capability_rule() -> None:
     app = create_app()
     stub = StubDatasetService()
-    stub.approved_parameter_analysis_rule_codes.add("CPK_POOLED_WITHIN_RUN_V1")
+    stub.approved_parameter_analysis_rule_codes.add("CPK_RUN_RULE:v1")
     app.state.dataset_service = stub
 
     response = TestClient(app).post(
@@ -892,14 +957,20 @@ def test_parameter_analysis_api_preserves_explicit_capability_rule() -> None:
             "datasets": [{"dataset_id": 1, "version_no": 1}],
             "parameters": ["P1"],
             "analyses": ["CAPABILITY"],
-            "capability": {"rule_code": "CPK_POOLED_WITHIN_RUN_V1"},
+            "capability": {
+                "method": "CPK_POOLED_WITHIN_RUN_V1",
+                "rule_code": "CPK_RUN_RULE",
+                "version_code": "v1",
+            },
         },
     )
 
     assert response.status_code == 200
     assert stub.parameter_analysis_request is not None
+    assert stub.parameter_analysis_request.capability.rule_code == "CPK_RUN_RULE"
+    assert stub.parameter_analysis_request.capability.version_code == "v1"
     assert (
-        stub.parameter_analysis_request.capability.rule_code
+        stub.parameter_analysis_request.capability.method.value
         == "CPK_POOLED_WITHIN_RUN_V1"
     )
 
@@ -915,7 +986,11 @@ def test_parameter_analysis_api_rejects_unapproved_capability_rule() -> None:
             "datasets": [{"dataset_id": 1, "version_no": 1}],
             "parameters": ["P1"],
             "analyses": ["CAPABILITY"],
-            "capability": {"rule_code": "CPK_POOLED_WITHIN_RUN_V1"},
+            "capability": {
+                "method": "CPK_POOLED_WITHIN_RUN_V1",
+                "rule_code": "CPK_RUN_RULE",
+                "version_code": "v1",
+            },
         },
     )
 
@@ -926,15 +1001,16 @@ def test_parameter_analysis_api_rejects_unapproved_capability_rule() -> None:
 
 
 @pytest.mark.parametrize(
-    ("analysis", "rule_code"),
+    ("analysis", "rule_code", "config_name"),
     [
-        ("BOX_PLOT", _BOX_PLOT_METHOD),
-        ("HISTOGRAM", _HISTOGRAM_METHOD),
+        ("BOX_PLOT", _BOX_PLOT_RULE, "box_plot"),
+        ("HISTOGRAM", _HISTOGRAM_RULE, "histogram"),
+        ("NORMAL_FIT", _NORMAL_FIT_RULE, "normal_fit"),
     ],
-    ids=("box-plot", "histogram"),
+    ids=("box-plot", "histogram", "normal-fit"),
 )
 def test_parameter_analysis_api_rejects_unapproved_fixed_method(
-    analysis: str, rule_code: str
+    analysis: str, rule_code: str, config_name: str
 ) -> None:
     app = create_app()
     stub = StubDatasetService()
@@ -946,6 +1022,10 @@ def test_parameter_analysis_api_rejects_unapproved_fixed_method(
             "datasets": [{"dataset_id": 1, "version_no": 1}],
             "parameters": ["P1"],
             "analyses": [analysis],
+            config_name: {
+                "rule_code": rule_code.split(":")[0],
+                "version_code": "v1",
+            },
         },
     )
 
@@ -956,10 +1036,37 @@ def test_parameter_analysis_api_rejects_unapproved_fixed_method(
     assert stub.parameter_analysis_request is None
 
 
+def test_normal_fit_uses_mle_sigma_and_has_bounded_curve() -> None:
+    result = _normal_fit_statistics(
+        sample_count=4,
+        mean=2.5,
+        sample_stddev=1.2909944487358056,
+        minimum=1.0,
+        maximum=4.0,
+    )
+
+    assert result.status == "AVAILABLE"
+    assert result.standard_deviation == pytest.approx(1.118033988749895)
+    assert len(result.points) == 101
+    assert result.points[0].x < result.mean < result.points[-1].x
+    assert all(point.probability_density >= 0 for point in result.points)
+
+    constant = _normal_fit_statistics(
+        sample_count=30,
+        mean=5.0,
+        sample_stddev=0.0,
+        minimum=5.0,
+        maximum=5.0,
+    )
+    assert constant.status == "NOT_APPLICABLE"
+    assert constant.reason_code == "NORMAL_FIT_ZERO_VARIANCE"
+    assert constant.points == ()
+
+
 def test_parameter_analysis_api_checks_every_requested_fixed_method() -> None:
     app = create_app()
     stub = StubDatasetService()
-    stub.approved_parameter_analysis_rule_codes.add(_BOX_PLOT_METHOD)
+    stub.approved_parameter_analysis_rule_codes.add(_BOX_PLOT_RULE)
     app.state.dataset_service = stub
 
     response = TestClient(app).post(
@@ -968,13 +1075,18 @@ def test_parameter_analysis_api_checks_every_requested_fixed_method() -> None:
             "datasets": [{"dataset_id": 1, "version_no": 1}],
             "parameters": ["P1"],
             "analyses": ["BOX_PLOT", "HISTOGRAM"],
+            "box_plot": {"rule_code": "BOX_RULE", "version_code": "v1"},
+            "histogram": {
+                "rule_code": "HISTOGRAM_RULE",
+                "version_code": "v1",
+            },
         },
     )
 
     assert response.status_code == 409
     assert [(call[0], call[3]) for call in stub.access_calls] == [(1, 1)]
-    assert stub.approval_calls == [tuple(sorted((_BOX_PLOT_METHOD, _HISTOGRAM_METHOD)))]
-    assert response.json()["error"]["details"] == [{"rule_code": _HISTOGRAM_METHOD}]
+    assert stub.approval_calls == [tuple(sorted((_BOX_PLOT_RULE, _HISTOGRAM_RULE)))]
+    assert response.json()["error"]["details"] == [{"rule_code": _HISTOGRAM_RULE}]
     assert stub.parameter_analysis_request is None
 
 
@@ -998,7 +1110,11 @@ def test_parameter_analysis_access_failure_precedes_rule_gate() -> None:
             "datasets": [{"dataset_id": 404, "version_no": 1}],
             "parameters": ["P1"],
             "analyses": ["CAPABILITY"],
-            "capability": {"rule_code": "CPK_POOLED_WITHIN_RUN_V1"},
+            "capability": {
+                "method": "CPK_POOLED_WITHIN_RUN_V1",
+                "rule_code": "CPK_RUN_RULE",
+                "version_code": "v1",
+            },
         },
     )
 

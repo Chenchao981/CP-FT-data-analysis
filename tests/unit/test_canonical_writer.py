@@ -166,11 +166,35 @@ def test_writer_persists_traceable_canonical_rows_in_one_transaction() -> None:
     assert unit_parameters["source_row_no"] == 16
     assert file.source_sha256 in unit_parameters["metadata_json"]
     measurement_batches = [
-        params for sql, params in connection.executions if "INSERT test.measurement" in sql
+        params
+        for sql, params in connection.executions
+        if "INSERT test.measurement(" in sql
     ]
     assert sum(len(batch) for batch in measurement_batches) == len(file.parameters)
     assert measurement_batches[0][0]["source_column_index"] == 5
     assert measurement_batches[0][0]["raw_value"] == "2E-8"
+    mapping_calls = [
+        params
+        for sql, params in connection.executions
+        if "INSERT test.unit_bin_evaluation" in sql
+    ]
+    assert mapping_calls == [
+        {
+            "processing_run_id": 70,
+            "lock_resource": "TMS_BIN_MAPPING_PROCESSING_RUN:70",
+        }
+    ]
+    spec_evaluation_calls = [
+        params
+        for sql, params in connection.executions
+        if "INSERT test.measurement_evaluation" in sql
+    ]
+    assert spec_evaluation_calls == [
+        {
+            "processing_run_id": 70,
+            "lock_resource": "TMS_SPEC_EVALUATION_PROCESSING_RUN:70",
+        }
+    ]
 
 
 def test_cp_writer_accepts_missing_optional_product() -> None:

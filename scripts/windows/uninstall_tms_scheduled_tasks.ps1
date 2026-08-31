@@ -12,7 +12,7 @@ if ($TaskPath -notmatch '^\\[A-Za-z0-9_.-]+(?:\\[A-Za-z0-9_.-]+)*\\$') {
 if ($Force) {
     $ConfirmPreference = 'None'
 }
-$taskNames = @('TMS-API', 'TMS-Worker', 'TMS-QuickCleanup', 'TMS-FormalCleanup')
+$taskNames = @('TMS-API', 'TMS-Worker', 'TMS-AnalyticsExportWorker', 'TMS-AnalyticsExportCleanup', 'TMS-QuickCleanup', 'TMS-FormalCleanup')
 $removedTaskNames = @()
 foreach ($taskName in $taskNames) {
     $task = Get-ScheduledTask -TaskName $taskName -TaskPath $TaskPath -ErrorAction SilentlyContinue

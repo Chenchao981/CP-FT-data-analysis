@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Mapping
 from datetime import UTC, datetime, time, timedelta
 from typing import Any
@@ -151,34 +152,8 @@ class SqlManagementService:
                 observed = connection.execute(
                     text("SELECT CAST(SYSUTCDATETIME() AS datetime2(3))")
                 ).scalar_one()
-                kpi = connection.execute(text(cte + _KPI_SQL), params).mappings().one()
-                trends = (
-                    connection.execute(text(cte + _TREND_SQL), params).mappings().all()
-                )
-                breakdown_rows: list[Mapping[str, Any]] = []
-                for dimension, expression in _BREAKDOWN_DIMENSIONS:
-                    rows = (
-                        connection.execute(
-                            text(
-                                cte
-                                + _BREAKDOWN_SQL.format(
-                                    dimension=dimension,
-                                    expression=expression,
-                                )
-                            ),
-                            params,
-                        )
-                        .mappings()
-                        .all()
-                    )
-                    breakdown_rows.extend(rows)
-                fail_rows = (
-                    connection.execute(text(cte + _FAIL_BIN_SQL), params)
-                    .mappings()
-                    .all()
-                )
-                recent_rows = (
-                    connection.execute(text(cte + _RECENT_DATASET_SQL), params)
+                fact_rows = (
+                    connection.execute(text(cte + _QUALITY_FACT_SQL), params)
                     .mappings()
                     .all()
                 )
@@ -196,20 +171,13 @@ class SqlManagementService:
                 "管理质量摘要暂时不可用",
                 503,
             ) from exc
-
-        total_units = int(kpi["total_units"] or 0)
-        pass_units = int(kpi["pass_units"] or 0)
-        fail_units = int(kpi["fail_units"] or 0)
-        abort_units = int(kpi["abort_units"] or 0)
-        unknown_units = int(kpi["unknown_units"] or 0)
-        known = pass_units + fail_units
-        latest = kpi["latest_dataset_at_utc"]
-        observed_aware = _aware_utc(observed)
-        latest_aware = _aware_utc(latest) if latest is not None else None
-        freshness = (
-            max(0, int((observed_aware - latest_aware).total_seconds()))
-            if latest_aware is not None
-            else None
+        kpis, trends, breakdowns, fail_bins, recent_datasets = (
+            _summarize_quality_facts(
+                fact_rows,
+                observed=observed,
+                failed_jobs=failed_jobs,
+                recent_limit=recent_limit,
+            )
         )
         return QualityManagementSummary(
             observed_at_utc=_iso_utc(observed) or "",
@@ -231,26 +199,11 @@ class SqlManagementService:
                 "trend_period": "Trend periods are Asia/Shanghai business dates; period_start_utc is the UTC instant of Shanghai local midnight.",
                 "failed_job_scope": "Failed Job counts use time, business domain, test stage, and factory filters only; Product and Lot filters do not apply.",
             },
-            kpis=QualityKpis(
-                dataset_count=int(kpi["dataset_count"] or 0),
-                product_count=int(kpi["product_count"] or 0),
-                lot_count=int(kpi["lot_count"] or 0),
-                total_units=total_units,
-                pass_units=pass_units,
-                fail_units=fail_units,
-                abort_units=abort_units,
-                unknown_units=unknown_units,
-                known_yield_denominator=known,
-                yield_rate=_rate(pass_units, known),
-                unknown_rate=_rate(unknown_units, total_units),
-                failed_job_count=failed_jobs,
-                latest_dataset_at_utc=_iso_utc(latest),
-                freshness_seconds=freshness,
-            ),
-            trends=tuple(_trend(row) for row in trends),
-            breakdowns=tuple(_breakdown(row) for row in breakdown_rows),
-            fail_bins=tuple(_fail_bin(row, fail_units) for row in fail_rows),
-            recent_datasets=tuple(_recent(row) for row in recent_rows),
+            kpis=kpis,
+            trends=trends,
+            breakdowns=breakdowns,
+            fail_bins=fail_bins,
+            recent_datasets=recent_datasets,
         )
 
 
@@ -341,6 +294,225 @@ def _recent(row: Mapping[str, Any]) -> QualityDatasetDrilldown:
     )
 
 
+def _summarize_quality_facts(
+    rows: list[Mapping[str, Any]],
+    *,
+    observed: datetime,
+    failed_jobs: int,
+    recent_limit: int,
+) -> tuple[
+    QualityKpis,
+    tuple[QualityTrendPoint, ...],
+    tuple[QualityBreakdown, ...],
+    tuple[FailBinSummary, ...],
+    tuple[QualityDatasetDrilldown, ...],
+]:
+    """Aggregate the single set-based quality fact query without changing KPI rules."""
+
+    dataset_ids: set[int] = set()
+    products: set[str] = set()
+    lots: set[str] = set()
+    totals: defaultdict[str, int] = defaultdict(int)
+    latest: datetime | None = None
+    trend_groups: dict[Any, dict[str, Any]] = {}
+    breakdown_groups: dict[tuple[str, str], dict[str, Any]] = {}
+    fail_bin_counts: defaultdict[str, int] = defaultdict(int)
+    recent_groups: dict[tuple[int, int, int], dict[str, Any]] = {}
+
+    for row in rows:
+        count = int(row["unit_count"] or 0)
+        dataset_id = int(row["dataset_id"])
+        version_no = int(row["version_no"])
+        input_batch_id = int(row["input_batch_id"])
+        dataset_key = (dataset_id, version_no)
+        result = str(row["overall_result"] or "")
+        published = row["published_at_utc"]
+        if not isinstance(published, datetime):
+            raise DomainError(
+                "QUALITY_SNAPSHOT_INVALID",
+                "质量汇总发布时间字段无效",
+                503,
+            )
+
+        dataset_ids.add(int(row["dataset_version_id"]))
+        if row["product_name"] is not None:
+            products.add(str(row["product_name"]))
+        if row["lot_id"] is not None:
+            lots.add(str(row["lot_id"]))
+        totals["total"] += count
+        if result in {"PASS", "FAIL", "ABORT", "UNKNOWN"}:
+            totals[result] += count
+        if latest is None or _aware_utc(published) > _aware_utc(latest):
+            latest = published
+
+        shanghai_day = (_aware_utc(published) + timedelta(hours=8)).date()
+        trend = trend_groups.setdefault(
+            shanghai_day,
+            {"datasets": set(), "total": 0, "PASS": 0, "FAIL": 0, "UNKNOWN": 0},
+        )
+        trend["datasets"].add(dataset_key)
+        trend["total"] += count
+        if result in {"PASS", "FAIL", "UNKNOWN"}:
+            trend[result] += count
+
+        for dimension, column in _BREAKDOWN_DIMENSIONS:
+            raw_key = row[column]
+            dimension_key = str(raw_key) if raw_key is not None else "UNKNOWN"
+            breakdown = breakdown_groups.setdefault(
+                (dimension, dimension_key),
+                {
+                    "datasets": set(),
+                    "lots": set(),
+                    "total": 0,
+                    "PASS": 0,
+                    "FAIL": 0,
+                    "UNKNOWN": 0,
+                },
+            )
+            breakdown["datasets"].add(dataset_key)
+            if row["lot_id"] is not None:
+                breakdown["lots"].add(str(row["lot_id"]))
+            breakdown["total"] += count
+            if result in {"PASS", "FAIL", "UNKNOWN"}:
+                breakdown[result] += count
+
+        if result == "FAIL":
+            fail_bin_counts[str(row["fail_bin"] or "UNCLASSIFIED")] += count
+
+        recent_key = (dataset_id, version_no, input_batch_id)
+        recent = recent_groups.setdefault(
+            recent_key,
+            {
+                "dataset_id": dataset_id,
+                "version_no": version_no,
+                "input_batch_id": input_batch_id,
+                "job_id": None,
+                "product_name": None,
+                "lot_id": None,
+                "factory_code": None,
+                "business_domain": None,
+                "test_stage": None,
+                "unit_count": 0,
+                "pass_count": 0,
+                "fail_count": 0,
+                "unknown_count": 0,
+                "source_file_count": 0,
+                "published_at_utc": published,
+            },
+        )
+        for key in (
+            "job_id",
+            "product_name",
+            "lot_id",
+            "factory_code",
+            "business_domain",
+            "test_stage",
+        ):
+            value = row[key]
+            if value is not None and (
+                recent[key] is None or str(value) > str(recent[key])
+            ):
+                recent[key] = value
+        recent["unit_count"] += count
+        if result == "PASS":
+            recent["pass_count"] += count
+        elif result == "FAIL":
+            recent["fail_count"] += count
+        elif result == "UNKNOWN":
+            recent["unknown_count"] += count
+        recent["source_file_count"] = max(
+            int(recent["source_file_count"]), int(row["source_file_count"] or 0)
+        )
+        if _aware_utc(published) > _aware_utc(recent["published_at_utc"]):
+            recent["published_at_utc"] = published
+
+    pass_units = totals["PASS"]
+    fail_units = totals["FAIL"]
+    unknown_units = totals["UNKNOWN"]
+    known = pass_units + fail_units
+    freshness = (
+        max(0, int((_aware_utc(observed) - _aware_utc(latest)).total_seconds()))
+        if latest is not None
+        else None
+    )
+    kpis = QualityKpis(
+        dataset_count=len(dataset_ids),
+        product_count=len(products),
+        lot_count=len(lots),
+        total_units=totals["total"],
+        pass_units=pass_units,
+        fail_units=fail_units,
+        abort_units=totals["ABORT"],
+        unknown_units=unknown_units,
+        known_yield_denominator=known,
+        yield_rate=_rate(pass_units, known),
+        unknown_rate=_rate(unknown_units, totals["total"]),
+        failed_job_count=failed_jobs,
+        latest_dataset_at_utc=_iso_utc(latest),
+        freshness_seconds=freshness,
+    )
+
+    trends = tuple(
+        QualityTrendPoint(
+            period_start_utc=_iso_utc(datetime.combine(day, time.min) - timedelta(hours=8))
+            or "",
+            dataset_count=len(group["datasets"]),
+            total_units=group["total"],
+            pass_units=group["PASS"],
+            fail_units=group["FAIL"],
+            unknown_units=group["UNKNOWN"],
+            yield_rate=_rate(group["PASS"], group["PASS"] + group["FAIL"]),
+            unknown_rate=_rate(group["UNKNOWN"], group["total"]),
+        )
+        for day, group in sorted(trend_groups.items())
+    )
+
+    breakdowns_list: list[QualityBreakdown] = []
+    for dimension, _column in _BREAKDOWN_DIMENSIONS:
+        matching = [
+            (key, group)
+            for (group_dimension, key), group in breakdown_groups.items()
+            if group_dimension == dimension
+        ]
+        for key, group in sorted(matching, key=lambda item: (-item[1]["total"], item[0])):
+            breakdowns_list.append(
+                QualityBreakdown(
+                    dimension=dimension,
+                    key=key,
+                    label=key,
+                    dataset_count=len(group["datasets"]),
+                    lot_count=len(group["lots"]),
+                    total_units=group["total"],
+                    pass_units=group["PASS"],
+                    fail_units=group["FAIL"],
+                    unknown_units=group["UNKNOWN"],
+                    yield_rate=_rate(group["PASS"], group["PASS"] + group["FAIL"]),
+                    unknown_rate=_rate(group["UNKNOWN"], group["total"]),
+                )
+            )
+
+    fail_bins = tuple(
+        FailBinSummary(
+            bin_code=code,
+            fail_units=count,
+            share_of_failed=_rate(count, fail_units),
+        )
+        for code, count in sorted(
+            fail_bin_counts.items(), key=lambda item: (-item[1], item[0])
+        )[:20]
+    )
+    recent_rows = sorted(
+        recent_groups.values(),
+        key=lambda row: (
+            _aware_utc(row["published_at_utc"]),
+            int(row["dataset_id"]),
+        ),
+        reverse=True,
+    )[:recent_limit]
+    recent_datasets = tuple(_recent(row) for row in recent_rows)
+    return kpis, trends, tuple(breakdowns_list), fail_bins, recent_datasets
+
+
 def _batch_filter_sql(params: Mapping[str, Any]) -> str:
     clauses = []
     for key, column in (
@@ -351,6 +523,42 @@ def _batch_filter_sql(params: Mapping[str, Any]) -> str:
         if params.get(key) is not None:
             clauses.append(f"AND {column}=:{key}")
     return "\n  ".join(clauses)
+
+
+_QUALITY_FACT_SQL = """
+, unit_groups AS (
+    SELECT su.dataset_version_id,su.dataset_id,su.version_no,su.input_batch_id,
+           su.published_at_utc,su.product_name,su.business_domain,su.test_stage,
+           su.factory_code,su.lot_id,su.overall_result,su.fail_bin,
+           COUNT_BIG(*) AS unit_count
+    FROM scoped_units su
+    GROUP BY su.dataset_version_id,su.dataset_id,su.version_no,su.input_batch_id,
+             su.published_at_utc,su.product_name,su.business_domain,su.test_stage,
+             su.factory_code,su.lot_id,su.overall_result,su.fail_bin
+), ranked_summary AS (
+    SELECT prs.dataset_id,prs.dataset_version_no,prs.job_id,
+           ROW_NUMBER() OVER (
+               PARTITION BY prs.dataset_id,prs.dataset_version_no
+               ORDER BY prs.result_summary_id DESC
+           ) AS row_no
+    FROM ingestion.processing_result_summary prs
+    WHERE prs.status='PROCESSED'
+), file_counts AS (
+    SELECT ibf.import_batch_id,COUNT_BIG(*) AS source_file_count
+    FROM ingestion.import_batch_file ibf
+    GROUP BY ibf.import_batch_id
+)
+SELECT ug.dataset_version_id,ug.dataset_id,ug.version_no,ug.input_batch_id,
+       ug.published_at_utc,ug.product_name,ug.business_domain,ug.test_stage,
+       ug.factory_code,ug.lot_id,ug.overall_result,ug.fail_bin,ug.unit_count,
+       rs.job_id,COALESCE(fc.source_file_count,0) AS source_file_count
+FROM unit_groups ug
+LEFT JOIN ranked_summary rs
+  ON rs.dataset_id=ug.dataset_id
+ AND rs.dataset_version_no=ug.version_no
+ AND rs.row_no=1
+LEFT JOIN file_counts fc ON fc.import_batch_id=ug.input_batch_id;
+"""
 
 
 _KPI_SQL = """

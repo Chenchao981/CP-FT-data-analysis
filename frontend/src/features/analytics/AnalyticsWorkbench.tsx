@@ -1,20 +1,39 @@
 import { ArrowLeftOutlined, ReloadOutlined } from "@ant-design/icons";
-import { useQuery } from "@tanstack/react-query";
-import { Alert, Button, Card, Col, Empty, Row, Select, Space, Statistic, Table, Tag, Typography } from "antd";
-import type { ColumnsType, TablePaginationConfig } from "antd/es/table";
-import type { EChartsOption } from "echarts";
-import { useMemo } from "react";
+import { useIsFetching, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Alert, Button, Card, Col, Empty, Row, Select, Space, Spin, Tabs, Tag, Typography } from "antd";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
 import {
-  compareDatasets,
-  getDatasetChartData,
-  getDatasetDetails,
-  type DatasetComparisonItem,
-  type DatasetDetailMeasurement,
-  type DatasetDetailRow,
-} from "../../api/datasets";
-import { EChart } from "../../components/EChart";
-import { ParameterAnalysisPanel } from "./ParameterAnalysisPanel";
+  getAnalyticsFeatureFlags,
+  getAnalyticsOverview,
+  getAnalyticsShellContext,
+  type AnalyticsContextRequest,
+  type AnalyticsFeatureGroupCode,
+  type AnalyticsOverallResult,
+} from "../../api/analytics";
+import type { DatasetAnalysisOverallResult } from "../../api/datasets";
+import type { SavedAnalysisRecord } from "../../api/savedAnalyses";
+import { AnalysisDrilldownDrawer } from "./AnalysisDrilldownDrawer";
+import {
+  ANALYSIS_OVERALL_RESULTS,
+  createDefaultAnalysisViewState,
+  parseAnalysisViewState,
+  serializeAnalysisViewState,
+  type AnalysisAuthorityFilters,
+  type AnalysisDisplayState,
+  type AnalysisSection,
+  type AnalysisViewState,
+} from "./context/analysisViewState";
+import type { AnalysisComponentState } from "./context/analysisViewConfig";
+import { savedAnalysisRestoreParams } from "./savedAnalysisRestore";
+import type { AnalyticsAggregateDrilldown } from "./sections/sectionTypes";
+
+const OverviewSection = lazy(() => import("./sections/AnalyticsOverviewSection"));
+const DetailSection = lazy(() => import("./sections/AnalyticsDetailSection"));
+const ParameterSection = lazy(() => import("./sections/AnalyticsParameterSection"));
+const SpatialSection = lazy(() => import("./sections/AnalyticsSpatialSection"));
+const QualitySection = lazy(() => import("./sections/AnalyticsQualitySection"));
+const DeliverySection = lazy(() => import("./sections/AnalyticsDeliverySection"));
 
 export interface DatasetSelection { datasetId: number; versionNo: number }
 
@@ -25,238 +44,173 @@ export interface AnalyticsWorkbenchProps {
   onOpenCatalog: () => void;
 }
 
-const BIN_COLORS = ["#2d9d78", "#d64545", "#f0a429", "#7b61a8", "#247ba0", "#8d6e63", "#607d8b"];
+type FilterKey = keyof AnalysisAuthorityFilters;
+
 const datasetKey = (selection: DatasetSelection) => `${selection.datasetId}:${selection.versionNo}`;
 const datasetLabel = (selection: DatasetSelection) => `Dataset #${selection.datasetId} / V${selection.versionNo}`;
-const uniqueValues = (values: string[]) => Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
-const positiveInt = (value: string | null, fallback: number, maximum?: number) => {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0) return fallback;
-  return maximum == null ? parsed : Math.min(parsed, maximum);
-};
-const selectOptions = (values: string[]) => values.map((value) => ({ label: value, value }));
-const percent = (value: number | null) => value == null ? "—" : `${(value * 100).toFixed(3)}%`;
-const compatibilityLabel: Record<string, string> = {
-  SINGLE_DATASET: "单数据集",
-  COMPATIBLE: "规格兼容",
-  NOT_EVALUATED: "选择参数后校验",
-};
-const measurementValue = (measurement: DatasetDetailMeasurement) => {
-  const value = measurement.value_numeric ?? measurement.value_text ?? "—";
-  return `${measurement.parameter}: ${value}${measurement.unit ? ` ${measurement.unit}` : ""} (${measurement.status})`;
+const compareOrdinal = (left: string, right: string) => left < right ? -1 : left > right ? 1 : 0;
+const selectOptions = (selected: readonly string[], available: readonly string[] = []) => Array.from(new Set([...selected, ...available]))
+  .sort(compareOrdinal)
+  .map((value) => ({ label: value, value }));
+
+const SECTION_TABS: Array<{ key: AnalysisSection; label: string }> = [
+  { key: "overview", label: "Overview" },
+  { key: "detail", label: "Detail" },
+  { key: "parameter", label: "Parameter" },
+  { key: "spatial", label: "Spatial" },
+  { key: "quality", label: "Quality" },
+  { key: "delivery", label: "Delivery" },
+];
+
+const SECTION_FEATURES: Record<AnalysisSection, AnalyticsFeatureGroupCode> = {
+  overview: "OVERVIEW",
+  detail: "DETAIL",
+  parameter: "PARAMETER",
+  spatial: "SPATIAL",
+  quality: "QUALITY",
+  delivery: "DELIVERY",
 };
 
 export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChange, onOpenCatalog }: AnalyticsWorkbenchProps) {
-  const selectedDatasets = datasets
+  const queryClient = useQueryClient();
+  const analyticsFetching = useIsFetching({ queryKey: ["analytics"] });
+  const selectedDatasets = useMemo(() => datasets
     .filter((item) => Number.isSafeInteger(item.datasetId) && item.datasetId > 0 && Number.isSafeInteger(item.versionNo) && item.versionNo > 0)
     .filter((item, index, items) => items.findIndex((candidate) => candidate.datasetId === item.datasetId) === index)
-    .slice(0, 8);
-  const selectionKeys = selectedDatasets.map(datasetKey);
-  const requestedDetailKey = searchParams.get("detail_dataset");
-  const detailDataset = selectedDatasets.find((item) => datasetKey(item) === requestedDetailKey) ?? selectedDatasets[0];
-  const lotIds = uniqueValues(searchParams.getAll("lot_id"));
-  const waferIds = uniqueValues(searchParams.getAll("wafer_id"));
-  const binCodes = uniqueValues(searchParams.getAll("bin_code"));
-  const parameters = uniqueValues(searchParams.getAll("parameter")).slice(0, 20);
-  const sourceId = searchParams.get("source_id")?.trim() || undefined;
-  const page = positiveInt(searchParams.get("page"), 1);
-  const pageSize = positiveInt(searchParams.get("page_size"), 50, 200);
+    .slice(0, 8), [datasets]);
+  const viewState = parseAnalysisViewState(searchParams);
+  const requestedFocusKey = searchParams.get("detail_dataset");
+  const focusDataset = selectedDatasets.find((item) => datasetKey(item) === requestedFocusKey) ?? selectedDatasets[0];
+  const featureQuery = useQuery({
+    queryKey: ["analytics", "features"],
+    queryFn: getAnalyticsFeatureFlags,
+    enabled: selectedDatasets.length > 0,
+    staleTime: 30_000,
+    retry: false,
+  });
+  const featureFor = (group: AnalyticsFeatureGroupCode) => featureQuery.data?.groups.find((item) => item.code === group);
+  const overviewEnabled = featureFor("OVERVIEW")?.enabled === true;
 
-  const updateSearch = (mutate: (next: URLSearchParams) => void) => {
-    const next = new URLSearchParams(searchParams);
-    mutate(next);
+  const context = useMemo<AnalyticsContextRequest>(() => ({
+    datasets: selectedDatasets.map((item) => ({ dataset_id: item.datasetId, version_no: item.versionNo })),
+    filters: {
+      lot_ids: [...viewState.filters.lotIds],
+      wafer_ids: [...viewState.filters.waferIds],
+      bin_codes: [...viewState.filters.binCodes],
+      overall_results: [...viewState.filters.overallResults],
+      source_ids: [...viewState.filters.sourceIds],
+      tester_ids: [...viewState.filters.testerIds],
+      program_versions: [...viewState.filters.programVersions],
+      test_conditions: [...viewState.filters.testConditions],
+    },
+    parameters: [...viewState.filters.parameters],
+  }), [selectedDatasets, viewState.filters.binCodes, viewState.filters.lotIds, viewState.filters.overallResults, viewState.filters.parameters, viewState.filters.programVersions, viewState.filters.sourceIds, viewState.filters.testConditions, viewState.filters.testerIds, viewState.filters.waferIds]);
+  const contextSignature = JSON.stringify(context);
+  const overviewQuery = useQuery({
+    queryKey: ["analytics", "overview", context, focusDataset?.datasetId],
+    queryFn: () => getAnalyticsOverview({ ...context, focus_dataset_id: focusDataset!.datasetId, max_points: 10_000 }),
+    enabled: Boolean(focusDataset && overviewEnabled && viewState.display.section === "overview"),
+    retry: false,
+  });
+  const contextQuery = useQuery({
+    queryKey: ["analytics", "context", context, focusDataset?.datasetId],
+    queryFn: () => getAnalyticsShellContext({ ...context, focus_dataset_id: focusDataset!.datasetId, max_points: 100 }),
+    enabled: Boolean(focusDataset),
+    retry: false,
+  });
+  const [drilldownKey, setDrilldownKey] = useState<string | null>(null);
+  useEffect(() => {
+    setDrilldownKey(null);
+  }, [contextSignature]);
+  const openDrilldown = useCallback((key: string) => {
+    if (/^UNIT:[1-9][0-9]{0,18}$/.test(key)) setDrilldownKey(key);
+  }, []);
+
+  const emitState = (state: AnalysisViewState, mutateExternal?: (params: URLSearchParams) => void) => {
+    const next = serializeAnalysisViewState(state, searchParams);
+    mutateExternal?.(next);
     onSearchParamsChange(next);
   };
-  const updateFilter = (key: "lot_id" | "wafer_id" | "bin_code" | "parameter", values: string[]) => updateSearch((next) => {
-    next.delete(key);
-    for (const value of uniqueValues(values)) next.append(key, value);
-    next.set("page", "1");
-    if (key === "lot_id") {
-      next.delete("wafer_id");
-      next.delete("source_id");
-    }
+  const updateFilter = (key: FilterKey, values: readonly string[]) => emitState({
+    ...viewState,
+    filters: { ...viewState.filters, [key]: values } as AnalysisAuthorityFilters,
+    display: { ...viewState.display, page: 1 },
+    analysis: { ...viewState.analysis, detail: { ...viewState.analysis.detail, evaluation_filter: null, measurement_filter: null } },
   });
-
-  const comparisonQuery = useQuery({
-    queryKey: ["dataset-comparison", selectionKeys, lotIds, waferIds, binCodes, parameters],
-    queryFn: () => compareDatasets({
-      datasets: selectedDatasets.map((item) => ({ dataset_id: item.datasetId, version_no: item.versionNo })),
-      lot_ids: lotIds,
-      wafer_ids: waferIds,
-      bin_codes: binCodes,
-      parameters,
-    }),
-    enabled: selectedDatasets.length > 0,
+  const updateSection = (section: AnalysisSection) => {
+    emitState({
+      ...viewState,
+      filters: viewState.filters,
+      display: { ...viewState.display, section },
+    });
+  };
+  const updatePagination = (page: number, pageSize: number) => emitState({
+    ...viewState,
+    filters: viewState.filters,
+    display: { ...viewState.display, page, pageSize },
   });
-  const detailsQuery = useQuery({
-    queryKey: ["dataset-details", detailDataset?.datasetId, detailDataset?.versionNo, page, pageSize, lotIds, waferIds, binCodes, parameters],
-    queryFn: () => getDatasetDetails(detailDataset!.datasetId, detailDataset!.versionNo, {
-      page,
-      page_size: pageSize,
-      lot_ids: lotIds,
-      wafer_ids: waferIds,
-      bin_codes: binCodes,
-      parameters,
-    }),
-    enabled: Boolean(detailDataset),
+  const updateChartDisplay = (patch: Partial<AnalysisDisplayState>) => emitState({
+    ...viewState,
+    filters: viewState.filters,
+    display: { ...viewState.display, ...patch },
   });
-  const chartQuery = useQuery({
-    queryKey: ["dataset-charts", detailDataset?.datasetId, detailDataset?.versionNo, lotIds[0], waferIds[0], sourceId, parameters[0]],
-    queryFn: () => getDatasetChartData(detailDataset!.datasetId, detailDataset!.versionNo, lotIds[0], waferIds[0], sourceId, parameters[0]),
-    enabled: Boolean(detailDataset),
+  const updateAnalysisComponent = <K extends keyof AnalysisComponentState>(key: K, patch: Partial<AnalysisComponentState[K]>) => emitState({
+    ...viewState,
+    analysis: { ...viewState.analysis, [key]: { ...viewState.analysis[key], ...patch } } as AnalysisComponentState,
   });
-  const data = chartQuery.data;
-  const detailOptions = detailsQuery.data;
-  const waferOptions = data?.wafer_options.filter((item) => !lotIds[0] || item.lot_id === lotIds[0]) ?? [];
-
-  const yieldOption = useMemo<EChartsOption>(() => ({
-    color: ["#1167a8"],
-    tooltip: { trigger: "axis", valueFormatter: (value) => value == null ? "—" : `${Number(value).toFixed(3)}%` },
-    grid: { left: 56, right: 24, top: 30, bottom: 70 },
-    xAxis: {
-      type: "category",
-      data: data?.wafer_yield.map((item) => `${item.lot_id}\nW${item.wafer_id}`) ?? [],
-      axisLabel: { rotate: 45, hideOverlap: true },
-    },
-    yAxis: { type: "value", min: 0, max: 100, name: "Yield %" },
-    dataZoom: [{ type: "inside" }, { type: "slider", height: 18, bottom: 8 }],
-    series: [{
-      type: "line",
-      smooth: false,
-      symbolSize: 7,
-      lineStyle: { width: 2 },
-      areaStyle: { opacity: 0.08 },
-      data: data?.wafer_yield.map((item) => item.yield_rate == null ? null : Number((item.yield_rate * 100).toFixed(4))) ?? [],
-    }],
-  }), [data]);
-
-  const paretoOption = useMemo<EChartsOption>(() => {
-    let cumulative = 0;
-    const cumulativeData = data?.bin_counts.map((item) => {
-      cumulative += item.percent * 100;
-      return Number(cumulative.toFixed(3));
-    }) ?? [];
-    return {
-      color: ["#d64545", "#f0a429"],
-      tooltip: { trigger: "axis" },
-      legend: { data: ["Die数", "累计占比"] },
-      grid: { left: 56, right: 56, top: 48, bottom: 42 },
-      xAxis: { type: "category", data: data?.bin_counts.map((item) => `Bin ${item.soft_bin}`) ?? [] },
-      yAxis: [
-        { type: "value", name: "Die数", minInterval: 1 },
-        { type: "value", name: "累计 %", min: 0, max: 100 },
-      ],
-      series: [
-        { name: "Die数", type: "bar", data: data?.bin_counts.map((item) => item.unit_count) ?? [] },
-        { name: "累计占比", type: "line", yAxisIndex: 1, data: cumulativeData },
-      ],
-    };
-  }, [data]);
-
-  const waferMapOption = useMemo<EChartsOption>(() => {
-    const bins = Array.from(new Set(data?.wafer_map.map((item) => item.soft_bin ?? "UNKNOWN") ?? []));
-    return {
-      tooltip: {
-        formatter: (params: unknown) => {
-          const point = (params as { data: [number, number, number, string, string] }).data;
-          return `X ${point[0]} · Y ${point[1]}<br/>Bin ${point[3]} · ${point[4]}`;
+  const openAggregateDrilldown = (target: AnalyticsAggregateDrilldown) => {
+    const filters = target.filters;
+    emitState({
+      ...viewState,
+      filters: {
+        lotIds: filters.lot_ids ?? viewState.filters.lotIds,
+        waferIds: filters.wafer_ids ?? viewState.filters.waferIds,
+        binCodes: filters.bin_codes ?? viewState.filters.binCodes,
+        overallResults: (filters.overall_results ?? viewState.filters.overallResults) as AnalysisAuthorityFilters["overallResults"],
+        sourceIds: filters.source_ids ?? viewState.filters.sourceIds,
+        testerIds: filters.tester_ids ?? viewState.filters.testerIds,
+        programVersions: filters.program_versions ?? viewState.filters.programVersions,
+        testConditions: filters.test_conditions ?? viewState.filters.testConditions,
+        parameters: target.parameters ?? viewState.filters.parameters,
+      },
+      display: { ...viewState.display, section: "detail", page: 1 },
+      analysis: {
+        ...viewState.analysis,
+        detail: {
+          ...viewState.analysis.detail,
+          evaluation_filter: target.evaluationFilter ?? null,
+          measurement_filter: target.measurementFilter ?? null,
         },
       },
-      grid: { left: 58, right: 26, top: 28, bottom: 56 },
-      xAxis: { type: "value", name: "X", minInterval: 1 },
-      yAxis: { type: "value", name: "Y", minInterval: 1, inverse: true },
-      visualMap: {
-        type: "piecewise",
-        dimension: 2,
-        bottom: 0,
-        orient: "horizontal",
-        pieces: bins.map((bin, index) => ({ value: index, label: `Bin ${bin}`, color: BIN_COLORS[index % BIN_COLORS.length] })),
-      },
-      series: [{
-        type: "scatter",
-        symbol: "rect",
-        symbolSize: 12,
-        data: data?.wafer_map.map((item) => [item.x, item.y, bins.indexOf(item.soft_bin ?? "UNKNOWN"), item.soft_bin ?? "UNKNOWN", item.result]) ?? [],
-      }],
-    };
-  }, [data]);
-
-  const selectedWafer = data?.wafer_yield.find((item) => item.lot_id === lotIds[0] && item.wafer_id === waferIds[0]);
-  const selectedFtParameter = data?.parameter_options.find((item) => item.name === parameters[0]);
-  const missingFtPoints = data?.ft_parameter_points.filter((item) => item.status === "MISSING").length ?? 0;
-  const ftScatterOption = useMemo<EChartsOption>(() => {
-    const sources = data?.source_options ?? [];
-    const selected = data?.parameter_options.find((item) => item.name === parameters[0]);
-    const markLineData: Array<{ name: string; yAxis: number; lineStyle: { color: string } }> = [];
-    if (selected?.lsl !== null && selected?.lsl !== undefined) markLineData.push({ name: "LSL", yAxis: selected.lsl, lineStyle: { color: "#d64545" } });
-    if (selected?.usl !== null && selected?.usl !== undefined) markLineData.push({ name: "USL", yAxis: selected.usl, lineStyle: { color: "#d64545" } });
-    return {
-      color: BIN_COLORS,
-      tooltip: {
-        trigger: "item",
-        formatter: (item: unknown) => {
-          const point = (item as { data: [number, number | null, string, string, string] }).data;
-          return `${point[2]} · NUM ${point[0]}<br/>${parameters[0] ?? "参数"}: ${point[1] ?? "缺失"}<br/>Lot ${point[3]} · ${point[4]}`;
-        },
-      },
-      legend: { data: sources, type: "scroll" as const },
-      grid: { left: 72, right: 32, top: 56, bottom: 64 },
-      xAxis: { type: "value", name: "NUM", minInterval: 1 },
-      yAxis: { type: "value", name: selected?.unit ? `${parameters[0]} (${selected.unit})` : parameters[0] },
-      dataZoom: [{ type: "inside" }, { type: "slider", height: 18, bottom: 10 }],
-      series: sources.map((source, index) => ({
-        name: source,
-        type: "scatter",
-        symbolSize: 5,
-        large: true,
-        data: data?.ft_parameter_points
-          .filter((item) => item.source_id === source)
-          .map((item) => [item.sequence, item.value, item.source_id, item.lot_id, item.status]) ?? [],
-        markLine: index === 0 ? { silent: true, symbol: "none", data: markLineData } : undefined,
-      })),
-    };
-  }, [data, parameters]);
-
-  const comparisonColumns: ColumnsType<DatasetComparisonItem> = [
-    { title: "Dataset", key: "dataset", width: 150, fixed: "left", render: (_, row) => `#${row.dataset_id} / V${row.version_no}` },
-    { title: "产品", dataIndex: "product_name", width: 160, render: (value) => value || "—" },
-    { title: "总数", dataIndex: "unit_count", width: 100 },
-    { title: "PASS", dataIndex: "pass_count", width: 90 },
-    { title: "FAIL", dataIndex: "fail_count", width: 90 },
-    { title: "UNKNOWN", dataIndex: "unknown_count", width: 105 },
-    { title: "ABORT", dataIndex: "abort_count", width: 90 },
-    { title: "已知良率", dataIndex: "yield_rate", width: 110, render: percent },
-    {
-      title: "参数统计",
-      dataIndex: "parameter_statistics",
-      width: 340,
-      render: (statistics: DatasetComparisonItem["parameter_statistics"]) => statistics.length
-        ? <Space direction="vertical" size={0}>{statistics.map((item, index) => <Typography.Text key={`${item.name}-${index}`}>{item.name}：平均 {item.average ?? "—"} / 最小 {item.minimum ?? "—"} / 最大 {item.maximum ?? "—"} {item.unit ?? ""}</Typography.Text>)}</Space>
-        : <Typography.Text type="secondary">选择参数后由服务端计算</Typography.Text>,
-    },
-  ];
-  const detailColumns: ColumnsType<DatasetDetailRow> = [
-    { title: "Unit", dataIndex: "logical_unit_key", width: 190, fixed: "left", ellipsis: true },
-    { title: "Lot", dataIndex: "lot_id", width: 150, render: (value) => value || "—" },
-    { title: "Wafer", dataIndex: "wafer_id", width: 110, render: (value) => value || "—" },
-    { title: "X / Y", key: "coordinate", width: 105, render: (_, row) => row.x == null || row.y == null ? "—" : `${row.x} / ${row.y}` },
-    { title: "Soft Bin", dataIndex: "soft_bin", width: 105, render: (value) => value || "—" },
-    { title: "Hard Bin", dataIndex: "hard_bin", width: 105, render: (value) => value || "—" },
-    { title: "结果", dataIndex: "overall_result", width: 105, render: (value) => <Tag>{value}</Tag> },
-    { title: "源行", dataIndex: "source_row_no", width: 90, render: (value) => value ?? "—" },
-    {
-      title: "测量值",
-      dataIndex: "measurements",
-      width: 380,
-      render: (measurements: DatasetDetailMeasurement[]) => measurements.length
-        ? <Space direction="vertical" size={0}>{measurements.map((item, index) => <Typography.Text key={`${item.parameter}-${index}`}>{measurementValue(item)}</Typography.Text>)}</Space>
-        : <Typography.Text type="secondary">{parameters.length ? "本 Unit 无对应测量值" : "选择参数后显示"}</Typography.Text>,
-    },
-  ];
-  const onDetailPageChange = (pagination: TablePaginationConfig) => updateSearch((next) => {
-    next.set("page", String(pagination.current ?? 1));
-    next.set("page_size", String(pagination.pageSize ?? pageSize));
-  });
+    }, (next) => {
+      if (!target.dataset) return;
+      next.delete("dataset");
+      const key = `${target.dataset.dataset_id}:${target.dataset.version_no}`;
+      next.append("dataset", key);
+      next.set("detail_dataset", key);
+    });
+  };
+  const updateFocus = (value: string) => {
+    emitState({
+      ...viewState,
+      filters: viewState.filters,
+      display: { ...viewState.display, page: 1 },
+      analysis: { ...viewState.analysis, detail: { ...viewState.analysis.detail, evaluation_filter: null, measurement_filter: null } },
+    }, (next) => next.set("detail_dataset", value));
+  };
+  const clearFilters = () => {
+    const defaults = createDefaultAnalysisViewState();
+    emitState({
+      ...viewState,
+      filters: defaults.filters,
+      display: { ...viewState.display, page: 1 },
+      analysis: { ...viewState.analysis, detail: { ...viewState.analysis.detail, evaluation_filter: null, measurement_filter: null } },
+    });
+  };
+  const restoreSavedAnalysis = useCallback((record: SavedAnalysisRecord) => {
+    const next = savedAnalysisRestoreParams(record, searchParams);
+    if (next) onSearchParamsChange(next);
+  }, [onSearchParamsChange, searchParams]);
 
   if (!selectedDatasets.length) {
     return <div className="workbench analytics-workbench">
@@ -265,104 +219,145 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
     </div>;
   }
 
-  return (
-    <div className="workbench analytics-workbench">
-      <div className="page-heading">
-        <div>
-          <Typography.Text type="secondary">正式事实 / 服务端比较</Typography.Text>
-          <Typography.Title level={2}>{data?.test_stage === "FT" ? "FT 数据分析" : data?.test_stage === "CP" ? "CP 数据分析" : "正式数据分析"}</Typography.Title>
-          <Space wrap>{selectedDatasets.map((item) => <Tag color="blue" key={datasetKey(item)}>{datasetLabel(item)}</Tag>)}</Space>
-        </div>
-        <Space><Button icon={<ArrowLeftOutlined />} onClick={onOpenCatalog}>历史正式数据</Button><Button icon={<ReloadOutlined />} loading={comparisonQuery.isFetching || detailsQuery.isFetching || chartQuery.isFetching} onClick={() => void Promise.all([comparisonQuery.refetch(), detailsQuery.refetch(), chartQuery.refetch()])}>刷新</Button></Space>
+  const options = contextQuery.data?.options;
+  const sectionContext = {
+    context,
+    focusDatasetId: focusDataset.datasetId,
+    overview: contextQuery.data,
+    overviewLoading: contextQuery.isLoading,
+    overviewError: contextQuery.error,
+  };
+  const parameterOptions = selectOptions(viewState.filters.parameters, options?.parameters).map((item) => item.value);
+  const activeSection = viewState.display.section;
+  const activeFeature = featureFor(SECTION_FEATURES[activeSection]);
+  const sectionContent = activeFeature?.enabled === false
+    ? <Alert type="warning" showIcon message={`${activeFeature.code} 分析已被发布开关关闭`} description={activeFeature.message ?? activeFeature.reason_code ?? "ANALYSIS_FEATURE_DISABLED"} />
+    : activeSection === "overview"
+    ? <OverviewSection {...sectionContext} overview={overviewQuery.data} overviewLoading={overviewQuery.isLoading} overviewError={overviewQuery.error} onNavigateSection={updateSection} onOpenDrilldown={openDrilldown} onOpenAggregateDrilldown={openAggregateDrilldown} riskConfig={viewState.analysis.overviewRisk} onRiskConfigChange={(patch) => updateAnalysisComponent("overviewRisk", patch)} parameterOptions={parameterOptions} />
+    : activeSection === "detail"
+      ? <DetailSection {...sectionContext} page={viewState.display.page} pageSize={viewState.display.pageSize} onPaginationChange={updatePagination} onOpenDrilldown={openDrilldown} config={viewState.analysis.detail} onConfigChange={(patch) => updateAnalysisComponent("detail", patch)} />
+      : activeSection === "parameter"
+        ? <ParameterSection
+            {...sectionContext}
+            parameterOptions={parameterOptions}
+            parameters={[...viewState.filters.parameters]}
+            onParametersChange={(values) => updateFilter("parameters", values)}
+            overallResults={[...viewState.filters.overallResults] as DatasetAnalysisOverallResult[]}
+            onOverallResultsChange={(values) => updateFilter("overallResults", values)}
+            onOpenDrilldown={openDrilldown}
+            onOpenAggregateDrilldown={openAggregateDrilldown}
+            displayState={viewState.display}
+            onDisplayStateChange={updateChartDisplay}
+            parameterAnalysisConfig={viewState.analysis.parameterAnalysis}
+            onParameterAnalysisConfigChange={(patch) => updateAnalysisComponent("parameterAnalysis", patch)}
+            relationshipConfig={viewState.analysis.parameterRelationship}
+            onRelationshipConfigChange={(patch) => updateAnalysisComponent("parameterRelationship", patch)}
+          />
+        : activeSection === "spatial"
+          ? <SpatialSection {...sectionContext} onOpenDrilldown={openDrilldown} displayState={viewState.display} onDisplayStateChange={updateChartDisplay} config={viewState.analysis.spatial} onConfigChange={(patch) => updateAnalysisComponent("spatial", patch)} />
+          : activeSection === "quality"
+            ? <QualitySection {...sectionContext} onOpenDrilldown={openDrilldown} config={viewState.analysis.quality} onConfigChange={(patch) => updateAnalysisComponent("quality", patch)} />
+            : <DeliverySection {...sectionContext} page={viewState.display.page} pageSize={viewState.display.pageSize} viewState={viewState} onPaginationChange={updatePagination} onRestoreSavedAnalysis={restoreSavedAnalysis} onWaferSummaryConfigChange={(patch) => updateAnalysisComponent("waferSummary", patch)} onOpenAggregateDrilldown={openAggregateDrilldown} />;
+  const sectionTabs = SECTION_TABS.map((item) => {
+    const feature = featureFor(SECTION_FEATURES[item.key]);
+    return {
+      ...item,
+      disabled: feature?.enabled === false,
+      label: feature?.enabled === false ? `${item.label}（已关闭）` : item.label,
+    };
+  });
+
+  const multiFilter = (
+    label: string,
+    ariaLabel: string,
+    key: FilterKey,
+    selected: readonly string[],
+    available: readonly string[] | undefined,
+    placeholder: string,
+    maxCount?: number,
+  ) => <Col xs={24} sm={12} lg={8} xl={6}>
+    <Typography.Text strong>{label}</Typography.Text>
+    <Select
+      aria-label={ariaLabel}
+      mode="multiple"
+      allowClear
+      maxCount={maxCount}
+      value={[...selected]}
+      options={selectOptions(selected, available)}
+      onChange={(values) => updateFilter(key, values)}
+      className="full-width"
+      placeholder={placeholder}
+    />
+  </Col>;
+
+  return <div className="workbench analytics-workbench">
+    <div className="page-heading">
+      <div>
+        <Typography.Text type="secondary">ANALYTICS_CONTEXT_V1 · 服务端权威结果</Typography.Text>
+        <Typography.Title level={2}>{contextQuery.data?.dataset_context.test_stage === "FT" ? "FT 数据分析" : contextQuery.data?.dataset_context.test_stage === "CP" ? "CP 数据分析" : "正式数据分析"}</Typography.Title>
+        <Space wrap>{selectedDatasets.map((item) => <Tag color="blue" key={datasetKey(item)}>{datasetLabel(item)}</Tag>)}</Space>
       </div>
-
-      <Card className="analytics-filter-card" title="比较与明细筛选">
-        <Row gutter={[12, 12]}>
-          <Col xs={24} lg={8}>
-            <Typography.Text strong>当前图表与明细 Dataset</Typography.Text>
-            <Select aria-label="当前图表与明细 Dataset" value={detailDataset ? datasetKey(detailDataset) : undefined} options={selectedDatasets.map((item) => ({ label: datasetLabel(item), value: datasetKey(item) }))} onChange={(value) => updateSearch((next) => { next.set("detail_dataset", value); next.set("page", "1"); next.delete("source_id"); })} className="full-width" />
-          </Col>
-          <Col xs={24} sm={12} lg={8}>
-            <Typography.Text strong>Lot</Typography.Text>
-            <Select aria-label="Lot 筛选" mode="multiple" allowClear value={lotIds} options={selectOptions(detailOptions?.lot_options ?? lotIds)} onChange={(values) => updateFilter("lot_id", values)} className="full-width" placeholder="全部 Lot" />
-          </Col>
-          <Col xs={24} sm={12} lg={8}>
-            <Typography.Text strong>Wafer</Typography.Text>
-            <Select aria-label="Wafer 筛选" mode="multiple" allowClear value={waferIds} options={selectOptions(detailOptions?.wafer_options ?? waferOptions.map((item) => item.wafer_id))} onChange={(values) => updateFilter("wafer_id", values)} className="full-width" placeholder="全部 Wafer" />
-          </Col>
-          <Col xs={24} sm={12} lg={8}>
-            <Typography.Text strong>Bin</Typography.Text>
-            <Select aria-label="Bin 筛选" mode="multiple" allowClear value={binCodes} options={selectOptions(detailOptions?.bin_options ?? binCodes)} onChange={(values) => updateFilter("bin_code", values)} className="full-width" placeholder="全部 Bin" />
-          </Col>
-          <Col xs={24} sm={12} lg={8}>
-            <Typography.Text strong>参数（最多 20 个）</Typography.Text>
-            <Select aria-label="参数筛选" mode="multiple" allowClear value={parameters} options={selectOptions(detailOptions?.parameter_options ?? parameters)} onChange={(values) => updateFilter("parameter", values.slice(0, 20))} className="full-width" placeholder="选择比较参数" />
-          </Col>
-          {data?.test_stage === "FT" && <Col xs={24} sm={12} lg={8}>
-            <Typography.Text strong>图表源文件</Typography.Text>
-            <Select aria-label="图表源文件" allowClear value={sourceId} options={selectOptions(data.source_options)} onChange={(value) => updateSearch((next) => { if (value) next.set("source_id", value); else next.delete("source_id"); })} className="full-width" placeholder="全部源文件" />
-          </Col>}
-        </Row>
-        <Space wrap className="chart-filter-row">
-          <Button onClick={() => updateSearch((next) => { for (const key of ["lot_id", "wafer_id", "bin_code", "parameter", "source_id"]) next.delete(key); next.set("page", "1"); })}>清空筛选</Button>
-          <Typography.Text type="secondary">比较和明细使用全部筛选值；图表展示当前 Dataset，并使用 Lot、Wafer、参数筛选的首项。Bin 仅作用于比较和明细。</Typography.Text>
-        </Space>
-      </Card>
-
-      <ParameterAnalysisPanel
-        datasets={selectedDatasets.map((item) => ({ dataset_id: item.datasetId, version_no: item.versionNo }))}
-        parameterOptions={uniqueValues([
-          ...(detailOptions?.parameter_options ?? []),
-          ...(data?.parameter_options.map((item) => item.name) ?? []),
-        ])}
-        lotIds={lotIds}
-        waferIds={waferIds}
-        binCodes={binCodes}
-        sourceIds={sourceId ? [sourceId] : []}
-      />
-
-      {comparisonQuery.isError && <Alert type="error" showIcon message="Dataset 比较失败" description={comparisonQuery.error.message} className="review-alert" />}
-      {comparisonQuery.data && <Card title={`服务端比较（${comparisonQuery.data.items.length} 个 Dataset）`} extra={<Tag color={comparisonQuery.data.spec_compatibility === "COMPATIBLE" ? "success" : "default"}>{compatibilityLabel[comparisonQuery.data.spec_compatibility] ?? comparisonQuery.data.spec_compatibility}</Tag>} className="production-table-card">
-        <Table rowKey={(row) => `${row.dataset_id}-${row.version_no}`} columns={comparisonColumns} dataSource={comparisonQuery.data.items} pagination={false} scroll={{ x: 1180 }} />
-      </Card>}
-
-      {detailsQuery.isError && <Alert type="error" showIcon message="分页明细加载失败" description={detailsQuery.error.message} className="review-alert" />}
-      <Card title={`${detailDataset ? datasetLabel(detailDataset) : "Dataset"} · Unit 明细`} className="production-table-card">
-        <Table rowKey="unit_id" columns={detailColumns} dataSource={detailsQuery.data?.items ?? []} loading={detailsQuery.isLoading} scroll={{ x: 1340 }} pagination={{ current: detailsQuery.data?.page ?? page, pageSize: detailsQuery.data?.page_size ?? pageSize, total: detailsQuery.data?.total ?? 0, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200], showTotal: (total) => `共 ${total} 条` }} onChange={onDetailPageChange} />
-      </Card>
-
-      {chartQuery.isError && <Alert type="error" showIcon message="图表数据加载失败" description={chartQuery.error.message} className="review-alert" />}
-      {data?.test_stage === "FT" && (
-        <>
-          <Alert type="info" showIcon message="良率仅使用明确 PASS/FAIL 作为分母" description={data.ft_sampled ? `图中显示确定性抽样数据并保留超规格点；当前参数共 ${data.ft_total_point_count.toLocaleString()} 个测量点。` : "UNKNOWN/ABORT 不会被误算为 FAIL；无已知分母时良率显示为未知。"} className="review-alert" />
-          <Row gutter={[16, 16]} className="analytics-stats">
-            <Col xs={12} md={6}><Card><Statistic title="产品" value={data.product_name ?? "—"} valueStyle={{ fontSize: 20, lineHeight: 1.25, overflowWrap: "anywhere", whiteSpace: "normal" }} /></Card></Col>
-            <Col xs={12} md={6}><Card><Statistic title="源文件 Run" value={data.source_options.length} /></Card></Col>
-            <Col xs={12} md={6}><Card><Statistic title="参数" value={data.parameter_options.length} /></Card></Col>
-            <Col xs={12} md={6}><Card><Statistic title="当前参数测量点" value={data.ft_total_point_count} /></Card></Col>
-          </Row>
-          <Row gutter={[18, 18]}>
-            <Col xs={24} xl={18}><Card title={`${parameters[0] ?? "参数"} 器件散点`} className="chart-card">{parameters[0] ? <EChart option={ftScatterOption} /> : <Empty description="选择参数后显示散点" />}</Card></Col>
-            <Col xs={24} xl={6}><Card title="参数规格" className="chart-card"><Space direction="vertical" size="large"><Statistic title="LSL" value={selectedFtParameter?.lsl ?? "—"} suffix={selectedFtParameter?.unit ?? ""} /><Statistic title="USL" value={selectedFtParameter?.usl ?? "—"} suffix={selectedFtParameter?.unit ?? ""} /><Statistic title="图中缺失值" value={missingFtPoints} /><Typography.Text type="secondary">测试条件：{selectedFtParameter?.test_condition || "源文件未提供"}</Typography.Text></Space></Card></Col>
-          </Row>
-        </>
-      )}
-      {data?.test_stage !== "FT" && data && (
-        <>
-          <Row gutter={[16, 16]} className="analytics-stats">
-            <Col xs={12} md={6}><Card><Statistic title="Lot" value={data.lot_options.length} /></Card></Col>
-            <Col xs={12} md={6}><Card><Statistic title="Wafer" value={data.wafer_options.length} /></Card></Col>
-            <Col xs={12} md={6}><Card><Statistic title="当前 Die" value={data.bin_counts.reduce((sum, item) => sum + item.unit_count, 0)} /></Card></Col>
-            <Col xs={12} md={6}><Card><Statistic title="当前 Wafer Yield" value={selectedWafer?.yield_rate == null ? "—" : selectedWafer.yield_rate * 100} precision={selectedWafer?.yield_rate == null ? undefined : 3} suffix={selectedWafer?.yield_rate == null ? "" : "%"} /></Card></Col>
-          </Row>
-          <Row gutter={[18, 18]}>
-            <Col xs={24} xl={14}><Card title="Wafer Yield 趋势" className="chart-card"><EChart option={yieldOption} /></Card></Col>
-            <Col xs={24} xl={10}><Card title="Bin Pareto" className="chart-card"><EChart option={paretoOption} /></Card></Col>
-            <Col xs={24} xl={14}><Card title="Bin Wafer Map" className="chart-card">{data.wafer_map.length ? <EChart option={waferMapOption} className="wafer-map-canvas" /> : <Empty description="选择一个 Lot 和 Wafer 后显示晶圆图" />}</Card></Col>
-            <Col xs={24} xl={10}><Card title="Bin 分布" className="chart-card bin-grid-card"><div className="bin-grid">{data.bin_counts.map((item, index) => <div className="bin-tile" key={item.soft_bin} style={{ borderTopColor: BIN_COLORS[index % BIN_COLORS.length] }}><span>Bin {item.soft_bin}</span><strong>{item.unit_count.toLocaleString()}</strong><em>{(item.percent * 100).toFixed(2)}%</em></div>)}</div></Card></Col>
-          </Row>
-        </>
-      )}
+      <Space>
+        <Button icon={<ArrowLeftOutlined />} onClick={onOpenCatalog}>历史正式数据</Button>
+        <Button icon={<ReloadOutlined />} loading={analyticsFetching > 0} onClick={() => void queryClient.invalidateQueries({ queryKey: ["analytics"] })}>刷新</Button>
+      </Space>
     </div>
-  );
+
+    <Card className="analytics-filter-card" title="统一分析 Context">
+      <Row gutter={[12, 12]}>
+        <Col xs={24} sm={12} lg={8} xl={6}>
+          <Typography.Text strong>当前 Dataset</Typography.Text>
+          <Select aria-label="当前 Dataset" value={datasetKey(focusDataset)} options={selectedDatasets.map((item) => ({ label: datasetLabel(item), value: datasetKey(item) }))} onChange={updateFocus} className="full-width" />
+        </Col>
+        {multiFilter("Lot", "Lot 筛选", "lotIds", viewState.filters.lotIds, options?.lot_ids, "全部 Lot", 50)}
+        {multiFilter("Wafer", "Wafer 筛选", "waferIds", viewState.filters.waferIds, options?.wafer_ids, "全部 Wafer", 100)}
+        {multiFilter("Bin", "Bin 筛选", "binCodes", viewState.filters.binCodes, options?.bin_codes, "全部 Bin", 50)}
+        <Col xs={24} sm={12} lg={8} xl={6}>
+          <Typography.Text strong>Overall Result</Typography.Text>
+          <Select
+            aria-label="Overall Result 筛选"
+            mode="multiple"
+            allowClear
+            maxCount={4}
+            value={[...viewState.filters.overallResults]}
+            options={ANALYSIS_OVERALL_RESULTS.map((value) => ({ label: value, value }))}
+            onChange={(values) => updateFilter("overallResults", values as AnalyticsOverallResult[])}
+            className="full-width"
+            placeholder="全部结果"
+          />
+        </Col>
+        {multiFilter("Source", "Source 筛选", "sourceIds", viewState.filters.sourceIds, options?.source_ids, "全部 Source", 50)}
+        {multiFilter("Tester", "Tester 筛选", "testerIds", viewState.filters.testerIds, options?.tester_ids, "全部 Tester", 50)}
+        {multiFilter("Program", "Program 筛选", "programVersions", viewState.filters.programVersions, options?.program_versions, "全部 Program", 50)}
+        {multiFilter("Test Condition", "Test Condition 筛选", "testConditions", viewState.filters.testConditions, options?.test_conditions, "全部 Condition", 50)}
+        {multiFilter("参数（最多 20 个）", "参数筛选", "parameters", viewState.filters.parameters, options?.parameters, "选择参数", 20)}
+      </Row>
+      <Space wrap style={{ marginTop: 12 }}>
+        <Button onClick={clearFilters}>清空筛选</Button>
+        <Typography.Text type="secondary">Lot / Wafer / Bin / Result / Source / Tester / Program / Condition / Parameter 始终作为一个请求 Context，不使用首项替代多选。</Typography.Text>
+      </Space>
+    </Card>
+
+    {contextQuery.isError && <Alert type="error" showIcon message="统一分析 Context 加载失败" description={contextQuery.error.message} className="review-alert" />}
+    {overviewQuery.isError && viewState.display.section === "overview" && <Alert type="error" showIcon message="Overview 加载失败" description={overviewQuery.error.message} className="review-alert" />}
+    {featureQuery.isError && <Alert type="error" showIcon message="分析开关加载失败" description={featureQuery.error.message} className="review-alert" />}
+    {viewState.warnings.map((warning) => <Alert key={warning} type="warning" showIcon message="分析视图配置已安全降级" description={warning} className="review-alert" />)}
+    {contextQuery.data && <Card size="small" className="production-table-card">
+      <Space wrap>
+        <Tag>合同 {contextQuery.data.contract_version}</Tag>
+        <Tag>Context {contextQuery.data.filter_summary.context_hash.slice(0, 12)}…</Tag>
+        <Tag>Filter {contextQuery.data.filter_summary.filter_hash.slice(0, 12)}…</Tag>
+        <Tag>纳入 / 排除 {contextQuery.data.counts.included_units} / {contextQuery.data.counts.excluded_units}</Tag>
+        <Tag color={contextQuery.data.dataset_context.current_published_verified ? "success" : "error"}>Current+PUBLISHED {contextQuery.data.dataset_context.current_published_verified ? "已验证" : "未验证"}</Tag>
+        {contextQuery.data.sampling_summary.sampled && <Tag color="warning">已采样 {contextQuery.data.sampling_summary.returned_points} / {contextQuery.data.sampling_summary.original_points}</Tag>}
+      </Space>
+    </Card>}
+
+    <Card className="production-table-card">
+      <Tabs activeKey={activeSection} onChange={(key) => updateSection(key as AnalysisSection)} items={sectionTabs} />
+      <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}>{sectionContent}</Suspense>
+    </Card>
+
+    <AnalysisDrilldownDrawer context={context} drilldownKey={drilldownKey} onClose={() => setDrilldownKey(null)} />
+  </div>;
 }

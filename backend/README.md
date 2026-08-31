@@ -2,7 +2,7 @@
 
 > 正式数据执行主线为 Route A；一次性PAT使用隔离的Quick Analysis Workspace。两条通道共享SQL队列和Worker，但只有正式导入写入Canonical。
 
-当前仓库唯一 Alembic head 为 `sql2014_0019`。开发库是否已升级必须在线核对数据库、服务器和 Revision；其他环境不能根据仓库文件名推断已升级。
+当前仓库唯一 Alembic head 为 `sql2014_0023`。开发库是否已升级必须在线核对数据库、服务器和 Revision；其他环境不能根据仓库文件名推断已升级。
 
 ## 开发环境
 
@@ -165,6 +165,37 @@ Dataset发布链要求先建立Dataset Version并显式关联Processing Run。DQ
 ```
 
 脚本通过安全密码提示读取凭据，使用带随机标识的合成G0数据验证完整链路，并在结束时按外键顺序清理及独立复核测试数据。成功输出同时包含 `canonical_dataset_pipeline=PASS` 和 `integration_cleanup=PASS`。
+
+Analytics Export 使用现有 `delivery.export_job -> delivery.export_artifact` 链路，Worker 仅读取创建任务时固定的 Dataset Version、Filter、Parameter 和 Rule Context，不修改 `test.*` Canonical 数据。`sql2014_0021` 为 Worker 增加 attempt、lease、heartbeat 和 fencing token；过期的 `RUNNING` 可由新 Worker 使用新 token 安全接管，旧 Worker 不能登记 Artifact，达到最大尝试数后稳定失败。导出根目录必须是绝对路径，且只在 `TMS_ANALYTICS_EXPORT_ROOT/<export_job_id>` 直接子目录内按 attempt 原子生成文件：
+
+```powershell
+. .\.env.runtime.ps1
+& .\.conda-env\python.exe scripts\run_analytics_export_worker.py --once
+```
+
+分析导出 TTL 清理默认只预览，不写数据库、不删文件。执行模式只处理已到期的 `SUCCESS` Job；验证所有路径都是 `TMS_ANALYTICS_EXPORT_ROOT/<export_job_id>` 的直接文件且不存在 symlink/reparse point 后，删除精确 Job 根。系统保留 Artifact 的文件名、MIME、大小、SHA 和审计元数据，把物理状态置为 `DELETED/MISSING`，Job 置为 `EXPIRED`。生产启用 Delete 前应先持续审阅 DryRun：
+
+```powershell
+& .\.conda-env\python.exe scripts\run_analytics_export_cleanup.py --limit 100
+& .\.conda-env\python.exe scripts\run_analytics_export_cleanup.py --limit 100 --delete
+```
+
+正式分析按 Overview、Detail、Parameter、Spatial、Quality、Delivery 六组提供后端强制 kill switch：`TMS_ANALYTICS_OVERVIEW_ENABLED`、`TMS_ANALYTICS_DETAIL_ENABLED`、`TMS_ANALYTICS_PARAMETER_ENABLED`、`TMS_ANALYTICS_SPATIAL_ENABLED`、`TMS_ANALYTICS_QUALITY_ENABLED`、`TMS_ANALYTICS_DELIVERY_ENABLED`。默认为 `true`；关闭后直接 URL 也返回 `ANALYSIS_FEATURE_DISABLED`，前端从 `/api/v1/analytics/features` 显示具体原因。
+
+Overview 的即时统计风险必须由用户显式调用 `POST /api/v1/analytics/instant-risk`，不会在首次进入页面时自动执行。请求按同一 Dataset/Filter Context 固定 1–6 个方法，并为 Capability、PAT、SPC、Margin、SBL、SYL 分别提交 exact `rule_code + version_code`；任何版本未完成三方批准和激活都会失败关闭。Cpk/Ppk 风险使用哪个指标及低值阈值必须包含在已批准 CPK Rule 的 `capability_risk_metric` / `capability_risk_threshold` 中，前端不提供业务默认值或自行判定；其余方法只汇总各权威服务已计算的 status、evidence 与 control/limit 结果。
+
+新的 `ZONE_COMPARISON` 请求只接受已批准并激活的 `WAFER_ZONE_GEOMETRY_V2`；V1 仍可读取和治理，但不能为新请求提供隐含象限语义。V2 除径向 Center/Mid/Edge 几何外，必须显式版本化 `quadrant_axis_rotation_degrees`、`quadrant_y_direction` 和四个唯一的 `quadrant_labels_ccw`。服务端同时返回径向与象限聚合、批准轴参数及全部成员 Unit key；Composite 坐标同样返回与 `observed_count` 一一对账的成员 key，所有响应项都计入 `max_points` 门禁，前端不会用代表 Unit 冒充聚合总体。
+
+当前能力矩阵为：`ANALYTICS_DETAIL` / `PARAMETER_DETAIL` 只生成 `CSV`、`XLSX`、`BIN_TXT`；`ANALYTICS_OVERVIEW`、`PARAMETER_ANALYSIS`、`PARAMETER_RELATIONSHIP`、`SPATIAL_ANALYSIS`、`FT_QUALITY`、`WAFER_SUMMARY` 只在 `REPORT` 范围生成 `CSV`、`XLSX`、`HTML`、`PDF`、`PNG`，报告模板明确拒绝 `BIN_TXT`。每个报告必须带版本化、有界的 `chart_config.analysis` 重建合同（`ANALYTICS_EXPORT_ANALYSIS_CONFIG_V1`），其 section 必须和 template 一致；Parameter、Relationship、Spatial、FT Quality 分别调用各自的服务端分析服务，Wafer Summary 调用服务端 wafer 分页汇总，不再复用 Unit Detail 或 Overview 内容。建立 Export Job 时，服务端从该强类型合同提取所有 exact Rule，对每个 Dataset / Supplier / Product / Parameter 或 Bin scope 重新校验三方批准、`RELEASED + ENABLED`、激活范围和算法类型，再由服务端并入冻结 `rule_context`；客户端字段不是信任边界。Saved Analysis 对 `ANALYSIS_VIEW_STATE_V1` 执行同样的 exact Rule 提取和冻结，create/revision 失配时失败关闭，restore 遇批准撤销、禁用或 scope 变化时标记 `RULE_CHANGED`。每行标准化结果携带 record type 和可追溯细节，制品 Context 同时保留 Filter/Context/Presentation Hash。PDF/PNG 使用 `requirements.txt` 中声明的 ReportLab/Pillow，完整消费同一份结果行并记录总行数，制品中只展示有界 Context 和前 50 行预览。优先选择系统 Unicode 字体，字体不可用时使用确定性 ASCII `\uXXXX` 回退；依赖缺失则稳定记录为 `FAILED / ANALYTICS_EXPORT_DEPENDENCY_UNAVAILABLE`。下载前会重新检查 Owner/System Admin 权限、Job 终态、TTL、文件路径、大小和 SHA256，API 不返回 `storage_uri`。可用开发库做只读内容冒烟：
+
+```powershell
+& .\.conda-env\python.exe scripts\g0\smoke_analytics_export_content.py `
+  --output-root "$env:TEMP\tms-analytics-export-smoke" --test-stage CP
+
+& .\.conda-env\python.exe scripts\g0\smoke_analytics_export_content.py `
+  --output-root "$env:TEMP\tms-analytics-export-pdf-smoke" `
+  --template ANALYTICS_OVERVIEW --format PDF
+```
 
 ## 测试
 

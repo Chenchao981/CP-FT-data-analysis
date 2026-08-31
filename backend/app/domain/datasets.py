@@ -33,10 +33,11 @@ class DatasetParameterAnalysisType(StrEnum):
     DESCRIPTIVE = "DESCRIPTIVE"
     BOX_PLOT = "BOX_PLOT"
     HISTOGRAM = "HISTOGRAM"
+    NORMAL_FIT = "NORMAL_FIT"
     CAPABILITY = "CAPABILITY"
 
 
-class DatasetCapabilityRuleCode(StrEnum):
+class DatasetCapabilityMethod(StrEnum):
     CPK_POOLED_WITHIN_RUN_V1 = "CPK_POOLED_WITHIN_RUN_V1"
     CPK_POOLED_WITHIN_LOT_WAFER_V1 = "CPK_POOLED_WITHIN_LOT_WAFER_V1"
 
@@ -133,8 +134,19 @@ class DatasetParameterAnalysisFilters(StrictRequest):
         default_factory=list, max_length=4
     )
     source_ids: list[str] = Field(default_factory=list, max_length=50)
+    tester_ids: list[str] = Field(default_factory=list, max_length=50)
+    program_versions: list[str] = Field(default_factory=list, max_length=50)
+    test_conditions: list[str] = Field(default_factory=list, max_length=50)
 
-    @field_validator("lot_ids", "wafer_ids", "bin_codes", "source_ids")
+    @field_validator(
+        "lot_ids",
+        "wafer_ids",
+        "bin_codes",
+        "source_ids",
+        "tester_ids",
+        "program_versions",
+        "test_conditions",
+    )
     @classmethod
     def values_are_unique_and_non_empty(cls, value: list[str]) -> list[str]:
         normalized = [item.strip() for item in value]
@@ -154,12 +166,34 @@ class DatasetParameterAnalysisFilters(StrictRequest):
         return value
 
 
-class DatasetHistogramConfig(StrictRequest):
-    bin_count: int = Field(default=20, ge=5, le=100)
+class DatasetAnalysisRuleReference(StrictRequest):
+    rule_code: str | None = Field(default=None, pattern=r"^[A-Z][A-Z0-9_]{2,127}$")
+    version_code: str | None = Field(
+        default=None, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+    )
+
+    @model_validator(mode="after")
+    def exact_rule_reference_is_paired(self) -> DatasetAnalysisRuleReference:
+        if (self.rule_code is None) != (self.version_code is None):
+            raise ValueError("rule_code and version_code must be supplied together")
+        return self
 
 
-class DatasetCapabilityConfig(StrictRequest):
-    rule_code: DatasetCapabilityRuleCode | None = None
+class DatasetHistogramConfig(DatasetAnalysisRuleReference):
+    pass
+
+
+class DatasetCapabilityConfig(DatasetAnalysisRuleReference):
+    method: DatasetCapabilityMethod | None = None
+
+    @model_validator(mode="after")
+    def method_and_rule_reference_are_complete(self) -> DatasetCapabilityConfig:
+        has_rule = self.rule_code is not None
+        if has_rule != (self.method is not None):
+            raise ValueError(
+                "capability method, rule_code and version_code must be supplied together"
+            )
+        return self
 
 
 class DatasetParameterAnalysisRequest(StrictRequest):
@@ -172,9 +206,15 @@ class DatasetParameterAnalysisRequest(StrictRequest):
     analyses: list[DatasetParameterAnalysisType] = Field(
         default_factory=lambda: [DatasetParameterAnalysisType.DESCRIPTIVE],
         min_length=1,
-        max_length=4,
+        max_length=5,
+    )
+    box_plot: DatasetAnalysisRuleReference = Field(
+        default_factory=DatasetAnalysisRuleReference
     )
     histogram: DatasetHistogramConfig = Field(default_factory=DatasetHistogramConfig)
+    normal_fit: DatasetAnalysisRuleReference = Field(
+        default_factory=DatasetAnalysisRuleReference
+    )
     capability: DatasetCapabilityConfig = Field(default_factory=DatasetCapabilityConfig)
 
     @field_validator("datasets")
@@ -207,16 +247,25 @@ class DatasetParameterAnalysisRequest(StrictRequest):
         return value
 
     @model_validator(mode="after")
-    def capability_rule_requires_capability_analysis(
+    def rule_references_match_requested_analyses(
         self,
     ) -> DatasetParameterAnalysisRequest:
-        if (
-            self.capability.rule_code is not None
-            and DatasetParameterAnalysisType.CAPABILITY not in self.analyses
-        ):
-            raise ValueError(
-                "capability rule_code requires the CAPABILITY analysis type"
-            )
+        references = {
+            DatasetParameterAnalysisType.BOX_PLOT: self.box_plot.rule_code,
+            DatasetParameterAnalysisType.HISTOGRAM: self.histogram.rule_code,
+            DatasetParameterAnalysisType.NORMAL_FIT: self.normal_fit.rule_code,
+            DatasetParameterAnalysisType.CAPABILITY: self.capability.rule_code,
+        }
+        selected = set(self.analyses)
+        for analysis, rule_code in references.items():
+            if analysis in selected and rule_code is None:
+                raise ValueError(
+                    f"{analysis.value} requires an exact rule_code and version_code"
+                )
+            if analysis not in selected and rule_code is not None:
+                raise ValueError(
+                    f"{analysis.value} rule reference requires that analysis type"
+                )
         return self
 
 
@@ -403,6 +452,9 @@ class DatasetParameterAnalysisFilterSummary:
     bin_codes: tuple[str, ...]
     overall_results: tuple[str, ...]
     source_ids: tuple[str, ...]
+    tester_ids: tuple[str, ...]
+    program_versions: tuple[str, ...]
+    test_conditions: tuple[str, ...]
     matched_unit_count: int
     candidate_measurement_count: int
 
@@ -417,6 +469,13 @@ class DatasetAnalysisParameterIdentity:
     test_condition: str | None
     spec_set_ids: tuple[int, ...]
     limit_source: str
+    formal_lsl: float | None = None
+    formal_usl: float | None = None
+    formal_lower_operator: str | None = None
+    formal_upper_operator: str | None = None
+    formal_spec_status: str = "NO_SPEC"
+    formal_spec_reason_codes: tuple[str, ...] = ()
+    formal_spec_versions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -447,6 +506,24 @@ class DatasetBoxPlotStatistics:
     upper_whisker: float
     outlier_count: int
     method: str
+    outlier_evidence: tuple[DatasetMeasurementEvidence, ...] = ()
+    outlier_sampling: DatasetEvidenceSampling | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetMeasurementEvidence:
+    measurement_id: int
+    value: float
+    drilldown_key: str
+    spec_status: str
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetEvidenceSampling:
+    sampled: bool
+    method: str
+    original_points: int
+    returned_points: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -457,6 +534,8 @@ class DatasetHistogramBin:
     count: int
     lower_inclusive: bool
     upper_inclusive: bool
+    spec_region: str = "NO_SPEC"
+    aggregate_drilldown_context: DatasetMeasurementAggregateContext | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -466,7 +545,40 @@ class DatasetHistogramStatistics:
     range_min: float | None
     range_max: float | None
     bins: tuple[DatasetHistogramBin, ...]
-    method: str = "EQUAL_WIDTH_FIXED_BINS_LAST_CLOSED_V1"
+    method: str = "EQUAL_WIDTH_HISTOGRAM_V1"
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetNormalFitPoint:
+    x: float
+    probability_density: float
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetNormalFitStatistics:
+    status: str
+    reason_code: str | None
+    sample_count: int
+    mean: float | None
+    standard_deviation: float | None
+    points: tuple[DatasetNormalFitPoint, ...]
+    method: str = "NORMAL_FIT_MLE_V1"
+    observed_evidence: tuple[DatasetMeasurementEvidence, ...] = ()
+    evidence_sampling: DatasetEvidenceSampling | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetMeasurementAggregateContext:
+    dataset_id: int
+    version_no: int
+    parameter: str
+    lower_bound: float | None = None
+    upper_bound: float | None = None
+    lower_inclusive: bool = True
+    upper_inclusive: bool = True
+
+
+DatasetCapabilityDrilldownContext = DatasetMeasurementAggregateContext
 
 
 @dataclass(frozen=True, slots=True)
@@ -489,6 +601,10 @@ class DatasetCapabilityStatistics:
     cpu: float | None
     cpk: float | None
     rule_code: str | None
+    risk_metric: str | None = None
+    risk_threshold: float | None = None
+    parameters_sha256: str | None = None
+    drilldown_context: DatasetCapabilityDrilldownContext | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -499,6 +615,7 @@ class DatasetParameterAnalysis:
     box_plot: DatasetBoxPlotStatistics | None
     histogram: DatasetHistogramStatistics | None
     capability: DatasetCapabilityStatistics | None
+    normal_fit: DatasetNormalFitStatistics | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -531,6 +648,9 @@ class DatasetParameterAnalysisNormalizedFilters:
     bin_codes: tuple[str, ...]
     overall_results: tuple[str, ...]
     source_ids: tuple[str, ...]
+    tester_ids: tuple[str, ...]
+    program_versions: tuple[str, ...]
+    test_conditions: tuple[str, ...]
 
 
 @dataclass(frozen=True, slots=True)

@@ -74,6 +74,10 @@ def test_cp_writer_uses_atomic_draft_stage_without_first_batch_or_current_publis
     assert "prepare_atomic_stage" in source
     assert "insert_draft_dataset_version" in source
     assert "record_atomic_stage" in source
+    assert "materialize_processing_run_bin_mappings" in source
+    assert "materialize_processing_run_spec_evaluations" in source
+    assert "explicit_run_spec_set_ids" in source
+    assert "for run_id in run_ids.values()" in source
     assert "PUBLISHED" not in source
     assert "SUPERSEDED" not in source
     assert "SINGLE_LOT_EXPLICIT_SPEC" in module_source

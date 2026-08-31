@@ -155,6 +155,10 @@ def test_ft_writer_uses_atomic_draft_stage_without_current_publish() -> None:
     assert "prepare_atomic_stage" in source
     assert "insert_draft_dataset_version" in source
     assert "record_atomic_stage" in source
+    assert "materialize_processing_run_bin_mappings" in source
+    assert "materialize_processing_run_spec_evaluations" in source
+    assert "explicit_run_spec_set_ids" in source
+    assert "profiles_by_source[(source_id, lot_id)][1]" in source
     assert "PUBLISHED" not in source
     assert "SUPERSEDED" not in source
 

@@ -1,6 +1,6 @@
 import { ReloadOutlined } from "@ant-design/icons";
 import { useMutation } from "@tanstack/react-query";
-import { Alert, Button, Card, Col, Empty, Row, Select, Space, Table, Tag, Typography } from "antd";
+import { Alert, Button, Card, Col, Empty, Input, InputNumber, Row, Select, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { EChartsOption } from "echarts";
 import { useMemo, useState } from "react";
@@ -12,18 +12,36 @@ import {
   type DatasetParameterAnalysisItem,
   type DatasetParameterAnalysisRequest,
   type DatasetParameterAnalysisType,
+  type DatasetMeasurementAggregateContext,
   type DatasetReference,
 } from "../../api/datasets";
 import { ApiError } from "../../api/auth";
-import { EChart } from "../../components/EChart";
+import { EChart, type EChartEventMap } from "../../components/EChart";
+import { drilldownKeyFromChartEvent } from "./chartDrilldown";
+import { ANALYSIS_COMPONENT_DEFAULTS, type ParameterAnalysisViewConfig } from "./context/analysisViewConfig";
+import type { AnalysisDisplayState } from "./context/analysisViewState";
+import type { AnalyticsAggregateDrilldown } from "./sections/sectionTypes";
 
 export interface ParameterAnalysisPanelProps {
   datasets: DatasetReference[];
   parameterOptions: string[];
+  parameters: string[];
+  onParametersChange: (parameters: string[]) => void;
   lotIds: string[];
   waferIds: string[];
   binCodes: string[];
+  overallResults: DatasetAnalysisOverallResult[];
+  onOverallResultsChange: (results: DatasetAnalysisOverallResult[]) => void;
   sourceIds: string[];
+  testerIds: string[];
+  programVersions: string[];
+  testConditions: string[];
+  onOpenDrilldown: (drilldownKey: string) => void;
+  onOpenAggregateDrilldown: (target: AnalyticsAggregateDrilldown) => void;
+  displayState: AnalysisDisplayState;
+  onDisplayStateChange: (patch: Partial<AnalysisDisplayState>) => void;
+  config?: ParameterAnalysisViewConfig;
+  onConfigChange?: (patch: Partial<ParameterAnalysisViewConfig>) => void;
 }
 
 interface AnalysisRow {
@@ -38,6 +56,7 @@ const analysisOptions: Array<{ label: string; value: DatasetParameterAnalysisTyp
   { label: "描述统计", value: "DESCRIPTIVE" },
   { label: "箱线图", value: "BOX_PLOT" },
   { label: "直方图", value: "HISTOGRAM" },
+  { label: "Normal Fit", value: "NORMAL_FIT" },
   { label: "Capability", value: "CAPABILITY" },
 ];
 const overallResultOptions: Array<{ label: string; value: DatasetAnalysisOverallResult }> = [
@@ -61,9 +80,16 @@ const cloneRequest = (request: DatasetParameterAnalysisRequest): DatasetParamete
     bin_codes: [...request.filters.bin_codes],
     overall_results: [...request.filters.overall_results],
     source_ids: [...request.filters.source_ids],
+    tester_ids: [...request.filters.tester_ids],
+    program_versions: [...request.filters.program_versions],
+    test_conditions: [...request.filters.test_conditions],
   },
   parameters: [...request.parameters],
   analyses: [...request.analyses],
+  box_plot: { ...request.box_plot },
+  histogram: { ...request.histogram },
+  normal_fit: { ...request.normal_fit },
+  capability: { ...request.capability },
 });
 
 const statusCounts = (analysis: DatasetParameterAnalysis) => analysis.status_counts.length
@@ -76,39 +102,82 @@ const intervalLabel = (lower: number, upper: number, lowerInclusive: boolean, up
 export function ParameterAnalysisPanel({
   datasets,
   parameterOptions,
+  parameters,
+  onParametersChange,
   lotIds,
   waferIds,
   binCodes,
+  overallResults,
+  onOverallResultsChange,
   sourceIds,
+  testerIds,
+  programVersions,
+  testConditions,
+  onOpenDrilldown,
+  onOpenAggregateDrilldown,
+  displayState,
+  onDisplayStateChange,
+  config: controlledConfig,
+  onConfigChange: controlledOnConfigChange,
 }: ParameterAnalysisPanelProps) {
-  const [parameters, setParameters] = useState<string[]>([]);
-  const [analyses, setAnalyses] = useState<DatasetParameterAnalysisType[]>(["DESCRIPTIVE"]);
-  const [overallResults, setOverallResults] = useState<DatasetAnalysisOverallResult[]>([]);
+  const [localConfig, setLocalConfig] = useState<ParameterAnalysisViewConfig>(() => ({
+    ...ANALYSIS_COMPONENT_DEFAULTS.parameterAnalysis,
+    analyses: [...ANALYSIS_COMPONENT_DEFAULTS.parameterAnalysis.analyses],
+    boxPlot: { ...ANALYSIS_COMPONENT_DEFAULTS.parameterAnalysis.boxPlot }, histogram: { ...ANALYSIS_COMPONENT_DEFAULTS.parameterAnalysis.histogram },
+    normalFit: { ...ANALYSIS_COMPONENT_DEFAULTS.parameterAnalysis.normalFit }, capability: { ...ANALYSIS_COMPONENT_DEFAULTS.parameterAnalysis.capability },
+  }));
+  const config = controlledConfig ?? localConfig;
+  const onConfigChange = (patch: Partial<ParameterAnalysisViewConfig>) => {
+    if (!controlledConfig) setLocalConfig((current) => ({ ...current, ...patch }));
+    controlledOnConfigChange?.(patch);
+  };
+  const analyses = [...config.analyses] as DatasetParameterAnalysisType[];
   const [submittedRequest, setSubmittedRequest] = useState<DatasetParameterAnalysisRequest | null>(null);
   const [submittedSignature, setSubmittedSignature] = useState<string | null>(null);
-  const [boxParameterChoice, setBoxParameterChoice] = useState<string>();
-  const [histogramDatasetChoice, setHistogramDatasetChoice] = useState<string>();
-  const [histogramParameterChoice, setHistogramParameterChoice] = useState<string>();
+  const boxParameterChoice = config.boxParameter || undefined;
+  const histogramDatasetChoice = config.histogramDataset || undefined;
+  const histogramParameterChoice = config.histogramParameter || undefined;
+  const normalFitDatasetChoice = config.normalFitDataset || undefined;
+  const normalFitParameterChoice = config.normalFitParameter || undefined;
+  const boxRuleCode = config.boxPlot.ruleCode;
+  const boxRuleVersion = config.boxPlot.versionCode;
+  const histogramRuleCode = config.histogram.ruleCode;
+  const histogramRuleVersion = config.histogram.versionCode;
+  const normalFitRuleCode = config.normalFit.ruleCode;
+  const normalFitRuleVersion = config.normalFit.versionCode;
+  const capabilityRuleCode = config.capability.ruleCode;
+  const capabilityRuleVersion = config.capability.versionCode;
+  const capabilityMethod = config.capability.method;
 
   const currentRequest = useMemo<DatasetParameterAnalysisRequest>(() => ({
     datasets: datasets.map((item) => ({ ...item })),
-    group_by: "DATASET",
+    group_by: config.groupBy,
     filters: {
       lot_ids: [...lotIds],
       wafer_ids: [...waferIds],
       bin_codes: [...binCodes],
       overall_results: [...overallResults],
       source_ids: [...sourceIds],
+      tester_ids: [...testerIds],
+      program_versions: [...programVersions],
+      test_conditions: [...testConditions],
     },
     parameters: [...parameters],
     analyses: [...analyses],
-  }), [analyses, binCodes, datasets, lotIds, overallResults, parameters, sourceIds, waferIds]);
+    box_plot: analyses.includes("BOX_PLOT") ? { rule_code: boxRuleCode, version_code: boxRuleVersion } : {},
+    histogram: analyses.includes("HISTOGRAM") ? { rule_code: histogramRuleCode, version_code: histogramRuleVersion } : {},
+    normal_fit: analyses.includes("NORMAL_FIT") ? { rule_code: normalFitRuleCode, version_code: normalFitRuleVersion } : {},
+    capability: analyses.includes("CAPABILITY") ? { method: capabilityMethod, rule_code: capabilityRuleCode, version_code: capabilityRuleVersion } : {},
+  }), [analyses, binCodes, boxRuleCode, boxRuleVersion, capabilityMethod, capabilityRuleCode, capabilityRuleVersion, config.groupBy, datasets, histogramRuleCode, histogramRuleVersion, lotIds, normalFitRuleCode, normalFitRuleVersion, overallResults, parameters, programVersions, sourceIds, testConditions, testerIds, waferIds]);
   const currentSignature = JSON.stringify(currentRequest);
-  const hasUnsupportedCrossDatasetSource = datasets.length > 1 && sourceIds.length > 0;
+  const exactRulesComplete = (!analyses.includes("BOX_PLOT") || Boolean(boxRuleCode && boxRuleVersion))
+    && (!analyses.includes("HISTOGRAM") || Boolean(histogramRuleCode && histogramRuleVersion))
+    && (!analyses.includes("NORMAL_FIT") || Boolean(normalFitRuleCode && normalFitRuleVersion))
+    && (!analyses.includes("CAPABILITY") || Boolean(capabilityRuleCode && capabilityRuleVersion));
   const canRun = datasets.length >= 1 && datasets.length <= 8
     && parameters.length >= 1 && parameters.length <= 5
-    && analyses.length >= 1 && analyses.length <= 4
-    && !hasUnsupportedCrossDatasetSource;
+    && analyses.length >= 1 && analyses.length <= 5
+    && exactRulesComplete;
 
   const mutation = useMutation({
     mutationFn: analyzeDatasetParameters,
@@ -152,6 +221,45 @@ export function ParameterAnalysisPanel({
     && row.analysis.identity.name === histogramParameter
     && row.analysis.histogram !== null);
   const capabilityRows = rows.filter((row) => row.analysis.capability !== null);
+  const normalFitRows = rows.filter((row) => row.analysis.normal_fit !== null);
+  const normalFitDataset = resultDatasets.some(([key]) => key === normalFitDatasetChoice)
+    ? normalFitDatasetChoice!
+    : resultDatasets[0]?.[0];
+  const normalFitParameter = resultParameters.includes(normalFitParameterChoice ?? "")
+    ? normalFitParameterChoice!
+    : resultParameters[0];
+  const normalFitRow = rows.find((row) => row.datasetKey === normalFitDataset
+    && row.analysis.identity.name === normalFitParameter
+    && row.analysis.normal_fit !== null);
+
+  const chartEvents = useMemo<EChartEventMap>(() => ({
+    click: (payload) => {
+      const key = drilldownKeyFromChartEvent(payload);
+      if (key) onOpenDrilldown(key);
+    },
+  }), [onOpenDrilldown]);
+  const openAggregateContext = (aggregate: DatasetMeasurementAggregateContext) => {
+    onOpenAggregateDrilldown({
+      dataset: { dataset_id: aggregate.dataset_id, version_no: aggregate.version_no },
+      filters: {},
+      parameters: [aggregate.parameter],
+      measurementFilter: {
+        parameter: aggregate.parameter,
+        lower_bound: aggregate.lower_bound,
+        upper_bound: aggregate.upper_bound,
+        lower_inclusive: aggregate.lower_inclusive,
+        upper_inclusive: aggregate.upper_inclusive,
+      },
+    });
+  };
+  const histogramEvents = useMemo<EChartEventMap>(() => ({
+    click: (payload) => {
+      const aggregate = (payload as { data?: { aggregateContext?: DatasetMeasurementAggregateContext | null } })?.data?.aggregateContext;
+      if (aggregate) openAggregateContext(aggregate);
+    },
+  // The opener is supplied by the Workbench and follows the current controlled Context.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [onOpenAggregateDrilldown]);
 
   const boxOption = useMemo<EChartsOption>(() => ({
     tooltip: { trigger: "item" },
@@ -161,7 +269,13 @@ export function ParameterAnalysisPanel({
       data: boxRows.map((row) => row.datasetLabel),
       axisLabel: { rotate: boxRows.length > 3 ? 30 : 0, hideOverlap: true },
     },
-    yAxis: { type: "value", name: boxRows[0]?.analysis.identity.unit ?? undefined },
+    yAxis: {
+      type: "value",
+      name: boxRows[0]?.analysis.identity.unit ?? undefined,
+      min: displayState.yAxisMin ?? undefined,
+      max: displayState.yAxisMax ?? undefined,
+    },
+    toolbox: { feature: { saveAsImage: { name: `${boxParameter ?? "parameter"}-box-plot` } } },
     dataZoom: boxRows.length > 6 ? [{ type: "inside" }, { type: "slider", height: 18, bottom: 8 }] : undefined,
     series: [{
       name: boxParameter ?? "参数",
@@ -170,10 +284,29 @@ export function ParameterAnalysisPanel({
         const box = row.analysis.box_plot!;
         return [box.lower_whisker, box.q1, box.median, box.q3, box.upper_whisker];
       }),
+    }, {
+      name: "离群点 evidence",
+      type: "scatter",
+      symbolSize: 9,
+      itemStyle: { color: "#d64545" },
+      data: boxRows.flatMap((row, datasetIndex) => row.analysis.box_plot!.outlier_evidence.map((point) => ({
+        value: [datasetIndex, point.value],
+        drilldownKey: point.drilldown_key,
+        measurementId: point.measurement_id,
+        specStatus: point.spec_status,
+      }))),
     }],
-  }), [boxParameter, boxRows]);
+  }), [boxParameter, boxRows, displayState.yAxisMax, displayState.yAxisMin]);
 
   const histogram = histogramRow?.analysis.histogram;
+  const histogramLsl = histogramRow?.analysis.identity.formal_lsl ?? null;
+  const histogramUsl = histogramRow?.analysis.identity.formal_usl ?? null;
+  const histogramLimitMarker = (name: "LSL" | "USL", limit: number | null) => {
+    if (limit == null || !histogram?.bins.length) return [];
+    let index = histogram.bins.findIndex((bin) => limit >= bin.lower_bound && (limit < bin.upper_bound || (bin.upper_inclusive && limit <= bin.upper_bound)));
+    if (index < 0) index = limit < histogram.bins[0].lower_bound ? 0 : histogram.bins.length - 1;
+    return [{ name, xAxis: index, label: { formatter: `${name} ${limit}` } }];
+  };
   const histogramOption = useMemo<EChartsOption>(() => ({
     tooltip: { trigger: "axis" },
     grid: { left: 70, right: 24, top: 34, bottom: 92 },
@@ -188,14 +321,79 @@ export function ParameterAnalysisPanel({
       )) ?? [],
       axisLabel: { rotate: 45, hideOverlap: true },
     },
-    yAxis: { type: "value", name: "Count", minInterval: 1 },
+    yAxis: {
+      type: "value",
+      name: "Count",
+      minInterval: 1,
+      min: displayState.yAxisMin ?? undefined,
+      max: displayState.yAxisMax ?? undefined,
+    },
+    toolbox: { feature: { saveAsImage: { name: `${histogramParameter ?? "parameter"}-histogram` } } },
     dataZoom: (histogram?.bins.length ?? 0) > 20 ? [{ type: "inside" }, { type: "slider", height: 18, bottom: 8 }] : undefined,
     series: [{
       name: "后端分箱计数",
       type: "bar",
-      data: histogram?.bins.map((bin) => bin.count) ?? [],
+      data: histogram?.bins.map((bin) => ({
+        value: bin.count,
+        aggregateContext: bin.aggregate_drilldown_context,
+        specRegion: bin.spec_region,
+        itemStyle: bin.spec_region === "OUT_OF_SPEC"
+          ? { color: "#d64545" }
+          : bin.spec_region === "CROSSES_SPEC"
+            ? { color: "#f0a429" }
+            : undefined,
+      })) ?? [],
+      markLine: histogramLsl == null && histogramUsl == null ? undefined : {
+        symbol: "none",
+        data: [
+          ...histogramLimitMarker("LSL", histogramLsl),
+          ...histogramLimitMarker("USL", histogramUsl),
+        ],
+      },
     }],
-  }), [histogram, histogramRow]);
+  }), [displayState.yAxisMax, displayState.yAxisMin, histogram, histogramLsl, histogramParameter, histogramRow, histogramUsl]);
+  const normalFit = normalFitRow?.analysis.normal_fit;
+  const normalFitLsl = normalFitRow?.analysis.identity.formal_lsl ?? null;
+  const normalFitUsl = normalFitRow?.analysis.identity.formal_usl ?? null;
+  const normalFitOption = useMemo<EChartsOption>(() => ({
+    animation: false,
+    tooltip: { trigger: "axis" },
+    grid: { left: 78, right: 28, top: 34, bottom: 72 },
+    xAxis: { type: "value", name: normalFitRow?.analysis.identity.unit ?? undefined, scale: true },
+    yAxis: {
+      type: "value",
+      name: "Probability density",
+      min: displayState.yAxisMin ?? 0,
+      max: displayState.yAxisMax ?? undefined,
+    },
+    toolbox: { feature: { saveAsImage: { name: `${normalFitParameter ?? "parameter"}-normal-fit` } } },
+    dataZoom: (normalFit?.points.length ?? 0) > 50 ? [{ type: "inside" }, { type: "slider", height: 18, bottom: 8 }] : undefined,
+    series: [{
+      name: normalFit?.method ?? "NORMAL_FIT_MLE_V1",
+      type: "line",
+      showSymbol: false,
+      smooth: true,
+      data: normalFit?.points.map((point) => [point.x, point.probability_density]) ?? [],
+      markLine: normalFitLsl == null && normalFitUsl == null ? undefined : {
+        symbol: "none",
+        data: [
+          ...(normalFitLsl == null ? [] : [{ name: "LSL", xAxis: normalFitLsl }]),
+          ...(normalFitUsl == null ? [] : [{ name: "USL", xAxis: normalFitUsl }]),
+        ],
+      },
+    }, {
+      name: "Observed evidence",
+      type: "scatter",
+      symbolSize: 9,
+      data: normalFit?.observed_evidence.map((point) => ({
+        value: [point.value, 0],
+        drilldownKey: point.drilldown_key,
+        measurementId: point.measurement_id,
+        specStatus: point.spec_status,
+        itemStyle: { color: point.spec_status === "OUT_OF_SPEC" ? "#d64545" : "#247ba0" },
+      })) ?? [],
+    }],
+  }), [displayState.yAxisMax, displayState.yAxisMin, normalFit, normalFitLsl, normalFitParameter, normalFitRow, normalFitUsl]);
 
   const descriptiveColumns: ColumnsType<AnalysisRow> = [
     { title: "Dataset", dataIndex: "datasetLabel", width: 185, fixed: "left" },
@@ -217,6 +415,9 @@ export function ParameterAnalysisPanel({
     { title: "Bin", width: 150, render: (_, item) => filterValues(item.filter_summary.bin_codes) },
     { title: "总体结果", width: 180, render: (_, item) => filterValues(item.filter_summary.overall_results) },
     { title: "源文件", width: 200, render: (_, item) => filterValues(item.filter_summary.source_ids) },
+    { title: "Tester", width: 180, render: (_, item) => filterValues(item.filter_summary.tester_ids) },
+    { title: "Program", width: 180, render: (_, item) => filterValues(item.filter_summary.program_versions) },
+    { title: "Test Condition", width: 220, render: (_, item) => filterValues(item.filter_summary.test_conditions) },
     { title: "命中 Unit", width: 110, render: (_, item) => item.filter_summary.matched_unit_count },
     { title: "候选测量值", width: 125, render: (_, item) => item.filter_summary.candidate_measurement_count },
   ];
@@ -226,6 +427,7 @@ export function ParameterAnalysisPanel({
     { title: "Canonical Code", width: 170, render: (_, row) => row.analysis.identity.canonical_parameter_code ?? "—" },
     { title: "单位", width: 85, render: (_, row) => row.analysis.identity.unit ?? "—" },
     { title: "Program LSL / USL", width: 175, render: (_, row) => `${formatNumber(row.analysis.identity.program_lsl)} / ${formatNumber(row.analysis.identity.program_usl)}` },
+    { title: "Formal Spec LSL / USL", width: 190, render: (_, row) => `${formatNumber(row.analysis.identity.formal_lsl)} / ${formatNumber(row.analysis.identity.formal_usl)}` },
     { title: "测试条件", width: 220, render: (_, row) => row.analysis.identity.test_condition ?? "—" },
     { title: "Spec Set", width: 150, render: (_, row) => row.analysis.identity.spec_set_ids.length ? row.analysis.identity.spec_set_ids.join("、") : "—" },
     { title: "限值来源", width: 180, render: (_, row) => row.analysis.identity.limit_source || "—" },
@@ -254,6 +456,33 @@ export function ParameterAnalysisPanel({
     { title: "样本 / 子组", width: 125, render: (_, row) => `${row.analysis.capability?.sample_count ?? 0} / ${row.analysis.capability?.subgroup_count ?? 0}` },
     { title: "规则", width: 245, render: (_, row) => row.analysis.capability?.rule_code ?? "后端未选择 Cpk 子组规则" },
     { title: "不适用原因", width: 330, render: (_, row) => row.analysis.capability?.reason_codes.length ? row.analysis.capability.reason_codes.join("、") : "—" },
+    { title: "联动", width: 210, fixed: "right", render: (_, row) => {
+      const context = row.analysis.capability?.drilldown_context;
+      return <Space size={4}>
+        <Button size="small" aria-label={`查看 ${row.analysis.identity.name} 分布异常`} onClick={() => {
+          onConfigChange({
+            histogramDataset: row.datasetKey,
+            histogramParameter: row.analysis.identity.name,
+            normalFitDataset: row.datasetKey,
+            normalFitParameter: row.analysis.identity.name,
+          });
+          document.getElementById("parameter-distribution-card")?.scrollIntoView({ block: "start" });
+        }}>分布/异常</Button>
+        <Button size="small" aria-label={`打开 ${row.analysis.identity.name} Detail`} disabled={!context} onClick={() => {
+          if (context) openAggregateContext(context);
+        }}>Detail</Button>
+      </Space>;
+    } },
+  ];
+  const normalFitColumns: ColumnsType<AnalysisRow> = [
+    { title: "Dataset", dataIndex: "datasetLabel", width: 185, fixed: "left" },
+    { title: "参数", width: 140, render: (_, row) => row.analysis.identity.name },
+    { title: "状态", width: 130, render: (_, row) => <Tag color={row.analysis.normal_fit?.status === "AVAILABLE" ? "success" : "warning"}>{row.analysis.normal_fit?.status ?? "—"}</Tag> },
+    { title: "Sample Count", width: 120, render: (_, row) => row.analysis.normal_fit?.sample_count ?? "—" },
+    { title: "Mean", width: 120, render: (_, row) => formatNumber(row.analysis.normal_fit?.mean ?? null) },
+    { title: "MLE Stddev", width: 130, render: (_, row) => formatNumber(row.analysis.normal_fit?.standard_deviation ?? null) },
+    { title: "Method", width: 190, render: (_, row) => row.analysis.normal_fit?.method ?? "—" },
+    { title: "不适用原因", width: 260, render: (_, row) => row.analysis.normal_fit?.reason_code ?? "—" },
   ];
 
   const error = mutation.error;
@@ -268,16 +497,16 @@ export function ParameterAnalysisPanel({
   >
     <Row gutter={[12, 12]}>
       <Col xs={24} xl={9}>
-        <Typography.Text strong>分析参数（独立选择，1–5 个）</Typography.Text>
+        <Typography.Text strong>共享 Context 参数（执行分析时最多 5 个）</Typography.Text>
         <Select
           aria-label="参数分析参数"
           mode="multiple"
           allowClear
-          maxCount={5}
+          maxCount={20}
           value={parameters}
           options={selectOptions(parameterOptions)}
-          onChange={(values) => setParameters(values.slice(0, 5))}
-          placeholder="选择参数后手动执行"
+          onChange={(values) => onParametersChange(values.slice(0, 20))}
+          placeholder="在共享 Context 中选择参数"
           className="full-width"
         />
       </Col>
@@ -290,7 +519,7 @@ export function ParameterAnalysisPanel({
           maxCount={4}
           value={overallResults}
           options={overallResultOptions}
-          onChange={(values) => setOverallResults(values.slice(0, 4))}
+          onChange={(values) => onOverallResultsChange(values.slice(0, 4))}
           placeholder="全部 PASS / FAIL / UNKNOWN / ABORT"
           className="full-width"
         />
@@ -301,32 +530,62 @@ export function ParameterAnalysisPanel({
           aria-label="参数分析类型"
           mode="multiple"
           allowClear
-          maxCount={4}
+          maxCount={5}
           value={analyses}
           options={analysisOptions}
-          onChange={(values) => setAnalyses(values.slice(0, 4))}
+          onChange={(values) => onConfigChange({ analyses: values.slice(0, 5) })}
           placeholder="至少选择一种分析"
           className="full-width"
         />
-        <Typography.Text type="secondary">描述统计可直接执行；BoxPlot、Histogram 和显式 Capability Rule 必须由服务端 Rule Owner 批准，未批准时失败关闭。</Typography.Text>
+        <Typography.Text type="secondary">描述统计可直接执行；BoxPlot、Histogram、Normal Fit 和显式 Capability Rule 必须由服务端 Rule Owner 批准，未批准时失败关闭。</Typography.Text>
       </Col>
     </Row>
+    {analyses.some((analysis) => analysis !== "DESCRIPTIVE") && <Card size="small" title="精确 Rule Registry 版本" style={{ marginTop: 12 }}>
+      <Row gutter={[12, 12]}>
+        {analyses.includes("BOX_PLOT") && <><Col xs={24} md={12}><Typography.Text strong>Box Rule Code</Typography.Text><Input aria-label="Box Rule Code" value={boxRuleCode} onChange={(event) => onConfigChange({ boxPlot: { ...config.boxPlot, ruleCode: event.target.value.toUpperCase() } })} placeholder="例如 CP_BOX_STANDARD" /></Col><Col xs={24} md={12}><Typography.Text strong>Box Version</Typography.Text><Input aria-label="Box Rule Version" value={boxRuleVersion} onChange={(event) => onConfigChange({ boxPlot: { ...config.boxPlot, versionCode: event.target.value } })} placeholder="例如 v1" /></Col></>}
+        {analyses.includes("HISTOGRAM") && <><Col xs={24} md={12}><Typography.Text strong>Histogram Rule Code</Typography.Text><Input aria-label="Histogram Rule Code" value={histogramRuleCode} onChange={(event) => onConfigChange({ histogram: { ...config.histogram, ruleCode: event.target.value.toUpperCase() } })} /></Col><Col xs={24} md={12}><Typography.Text strong>Histogram Version</Typography.Text><Input aria-label="Histogram Rule Version" value={histogramRuleVersion} onChange={(event) => onConfigChange({ histogram: { ...config.histogram, versionCode: event.target.value } })} /></Col></>}
+        {analyses.includes("NORMAL_FIT") && <><Col xs={24} md={12}><Typography.Text strong>Normal Fit Rule Code</Typography.Text><Input aria-label="Normal Fit Rule Code" value={normalFitRuleCode} onChange={(event) => onConfigChange({ normalFit: { ...config.normalFit, ruleCode: event.target.value.toUpperCase() } })} /></Col><Col xs={24} md={12}><Typography.Text strong>Normal Fit Version</Typography.Text><Input aria-label="Normal Fit Rule Version" value={normalFitRuleVersion} onChange={(event) => onConfigChange({ normalFit: { ...config.normalFit, versionCode: event.target.value } })} /></Col></>}
+        {analyses.includes("CAPABILITY") && <><Col xs={24} md={8}><Typography.Text strong>Capability Method</Typography.Text><Select aria-label="Capability Method" value={capabilityMethod} options={[{ value: "CPK_POOLED_WITHIN_RUN_V1", label: "Pooled within Run" }, { value: "CPK_POOLED_WITHIN_LOT_WAFER_V1", label: "Pooled within Lot-Wafer" }]} onChange={(value) => onConfigChange({ capability: { ...config.capability, method: value } })} className="full-width" /></Col><Col xs={24} md={8}><Typography.Text strong>Capability Rule Code</Typography.Text><Input aria-label="Capability Rule Code" value={capabilityRuleCode} onChange={(event) => onConfigChange({ capability: { ...config.capability, ruleCode: event.target.value.toUpperCase() } })} /></Col><Col xs={24} md={8}><Typography.Text strong>Capability Version</Typography.Text><Input aria-label="Capability Rule Version" value={capabilityRuleVersion} onChange={(event) => onConfigChange({ capability: { ...config.capability, versionCode: event.target.value } })} /></Col></>}
+      </Row>
+      <Typography.Text type="secondary">Rule Code 与 Version 必须精确对应 Registry 中已三方批准并在当前 Dataset / Supplier / Product / Parameter 范围激活的版本。算法参数由该版本提供，前端不能覆盖。</Typography.Text>
+    </Card>}
     <Space wrap style={{ marginTop: 12 }}>
       <Button type="primary" aria-label="执行参数分析" loading={mutation.isPending} disabled={!canRun} onClick={execute}>执行参数分析</Button>
       <Typography.Text type="secondary">
-        沿用当前 Lot、Wafer、Bin、源文件筛选；进入页面和顶部“刷新”均不会执行本分析。前端不指定 Capability 规则码。
+        沿用统一 Context 的 Lot、Wafer、Bin、Result、Source、Tester、Program、Test Condition 筛选；进入页面和顶部“刷新”均不会执行本分析。
       </Typography.Text>
     </Space>
+    <Card size="small" title="纯显示控制（不改变后端分析请求）" style={{ marginTop: 12 }}>
+      <Row gutter={[12, 12]}>
+        <Col xs={24} sm={12} xl={6}>
+          <Typography.Text strong>Y 轴最小值</Typography.Text>
+          <InputNumber
+            aria-label="参数分析 Y 轴最小值"
+            value={displayState.yAxisMin}
+            placeholder="自动"
+            onChange={(value) => onDisplayStateChange({ yAxisMin: value ?? null })}
+            className="full-width"
+          />
+        </Col>
+        <Col xs={24} sm={12} xl={6}>
+          <Typography.Text strong>Y 轴最大值</Typography.Text>
+          <InputNumber
+            aria-label="参数分析 Y 轴最大值"
+            value={displayState.yAxisMax}
+            placeholder="自动"
+            onChange={(value) => onDisplayStateChange({ yAxisMax: value ?? null })}
+            className="full-width"
+          />
+        </Col>
+        <Col xs={24} xl={12}>
+          <Typography.Text type="secondary">应用于 Box、Histogram、Normal Fit 的 Y 轴；清空恢复自动范围，只改变显示与导出上下文。</Typography.Text>
+        </Col>
+      </Row>
+    </Card>
     {!parameters.length && <Alert type="info" showIcon message="请选择 1–5 个分析参数后点击执行" style={{ marginTop: 12 }} />}
+    {parameters.length > 5 && <Alert type="warning" showIcon message="参数分析最多执行 5 个参数" description="共享 Context 可保留 20 个参数供 Detail 使用；请缩减到 5 个后再执行本分析。" style={{ marginTop: 12 }} />}
     {!analyses.length && <Alert type="warning" showIcon message="至少选择一种分析类型" style={{ marginTop: 12 }} />}
-    {hasUnsupportedCrossDatasetSource && <Alert
-      type="warning"
-      showIcon
-      message="跨 Dataset 参数分析不能沿用当前源文件筛选"
-      description="当前源文件选项只属于“当前图表与明细 Dataset”，尚未建立跨 Dataset 的统一 Source 身份。请先清除源文件筛选，或只选择一个 Dataset 后再执行。"
-      style={{ marginTop: 12 }}
-    />}
-
+    {!exactRulesComplete && <Alert type="warning" showIcon message="请填写所有已选统计方法的精确 Rule Code 和 Version" description="未填写或未批准时系统失败关闭，不会使用前端默认统计参数。" style={{ marginTop: 12 }} />}
     {isStale && <Alert
       type="warning"
       showIcon
@@ -409,25 +668,42 @@ export function ParameterAnalysisPanel({
 
       {rows.some((row) => row.analysis.box_plot !== null) && <Card size="small" title="箱线图">
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-          <Select aria-label="箱线图参数" value={boxParameter} options={selectOptions(resultParameters)} onChange={setBoxParameterChoice} style={{ minWidth: 220 }} />
+          <Select aria-label="箱线图参数" value={boxParameter} options={selectOptions(resultParameters)} onChange={(value) => onConfigChange({ boxParameter: value })} style={{ minWidth: 220 }} />
           {boxRows.length ? <>
-            <EChart option={boxOption} ariaLabel={`${boxParameter} 按 Dataset 的箱线图`} />
-            <Typography.Text type="secondary">图形五数使用下须、Q1、中位数、Q3、上须；原始最小/最大和离群点数单独列示。</Typography.Text>
+            <EChart option={boxOption} ariaLabel={`${boxParameter} 按 Dataset 的箱线图`} onEvents={chartEvents} />
+            <Typography.Text type="secondary">图形五数使用下须、Q1、中位数、Q3、上须；红点是服务端有界、确定性离群 evidence，点击按稳定 Unit key 打开 Detail。</Typography.Text>
+            {boxRows.map((row) => row.analysis.box_plot?.outlier_sampling).filter(Boolean).map((sampling, index) => <Tag key={`${sampling!.method}-${index}`}>离群 evidence {sampling!.returned_points}/{sampling!.original_points}{sampling!.sampled ? "（已采样）" : "（完整）"}</Tag>)}
             <Table rowKey="key" columns={boxColumns} dataSource={boxRows} pagination={false} scroll={{ x: 1240 }} size="small" />
           </> : <Empty description="当前参数不适用于箱线图" />}
         </Space>
       </Card>}
 
-      {rows.some((row) => row.analysis.histogram !== null) && <Card size="small" title="直方图（后端分箱）">
+      {rows.some((row) => row.analysis.histogram !== null) && <Card id="parameter-distribution-card" size="small" title="直方图（后端分箱）">
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
           <Space wrap>
-            <Select aria-label="直方图 Dataset" value={histogramDataset} options={resultDatasets.map(([value, label]) => ({ value, label }))} onChange={setHistogramDatasetChoice} style={{ minWidth: 220 }} />
-            <Select aria-label="直方图参数" value={histogramParameter} options={selectOptions(resultParameters)} onChange={setHistogramParameterChoice} style={{ minWidth: 180 }} />
+            <Select aria-label="直方图 Dataset" value={histogramDataset} options={resultDatasets.map(([value, label]) => ({ value, label }))} onChange={(value) => onConfigChange({ histogramDataset: value })} style={{ minWidth: 220 }} />
+            <Select aria-label="直方图参数" value={histogramParameter} options={selectOptions(resultParameters)} onChange={(value) => onConfigChange({ histogramParameter: value })} style={{ minWidth: 180 }} />
           </Space>
           {histogram ? <>
-            <EChart option={histogramOption} ariaLabel={`${histogramParameter} 在 ${histogramRow?.datasetLabel} 的后端分箱直方图`} />
+            {(histogramLsl == null && histogramUsl == null) && <Alert type="warning" showIcon message="当前参数没有可用 Released Formal Spec" description="系统不会用 Program Limit 猜测正式 Spec；OOS 区域保持 NO_SPEC。" />}
+            <EChart option={histogramOption} ariaLabel={`${histogramParameter} 在 ${histogramRow?.datasetLabel} 的后端分箱直方图`} onEvents={histogramEvents} />
             <Typography.Text type="secondary">后端返回 {histogram.bin_count} 个分箱（请求 {histogram.requested_bin_count}）；范围 {formatNumber(histogram.range_min)} 至 {formatNumber(histogram.range_max)}；方法 {histogram.method}。前端未重新分箱。</Typography.Text>
+            <Typography.Text type="secondary">红色为完全 OOS 区间，橙色为跨越 Spec 的区间；点击非空区间进入服务端按参数与区间限定的完整 Unit 总体。</Typography.Text>
           </> : <Empty description="当前 Dataset 与参数组合不适用于直方图" />}
+        </Space>
+      </Card>}
+
+      {normalFitRows.length > 0 && <Card size="small" title="Normal Fit（服务端 MLE 拟合线）">
+        <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+          <Alert type="info" showIcon message="曲线点与 MLE 参数均由服务端返回" description="直方图是 Count，Normal Fit 是 Probability Density；前端不做量纲换算、不重新拟合，因此分开显示。" />
+          <Space wrap>
+            <Select aria-label="Normal Fit Dataset" value={normalFitDataset} options={resultDatasets.map(([value, label]) => ({ value, label }))} onChange={(value) => onConfigChange({ normalFitDataset: value })} style={{ minWidth: 220 }} />
+            <Select aria-label="Normal Fit 参数" value={normalFitParameter} options={selectOptions(resultParameters)} onChange={(value) => onConfigChange({ normalFitParameter: value })} style={{ minWidth: 180 }} />
+          </Space>
+          {normalFit?.status === "AVAILABLE" && normalFit.points.length > 0
+            ? <><>{(normalFitLsl == null && normalFitUsl == null) && <Alert type="warning" showIcon message="当前参数没有可用 Released Formal Spec" description="Normal Fit 仅显示拟合事实，不使用 Program Limit 推断 OOS 边界。" />}</><EChart option={normalFitOption} ariaLabel={`${normalFitParameter} 在 ${normalFitRow?.datasetLabel} 的服务端 Normal Fit 曲线`} onEvents={chartEvents} /><Typography.Text type="secondary">服务端返回 {normalFit.points.length} 个曲线点；Mean {formatNumber(normalFit.mean)}，MLE Stddev {formatNumber(normalFit.standard_deviation)}，方法 {normalFit.method}。底部 observed evidence 可点击进入 Detail。</Typography.Text></>
+            : <Alert type="warning" showIcon message="Normal Fit 不适用" description={normalFit?.reason_code ?? "当前 Dataset / 参数无服务端拟合结果"} />}
+          <Table rowKey="key" columns={normalFitColumns} dataSource={normalFitRows} pagination={false} scroll={{ x: 1275 }} size="small" />
         </Space>
       </Card>}
 

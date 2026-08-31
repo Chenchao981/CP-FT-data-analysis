@@ -57,6 +57,7 @@ def _production_managed_roots() -> tuple[Path, ...]:
         "TMS_UPLOAD_ROOT",
         "TMS_WORK_ROOT",
         "TMS_QUICK_WORK_ROOT",
+        "TMS_ANALYTICS_EXPORT_ROOT",
         "TMS_LOG_DIR",
     ):
         raw = os.getenv(name, "").strip()
@@ -152,6 +153,26 @@ def _validate_production_environment(jwt_secret: str) -> None:
 
 
 @dataclass(frozen=True, slots=True)
+class AnalyticsFeatureFlags:
+    overview: bool
+    detail: bool
+    parameter: bool
+    spatial: bool
+    quality: bool
+    delivery: bool
+
+    def as_dict(self) -> dict[str, bool]:
+        return {
+            "OVERVIEW": self.overview,
+            "DETAIL": self.detail,
+            "PARAMETER": self.parameter,
+            "SPATIAL": self.spatial,
+            "QUALITY": self.quality,
+            "DELIVERY": self.delivery,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Settings:
     environment: str
     log_level: str
@@ -164,6 +185,7 @@ class Settings:
     auth_required: bool
     jwt_secret: str
     access_token_minutes: int
+    analytics_features: AnalyticsFeatureFlags
 
 
 @lru_cache(maxsize=1)
@@ -208,4 +230,22 @@ def get_settings() -> Settings:
         auth_required=auth_required,
         jwt_secret=jwt_secret,
         access_token_minutes=int(os.getenv("TMS_ACCESS_TOKEN_MINUTES", "480")),
+        analytics_features=AnalyticsFeatureFlags(
+            overview=_boolean_environment(
+                "TMS_ANALYTICS_OVERVIEW_ENABLED", default=True
+            ),
+            detail=_boolean_environment("TMS_ANALYTICS_DETAIL_ENABLED", default=True),
+            parameter=_boolean_environment(
+                "TMS_ANALYTICS_PARAMETER_ENABLED", default=True
+            ),
+            spatial=_boolean_environment(
+                "TMS_ANALYTICS_SPATIAL_ENABLED", default=True
+            ),
+            quality=_boolean_environment(
+                "TMS_ANALYTICS_QUALITY_ENABLED", default=True
+            ),
+            delivery=_boolean_environment(
+                "TMS_ANALYTICS_DELIVERY_ENABLED", default=True
+            ),
+        ),
     )

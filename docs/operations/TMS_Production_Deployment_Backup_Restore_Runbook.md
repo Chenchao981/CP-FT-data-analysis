@@ -23,7 +23,7 @@ New-Item -ItemType Directory -Force .\artifacts\releases | Out-Null
   --output .\artifacts\releases\NCE-TMS-v1.0-core.zip
 ```
 
-构建器按固定路径顺序、固定 ZIP 时间戳生成 `release-manifest.json`，对每个文件记录 SHA256 和字节数，执行高置信 secret scan、ZIP CRC/路径/清单检查，然后解包运行：
+构建器按固定路径顺序、固定 ZIP 时间戳生成 `release-manifest.json`，对每个文件记录 SHA256 和字节数，执行高置信 secret scan、ZIP CRC/路径/清单检查。默认 smoke 会用源码目录中的包外 Runtime Config 和 Python，在独立临时 RuntimeHome 中从解包代码真实启动 API，验证 loopback ready 精确指向 `TMS_G0_DEV/sql2014_0023`，随后停止进程树并再次验证 manifest 未变。单独解包后可用以下命令只检查 manifest：
 
 ```powershell
 .\scripts\windows\start_tms_runtime.ps1 -ValidateOnly
@@ -33,21 +33,28 @@ New-Item -ItemType Directory -Force .\artifacts\releases | Out-Null
 
 ## 3. 生产配置与目录预检
 
-1. 将 `docs/examples/TMS.production.runtime.example.ps1` 复制到解包根目录的 `.env.runtime.ps1`。
-2. 替换所有 `__PLACEHOLDER__`，将 `TMS_EXPECTED_SCHEMA_REVISION` 设为发布清单中的唯一 Alembic head。
+1. 解包后不得在 Release 根内增加任何文件。在 Release 根外预先创建 `RuntimeHome` 及其 `logs` 子目录，并在另一包外目录保管 Runtime Config 与 conda Python。三个路径必须为绝对路径，不得与 Release 根重叠、不得是卷/共享根或经过 reparse point。
+2. 从 `docs/examples/TMS.production.runtime.example.ps1` 创建包外 Runtime Config，替换所有 `__PLACEHOLDER__`，将 `TMS_EXPECTED_SCHEMA_REVISION` 设为发布清单中的唯一 Alembic head。
 3. 由审批的 Windows secret bootstrap 在进程环境注入 `TMS_JWT_SECRET` 与仅有 `AUDIT_READ` 权限的 `TMS_HEALTH_BEARER_TOKEN`。如目标环境没有这一机制，停止部署，不得将秘密改写到配置或计划任务参数。
 4. 所有受管目录必须由管理员事先创建。脚本不会自动创建目录或修改 ACL。
 
 先以管理员身份做配置检查（不代替 ACL 验收）：
 
 ```powershell
-.\scripts\windows\test_tms_production_preflight.ps1 -SkipAclCheck
+$runtimeHome = 'D:\NCE-TMS-Runtime'
+$runtimeConfig = 'D:\NCE-TMS-Config\runtime.ps1'
+$pythonPath = 'D:\NCE-TMS-Python\python.exe'
+.\scripts\windows\test_tms_production_preflight.ps1 `
+  -RuntimeHome $runtimeHome -RuntimeConfig $runtimeConfig `
+  -PythonPath $pythonPath -SkipAclCheck
 ```
 
 再登录服务账号或在该账号的受控会话中执行真实 ACL 检查：
 
 ```powershell
 .\scripts\windows\test_tms_production_preflight.ps1 `
+  -RuntimeHome $runtimeHome -RuntimeConfig $runtimeConfig `
+  -PythonPath $pythonPath `
   -ExpectedServiceAccount 'DOMAIN\svc_nce_tms'
 ```
 
@@ -61,7 +68,7 @@ New-Item -ItemType Directory -Force .\artifacts\releases | Out-Null
 .\scripts\windows\test_tms_migration_readiness.ps1 `
   -SqlInstance 'SQLPROD01' -Database 'NCE_TMS' `
   -AllowedDatabases 'NCE_TMS' -Phase PreMigration `
-  -ExpectedSchemaRevision 'sql2014_0019'
+  -ExpectedSchemaRevision 'sql2014_0023'
 
 .\scripts\windows\backup_tms_database.ps1 `
   -SqlInstance 'SQLPROD01' -Database 'NCE_TMS' `
@@ -79,7 +86,7 @@ New-Item -ItemType Directory -Force .\artifacts\releases | Out-Null
 .\scripts\windows\test_tms_migration_readiness.ps1 `
   -SqlInstance 'SQLPROD01' -Database 'NCE_TMS' `
   -AllowedDatabases 'NCE_TMS' -Phase PostMigration `
-  -ExpectedSchemaRevision 'sql2014_0019' -Execute
+  -ExpectedSchemaRevision 'sql2014_0023' -Execute
 ```
 
 Post-check 必须确认 schema revision 精确匹配，且 Dataset Current/Processing Run Current 无非 `PUBLISHED` current 和重复 current。
@@ -91,7 +98,7 @@ Post-check 必须确认 schema revision 精确匹配，且 Dataset Current/Proce
   -SqlInstance 'SQLUAT01' -Database 'NCE_TMS_MIGRATION_TEST' `
   -AllowedTestDatabases 'NCE_TMS_MIGRATION_TEST' `
   -ProductionDatabases 'NCE_TMS' `
-  -ExpectedSchemaRevision 'sql2014_0019'
+  -ExpectedSchemaRevision 'sql2014_0023'
 ```
 
 先审核 DryRun，再加 `-Execute`。执行时先验证库存在且 `sys.tables` 为空，再使用 Integrated Security 运行 `alembic upgrade head`，最后执行精确 schema/current consistency 检查。失败后不自动修补或删库，由 DBA 保留证据并重建新的空库再测。
@@ -108,7 +115,7 @@ Post-check 必须确认 schema revision 精确匹配，且 Dataset Current/Proce
   -ProductionDatabases 'NCE_TMS' `
   -BackupPath 'E:\SQLBackup\NCE_TMS_before_v1_0.bak' `
   -RestoreDataDirectory 'F:\SQLData\TMSRestore' `
-  -ExpectedSchemaRevision 'sql2014_0019'
+  -ExpectedSchemaRevision 'sql2014_0023'
 ```
 
 审核 DryRun 输出后才可加 `-Execute`。脚本先做 `VERIFYONLY CHECKSUM` 和 `FILELISTONLY`，为每个逻辑文件生成明确 `MOVE`目标，拒绝任何已存在的目标库/数据文件，恢复后自动执行 schema/current consistency 检查。恢复成功、查询可读且检查无异常后，将演练时间、备份 SHA256、恢复库名和检查输出归档。
@@ -118,7 +125,9 @@ Post-check 必须确认 schema revision 精确匹配，且 Dataset Current/Proce
 结构检查无副作用：
 
 ```powershell
-.\scripts\windows\install_tms_scheduled_tasks.ps1 -ValidateOnly
+.\scripts\windows\install_tms_scheduled_tasks.ps1 `
+  -RuntimeHome $runtimeHome -RuntimeConfigPath $runtimeConfig `
+  -PythonPath $pythonPath -ValidateOnly
 ```
 
 目标服务器上的正式注册必须由管理员在审批的变更窗口执行：
@@ -126,10 +135,11 @@ Post-check 必须确认 schema revision 精确匹配，且 Dataset Current/Proce
 ```powershell
 $credential = Get-Credential -Message 'TMS service account'
 .\scripts\windows\install_tms_scheduled_tasks.ps1 `
-  -Credential $credential -StartAfterInstall
+  -RuntimeHome $runtimeHome -RuntimeConfigPath $runtimeConfig `
+  -PythonPath $pythonPath -Credential $credential -StartAfterInstall
 ```
 
-安装后检查四个任务的执行文件、脚本、工作目录、`Password/Limited/IgnoreNew` 定义，并确认参数中不存在密码、Token 或 Secret。`TMS-QuickCleanup` 仅处理 `TMS_QUICK_WORK_ROOT`，`TMS-FormalCleanup` 仅处理 `TMS_WORK_ROOT/<job_id>`；两者是独立计划任务、默认都是 DryRun，不共享或合并清理根。只有在审批了各自的删除证据后，才可分别使用 `-CleanupMode Delete` 或 `-FormalCleanupMode Delete` 重新注册。
+安装后检查六个任务（API、Route A Worker、Analytics Export Worker 以及三个 Cleanup）的执行文件、脚本、工作目录、`Password/Limited/IgnoreNew` 定义，并确认参数中不存在密码、Token 或 Secret。`TMS-QuickCleanup` 仅处理 `TMS_QUICK_WORK_ROOT`，`TMS-FormalCleanup` 仅处理 `TMS_WORK_ROOT/<job_id>`；两者是独立计划任务、默认都是 DryRun，不共享或合并清理根。只有在审批了各自的删除证据后，才可分别使用 `-CleanupMode Delete`、`-FormalCleanupMode Delete` 或 `-AnalyticsExportCleanupMode Delete` 重新注册。
 
 Formal Cleanup 包含两个互不抢占的阶段：先按 A5 `processing_artifact` 登记合同处理到期临时产物，再扫描 Cleaner 在登记产物前崩溃可能留下的 orphan Job root。orphan 阶段只识别 `TMS_WORK_ROOT` 的纯数字直接子目录，仅当关联 Job 为正式 Job 类型、已终态且超过 `TMS_FORMAL_ORPHAN_RETENTION_HOURS`、无有效 lease、无永久 artifact、无尚由 A5 阶段负责的活动临时 artifact 才可删除。每层目录都检查越根、symlink/reparse point、非常规文件和数量/字节上限；DryRun、删除开始、删除结果和拒绝结果均写入 `governance.audit_log`，审计不记录文件路径、lease token 或密密。首次生产启用应至少保持一个完整保留周期的 DryRun，由运维与业务负责人审批后再切换 Delete。
 
@@ -137,10 +147,14 @@ Formal Cleanup 包含两个互不抢占的阶段：先按 A5 `processing_artifac
 
 ```powershell
 .\scripts\windows\get_tms_scheduled_task_status.ps1 `
+  -RuntimeHome $runtimeHome -RuntimeConfigPath $runtimeConfig `
+  -PythonPath $pythonPath `
   -ExpectedUser 'DOMAIN\svc_nce_tms' -ProbeRuntime -RequireAll
 ```
 
 状态复核默认同时要求 QuickCleanup 和 FormalCleanup 仍为 DryRun，模式不符时 `-RequireAll` 失败。如已经审批切换为删除模式，复核时必须显式传入 `-ExpectedCleanupMode Delete` 或 `-ExpectedFormalCleanupMode Delete`。探针要求 API `/health/ready`、Worker ready file 与已认证 Worker registry 三方的 Worker ID、Database、Server 和 Schema 一致，且 Worker 进程存在、心跳未过期。任何不一致均视为未就绪。
+
+前端 `dist` 不在本 Release manifest 中；前端必须独立执行双构建验证，并在浏览器完成工程/CP、工程/FT、量产/CP、量产/FT 四个固定入口的独立 UAT，不能以 API Release smoke 替代。
 
 卸载预览与执行：
 
@@ -149,7 +163,7 @@ Formal Cleanup 包含两个互不抢占的阶段：先按 A5 `processing_artifac
 .\scripts\windows\uninstall_tms_scheduled_tasks.ps1
 ```
 
-卸载脚本最后复核四个任务均已不存在。
+卸载脚本最后复核六个任务均已不存在。
 
 ## 7. 日志与回滚
 

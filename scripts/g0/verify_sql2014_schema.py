@@ -71,7 +71,7 @@ def main() -> None:
         cursor = connection.cursor()
         cursor.execute("SELECT version_num FROM alembic_version")
         revision = cursor.fetchone()[0]
-        assert revision == "sql2014_0019", revision
+        assert revision == "sql2014_0023", revision
 
         cursor.execute("SELECT name FROM sys.schemas")
         schemas = {row[0] for row in cursor.fetchall()}

@@ -34,7 +34,7 @@ from app.infrastructure.sql_dataset_service import SqlDatasetService
 from app.infrastructure.sql_stage_data_service import SqlStageDataService
 
 EXPECTED_DATABASE = "TMS_G0_DEV"
-EXPECTED_SCHEMA_REVISION = "sql2014_0019"
+EXPECTED_SCHEMA_REVISION = "sql2014_0023"
 
 _COUNTED_TABLES = (
     "iam.app_user",
@@ -130,7 +130,7 @@ def _assert_schema_contract(connection: Connection) -> None:
     if "UX_processing_run_current" in indexes:
         raise RuntimeError("obsolete source-global Current unique index still exists")
     if indexes.get("IX_processing_run_source_state") != (False, False):
-        raise RuntimeError("sql2014_0019 non-unique source-state index is missing")
+        raise RuntimeError("sql2014_0020 non-unique source-state index is missing")
 
 
 def _table_counts(connection: Connection) -> dict[str, int]:
@@ -805,7 +805,7 @@ def main() -> None:
         "independent_receipts=true receipt_paths_independent=true"
     )
     print(
-        "v12_rollback=PASS database=TMS_G0_DEV schema=sql2014_0019 "
+        "v12_rollback=PASS database=TMS_G0_DEV schema=sql2014_0023 "
         "database_rows_restored=true durable_fixture_rows=0"
     )
 

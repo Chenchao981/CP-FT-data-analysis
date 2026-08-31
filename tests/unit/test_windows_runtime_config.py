@@ -18,7 +18,9 @@ LOCAL_LIFECYCLE_SCRIPTS = (
 )
 
 
-pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows PowerShell runtime contract")
+pytestmark = pytest.mark.skipif(
+    os.name != "nt", reason="Windows PowerShell runtime contract"
+)
 
 
 def _powershell_literal(value: Path) -> str:
@@ -87,6 +89,125 @@ def test_runtime_config_rejects_invalid_utf8(tmp_path: Path) -> None:
     assert "Runtime configuration must be valid UTF-8" in completed.stderr
 
 
+def test_external_runtime_contract_accepts_only_release_external_paths(
+    tmp_path: Path,
+) -> None:
+    release = tmp_path / "release"
+    runtime_home = tmp_path / "runtime-home"
+    config_dir = tmp_path / "config"
+    python_dir = tmp_path / "python"
+    for directory in (release, runtime_home, config_dir, python_dir):
+        directory.mkdir()
+    config = config_dir / "runtime.ps1"
+    python = python_dir / "python.exe"
+    config.write_text("$env:TMS_JOB_REPOSITORY='sql'\n", encoding="utf-8")
+    python.write_bytes(b"runtime-placeholder")
+    command = (
+        "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+        f". {_powershell_literal(COMMON_SCRIPT)}; "
+        "$contract = Resolve-TmsExternalRuntimeContract "
+        f"-Workspace {_powershell_literal(release)} "
+        f"-RuntimeHome {_powershell_literal(runtime_home)} "
+        f"-RuntimeConfigPath {_powershell_literal(config)} "
+        f"-PythonPath {_powershell_literal(python)}; "
+        "[Console]::Write((Test-Path -LiteralPath $contract.RuntimeHome "
+        "-PathType Container).ToString())"
+    )
+
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert completed.stdout == "True"
+
+
+def test_external_runtime_contract_rejects_path_inside_release(tmp_path: Path) -> None:
+    release = tmp_path / "release"
+    runtime_home = release / "runtime-home"
+    config_dir = tmp_path / "config"
+    python_dir = tmp_path / "python"
+    for directory in (runtime_home, config_dir, python_dir):
+        directory.mkdir(parents=True)
+    config = config_dir / "runtime.ps1"
+    python = python_dir / "python.exe"
+    config.write_text("", encoding="utf-8")
+    python.write_bytes(b"runtime-placeholder")
+    command = (
+        f". {_powershell_literal(COMMON_SCRIPT)}; "
+        "Resolve-TmsExternalRuntimeContract "
+        f"-Workspace {_powershell_literal(release)} "
+        f"-RuntimeHome {_powershell_literal(runtime_home)} "
+        f"-RuntimeConfigPath {_powershell_literal(config)} "
+        f"-PythonPath {_powershell_literal(python)}"
+    )
+
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    assert completed.returncode != 0
+    assert "must be outside the Release root" in completed.stderr
+
+
+def test_external_runtime_contract_rejects_volume_root(tmp_path: Path) -> None:
+    release = tmp_path / "release"
+    release.mkdir()
+    root = Path(release.anchor)
+    command = (
+        f". {_powershell_literal(COMMON_SCRIPT)}; "
+        "Resolve-TmsExternalRuntimePath -Name 'RuntimeHome' "
+        f"-Path {_powershell_literal(root)} -PathType Directory "
+        f"-Workspace {_powershell_literal(release)}"
+    )
+
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    assert completed.returncode != 0
+    assert "cannot be a volume or share root" in completed.stderr
+    common = COMMON_SCRIPT.read_text(encoding="utf-8-sig")
+    assert "Assert-TmsNoReparsePath -Name $Name -Path $full" in common
+
+
 def test_local_database_guard_rejects_non_dev_database() -> None:
     command = (
         f". {_powershell_literal(LOCAL_COMMON_SCRIPT)}; "
@@ -147,6 +268,79 @@ def test_frontend_environment_scrub_hides_and_restores_tms_secrets() -> None:
     )
 
     assert completed.stdout == "CLEAN|sensitive-value|sensitive-path"
+
+
+def test_configured_local_authentication_rejects_non_true_value() -> None:
+    command = (
+        f". {_powershell_literal(LOCAL_COMMON_SCRIPT)}; "
+        "$env:TMS_AUTH_REQUIRED = 'false'; "
+        "Resolve-TmsLocalAuthenticationContract -UseConfiguredAuthentication"
+    )
+
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+
+    assert completed.returncode != 0
+    assert "requires TMS_AUTH_REQUIRED=true" in completed.stderr
+
+
+def test_local_authentication_contract_returns_exact_boolean_modes() -> None:
+    command = (
+        "[Console]::OutputEncoding = [Text.Encoding]::UTF8; "
+        f". {_powershell_literal(LOCAL_COMMON_SCRIPT)}; "
+        "$env:TMS_AUTH_REQUIRED = 'yes'; "
+        "$configured = Resolve-TmsLocalAuthenticationContract "
+        "-UseConfiguredAuthentication; "
+        "$disabled = Resolve-TmsLocalAuthenticationContract; "
+        "[Console]::Write($configured.Mode + '|' + $configured.AuthRequired + "
+        "'|' + $disabled.Mode + '|' + $disabled.AuthRequired + '|' + "
+        "$env:TMS_AUTH_REQUIRED)"
+    )
+
+    completed = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+    assert completed.stdout == ("CONFIGURED|True|DISABLED_ON_LOOPBACK|False|false")
+
+
+def test_local_start_validates_auth_before_validate_only_and_status_exposes_it() -> (
+    None
+):
+    start = LOCAL_LIFECYCLE_SCRIPTS[0].read_text(encoding="utf-8-sig")
+    status = LOCAL_LIFECYCLE_SCRIPTS[1].read_text(encoding="utf-8-sig")
+
+    assert start.index("Resolve-TmsLocalAuthenticationContract") < start.index(
+        "if ($ValidateOnly)"
+    )
+    assert start.count("auth_required = $authRequired") == 2
+    assert "auth_required = $authRequired" in status
 
 
 def test_process_record_upsert_preserves_unprocessed_roles() -> None:

@@ -4,6 +4,7 @@ import argparse
 import json
 import socket
 import sys
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -118,10 +119,16 @@ def main() -> None:
         )
         target_job_id = int(receipt["job_id"])
         finished = None
+        empty_polls = 0
         for _ in range(100):
             candidate = worker.run_once()
             if candidate is None:
-                break
+                empty_polls += 1
+                if empty_polls >= 20:
+                    break
+                time.sleep(0.25)
+                continue
+            empty_polls = 0
             if candidate.job_id == target_job_id:
                 finished = candidate
                 break

@@ -5,10 +5,12 @@ from datetime import UTC, datetime
 import pytest
 from app.infrastructure.sql_management_service import (
     _CURRENT_SCOPE_CTE,
+    _QUALITY_FACT_SQL,
     _RECENT_DATASET_SQL,
     _TREND_SQL,
     _filter_sql,
     _rate,
+    _summarize_quality_facts,
     _trend,
 )
 from sqlalchemy import text
@@ -111,3 +113,63 @@ def test_management_filter_parameters_are_placed_after_enrichment_scope() -> Non
         "FETCH FIRST",
     ):
         assert unsupported not in (cte + _TREND_SQL + _RECENT_DATASET_SQL).upper()
+
+
+def test_quality_fact_query_is_set_based_and_sql2014_compatible() -> None:
+    normalized = " ".join(_QUALITY_FACT_SQL.split()).upper()
+
+    assert "GROUP BY SU.DATASET_VERSION_ID" in normalized
+    assert "ROW_NUMBER() OVER" in normalized
+    assert "RS.ROW_NO=1" in normalized
+    assert "FILE_COUNTS" in normalized
+    assert "OPENJSON(" not in normalized
+    assert "STRING_AGG(" not in normalized
+
+
+def test_quality_fact_aggregation_preserves_status_and_recent_semantics() -> None:
+    observed = datetime(2026, 8, 31, 4, 0, tzinfo=UTC)
+    published = datetime(2026, 8, 31, 2, 0, tzinfo=UTC)
+    base = {
+        "dataset_version_id": 101,
+        "dataset_id": 55,
+        "version_no": 1,
+        "input_batch_id": 77,
+        "published_at_utc": published,
+        "product_name": "PRODUCT-A",
+        "business_domain": "PRODUCTION",
+        "test_stage": "FT",
+        "factory_code": "RIYUEXIN",
+        "lot_id": "LOT-A",
+        "job_id": 88,
+        "source_file_count": 5,
+        "fail_bin": None,
+    }
+    rows = [
+        {**base, "overall_result": "PASS", "unit_count": 80},
+        {**base, "overall_result": "FAIL", "unit_count": 10, "fail_bin": "BIN2"},
+        {**base, "overall_result": "UNKNOWN", "unit_count": 7},
+        {**base, "overall_result": "ABORT", "unit_count": 3},
+    ]
+
+    kpis, trends, breakdowns, fail_bins, recent = _summarize_quality_facts(
+        rows,
+        observed=observed,
+        failed_jobs=2,
+        recent_limit=20,
+    )
+
+    assert kpis.total_units == 100
+    assert kpis.known_yield_denominator == 90
+    assert kpis.yield_rate == pytest.approx(80 / 90)
+    assert kpis.unknown_rate == 0.07
+    assert kpis.abort_units == 3
+    assert kpis.failed_job_count == 2
+    assert kpis.freshness_seconds == 7200
+    assert trends[0].period_start_utc == "2026-08-30T16:00:00.000Z"
+    assert trends[0].total_units == 100
+    assert breakdowns[0].dimension == "FACTORY"
+    assert fail_bins[0].bin_code == "BIN2"
+    assert fail_bins[0].share_of_failed == 1.0
+    assert recent[0].unit_count == 100
+    assert recent[0].unknown_count == 7
+    assert recent[0].source_file_count == 5

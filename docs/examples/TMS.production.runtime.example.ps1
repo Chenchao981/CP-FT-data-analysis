@@ -13,6 +13,12 @@ if ([string]::IsNullOrWhiteSpace($env:TMS_HEALTH_BEARER_TOKEN)) {
 
 $env:TMS_ENV = 'production'
 $env:TMS_AUTH_REQUIRED = 'true'
+$env:TMS_ANALYTICS_OVERVIEW_ENABLED = 'true'
+$env:TMS_ANALYTICS_DETAIL_ENABLED = 'true'
+$env:TMS_ANALYTICS_PARAMETER_ENABLED = 'true'
+$env:TMS_ANALYTICS_SPATIAL_ENABLED = 'true'
+$env:TMS_ANALYTICS_QUALITY_ENABLED = 'true'
+$env:TMS_ANALYTICS_DELIVERY_ENABLED = 'true'
 $env:TMS_JOB_REPOSITORY = 'sql'
 $env:TMS_ACCESS_TOKEN_MINUTES = '480'
 
@@ -39,6 +45,8 @@ $env:TMS_SOURCE_ROOTS_JSON = @'
 $env:TMS_UPLOAD_ROOT = 'D:\TMS\upload'
 $env:TMS_WORK_ROOT = 'D:\TMS\work'
 $env:TMS_QUICK_WORK_ROOT = 'D:\TMS\quick-work'
+$env:TMS_ANALYTICS_EXPORT_ROOT = 'D:\TMS\analytics-exports'
+$env:TMS_ANALYTICS_EXPORT_CLEANUP_STALE_MINUTES = '30'
 $env:TMS_LOG_DIR = 'D:\TMS\logs'
 
 $env:TMS_PROCESS_NAME = 'tms'

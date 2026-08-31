@@ -8,6 +8,12 @@ from datetime import datetime
 from sqlalchemy import Engine, text
 
 from app.cleaners.huahong_dcp import HuaHongDcpFile, HuaHongDcpParser
+from app.infrastructure.sql_bin_mapping_materializer import (
+    materialize_processing_run_bin_mappings,
+)
+from app.infrastructure.sql_spec_evaluation_materializer import (
+    materialize_processing_run_spec_evaluations,
+)
 
 
 class CanonicalWriteError(ValueError):
@@ -390,6 +396,15 @@ class HuaHongCanonicalWriter:
             if measurement_rows:
                 connection.execute(measurement_statement, measurement_rows)
                 measurement_count += len(measurement_rows)
+
+            materialize_processing_run_bin_mappings(
+                connection,
+                processing_run_id=processing_run_id,
+            )
+            materialize_processing_run_spec_evaluations(
+                connection,
+                processing_run_id=processing_run_id,
+            )
 
             connection.execute(
                 text(

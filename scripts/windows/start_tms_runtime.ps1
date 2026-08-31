@@ -1,7 +1,14 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('API', 'Worker', 'QuickCleanup', 'FormalCleanup')]
+    [ValidateSet('API', 'Worker', 'AnalyticsExportWorker', 'AnalyticsExportCleanup', 'QuickCleanup', 'FormalCleanup')]
     [string]$Role = 'API',
+    [string]$RuntimeHome,
+    [string]$RuntimeConfigPath,
+    [string]$PythonPath,
+    [string]$ListenAddress,
+    [ValidateRange(0, 65535)]
+    [int]$Port = 0,
+    [switch]$Delete,
     [switch]$ValidateOnly
 )
 
@@ -98,14 +105,51 @@ function Test-TmsReleaseManifest {
 
 $workspace = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))
 $result = Test-TmsReleaseManifest -Workspace $workspace
+. (Join-Path $PSScriptRoot 'TmsRuntime.Common.ps1')
+$externalValues = @($RuntimeHome, $RuntimeConfigPath, $PythonPath)
+$externalValueCount = @($externalValues | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count
+if ($externalValueCount -gt 0 -and $externalValueCount -ne 3) {
+    throw 'RuntimeHome, RuntimeConfigPath and PythonPath must be supplied together.'
+}
+if ($externalValueCount -eq 3) {
+    $external = Resolve-TmsExternalRuntimeContract -Workspace $workspace `
+        -RuntimeHome $RuntimeHome -RuntimeConfigPath $RuntimeConfigPath `
+        -PythonPath $PythonPath
+    $env:TMS_RUNTIME_HOME = $external.RuntimeHome
+    $env:TMS_RUNTIME_CONFIG_PATH = $external.RuntimeConfig
+    $env:TMS_PYTHON_PATH = $external.Python
+}
 if ($ValidateOnly) {
     $result
     return
 }
+if ($externalValueCount -ne 3) {
+    throw 'A runnable Release requires external RuntimeHome, RuntimeConfigPath and PythonPath.'
+}
+if ($Role -ne 'API' -and (
+    -not [string]::IsNullOrWhiteSpace($ListenAddress) -or $Port -ne 0
+)) {
+    throw 'ListenAddress and Port are valid only for the API role.'
+}
+if ($Delete -and $Role -notin @('AnalyticsExportCleanup', 'QuickCleanup', 'FormalCleanup')) {
+    throw 'Delete is valid only for a cleanup role.'
+}
 
 switch ($Role) {
-    'API' { & (Join-Path $PSScriptRoot 'run_tms_api.ps1'); exit $LASTEXITCODE }
+    'API' {
+        $apiArguments = @{}
+        if (-not [string]::IsNullOrWhiteSpace($ListenAddress)) {
+            $apiArguments['ListenAddress'] = $ListenAddress
+        }
+        if ($Port -ne 0) {
+            $apiArguments['Port'] = $Port
+        }
+        & (Join-Path $PSScriptRoot 'run_tms_api.ps1') @apiArguments
+        exit $LASTEXITCODE
+    }
     'Worker' { & (Join-Path $PSScriptRoot 'run_tms_worker.ps1'); exit $LASTEXITCODE }
-    'QuickCleanup' { & (Join-Path $PSScriptRoot 'run_tms_cleanup.ps1') -DryRun; exit $LASTEXITCODE }
-    'FormalCleanup' { & (Join-Path $PSScriptRoot 'run_tms_formal_cleanup.ps1'); exit $LASTEXITCODE }
+    'AnalyticsExportWorker' { & (Join-Path $PSScriptRoot 'run_tms_analytics_export_worker.ps1'); exit $LASTEXITCODE }
+    'AnalyticsExportCleanup' { & (Join-Path $PSScriptRoot 'run_tms_analytics_export_cleanup.ps1') -Delete:$Delete; exit $LASTEXITCODE }
+    'QuickCleanup' { & (Join-Path $PSScriptRoot 'run_tms_cleanup.ps1') -DryRun:(-not $Delete); exit $LASTEXITCODE }
+    'FormalCleanup' { & (Join-Path $PSScriptRoot 'run_tms_formal_cleanup.ps1') -Delete:$Delete; exit $LASTEXITCODE }
 }
