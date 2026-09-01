@@ -86,6 +86,12 @@ vi.mock("./features/datasets/DatasetCurrentCatalog", () => ({
     <button onClick={() => onOpenComparison?.([{ datasetId: 20, versionNo: 3 }, { datasetId: 21, versionNo: 4 }])}>catalog-comparison</button>
   </div>,
 }));
+vi.mock("./features/dashboard/PersonalDashboard", () => ({
+  PersonalDashboard: ({ userName, onNavigate }: { userName: string; onNavigate: (path: string) => void }) => <div>
+    <span>{`dashboard:${userName}`}</span>
+    <button onClick={() => onNavigate("/production/ft")}>dashboard-production-ft</button>
+  </div>,
+}));
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,
@@ -127,7 +133,7 @@ describe("App navigation and deep links", () => {
   });
 
   it.each([
-    [["DATASET_READ"], "/engineering/cp", "stage:ENGINEERING/CP"],
+    [["DATASET_READ"], "/dashboard", "dashboard:测试员"],
     [["MANAGEMENT_READ"], "/management/quality", "quality::analytics-false"],
     [["AUDIT_READ"], "/operations", "operations"],
   ])("redirects the root route to the first permitted leaf for %j", async (permissions, expectedPath, expectedPage) => {
@@ -137,6 +143,19 @@ describe("App navigation and deep links", () => {
 
     expect(await screen.findByText(expectedPage)).toBeInTheDocument();
     await waitFor(() => expect(window.location.pathname).toBe(expectedPath));
+  }, 15_000);
+
+  it("opens the personal cockpit and follows its fixed-route shortcuts", async () => {
+    vi.mocked(useAuth).mockReturnValue(authFor(["DATASET_READ"]));
+    window.history.replaceState({}, "", "/dashboard");
+
+    render(<App />);
+
+    expect(await screen.findByText("dashboard:测试员")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "个人驾驶舱" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "dashboard-production-ft" }));
+    expect(await screen.findByText("stage:PRODUCTION/FT")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/production/ft");
   }, 15_000);
 
   it.each([

@@ -16,6 +16,8 @@
 - [`docs/development/TMS_Local_Test_Environment_Completion_Report_2026-08-28.md`](docs/development/TMS_Local_Test_Environment_Completion_Report_2026-08-28.md)：本机一键启停、常驻 Worker、UTF-8 修复和真实 FT 前端闭环证据。
 - [`docs/development/TMS_v1.0_Core_Completion_Report_2026-08-29.md`](docs/development/TMS_v1.0_Core_Completion_Report_2026-08-29.md)：v1.0 Core 实现范围、确定事实、开放门和最终交付状态。
 - [`docs/development/TMS_v1.0_Regression_Test_Report_2026-08-29.md`](docs/development/TMS_v1.0_Regression_Test_Report_2026-08-29.md)：后端、前端、Migration、真实样本、A5 和发布回归证据。
+- [`docs/testing/TMS_User_Joint_Test_Checklist_2026-09-01.md`](docs/testing/TMS_User_Joint_Test_Checklist_2026-09-01.md)：当前未完成测试、用户联合测试步骤、打开前端方法和问题反馈模板。
+- [`docs/development/TMS_Login_and_Personal_Cockpit_Demo_Completion_Report_2026-09-01.md`](docs/development/TMS_Login_and_Personal_Cockpit_Demo_Completion_Report_2026-09-01.md)：新版登录页、个人驾驶舱 Demo、浏览器验证和后续真实数据接入边界。
 - [`docs/operations/TMS_Production_Deployment_Backup_Restore_Runbook.md`](docs/operations/TMS_Production_Deployment_Backup_Restore_Runbook.md)：目标 Windows Server/SQL Server 的发布、备份、恢复、计划任务和回滚入口。
 - [`docs/TMS_Development_Plan_v0.8_Dual_Channel.md`](docs/TMS_Development_Plan_v0.8_Dual_Channel.md)：Quick Analysis、临时 Workspace、Storage Adapter 与 Local Agent 的历史阶段计划。
 - [`docs/TMS_Development_Plan_v0.7_Route_A.md`](docs/TMS_Development_Plan_v0.7_Route_A.md)：Route A 历史阶段计划和验收拆分。
