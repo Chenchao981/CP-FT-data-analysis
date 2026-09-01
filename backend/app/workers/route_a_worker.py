@@ -202,6 +202,7 @@ class RouteAInitialImportHandler:
             "日月新": "RIYUEXIN",
             "ASE": "RIYUEGUANG",
             "日月光": "RIYUEGUANG",
+            "电基": "DIANJI",
         }
         expected_factory = aliases.get(expected_factory, expected_factory)
         if (

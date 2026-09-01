@@ -503,6 +503,57 @@ describe("StageDataWorkbench Lot input states", () => {
     expect(onOpenJob).toHaveBeenCalledWith(199);
   }, 30_000);
 
+  it.each(["ENGINEERING", "PRODUCTION"] as const)("submits Dianji PowerTECH files from the %s FT entry", async (businessDomain) => {
+    vi.mocked(uploadStageData).mockResolvedValue({
+      import_batch_id: businessDomain === "ENGINEERING" ? 201 : 202,
+      job_id: businessDomain === "ENGINEERING" ? 301 : 302,
+      status: "QUEUED",
+      input_mode: "WEB_UPLOAD",
+      business_domain: businessDomain,
+      test_stage: "FT",
+      cleaner_release: {
+        cleaner_release_id: 29,
+        cleaner_code: "DIANJI_FT_PYZ",
+        cleaner_version: "v2.19.0",
+      },
+    });
+    const onOpenJob = vi.fn();
+    renderWorkbench({ businessDomain, testStage: "FT", onOpenJob });
+
+    fireEvent.click(await screen.findByRole("button", { name: /上传数据/ }));
+    const dialog = await screen.findByRole("dialog", { name: new RegExp(`提交${businessDomain === "ENGINEERING" ? "工程" : "量产"}FT数据`) });
+    const factoryLabel = within(dialog).getByText("封测厂", { selector: "label" });
+    const factoryFormItem = factoryLabel.closest(".ant-form-item");
+    const factorySelector = factoryFormItem?.querySelector(".ant-select-selector");
+    const factoryInput = factoryFormItem?.querySelector(".ant-select-selection-search-input");
+    expect(factorySelector).not.toBeNull();
+    expect(factoryInput).not.toBeNull();
+    fireEvent.mouseDown(factoryInput!, { button: 0 });
+    fireEvent.click(factorySelector!);
+    fireEvent.click(await screen.findByText("电基", { selector: ".ant-select-item-option-content" }));
+
+    expect(await within(dialog).findByText(/v2\.19\.0.*PowerTECH/)).toBeInTheDocument();
+    const fileInput = dialog.querySelector('input[type="file"]');
+    expect(fileInput).not.toBeNull();
+    expect(fileInput).toHaveAttribute("accept", ".xls,.xlsx");
+    const file = new File(["PowerTECH Test System"], "M08M15.xls", { type: "application/vnd.ms-excel" });
+    fireEvent.change(fileInput!, { target: { files: [file] } });
+    fireEvent.click(within(dialog).getByRole("button", { name: "提交后台清洗" }));
+
+    await waitFor(() => expect(uploadStageData).toHaveBeenCalledWith(
+      businessDomain,
+      "FT",
+      [file],
+      "dianji",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ));
+    expect(onOpenJob).toHaveBeenCalledWith(businessDomain === "ENGINEERING" ? 301 : 302);
+  }, 30_000);
+
   it("clears catalog confirmation and refreshes the manifest after submit fails", async () => {
     vi.mocked(listFormalSourceRoots).mockResolvedValue([{
       code: "RIYUEXIN_PRODUCTION_G2",

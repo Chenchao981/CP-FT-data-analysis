@@ -27,6 +27,7 @@ export const formalFactoryOptions: Record<CapabilityStage, FactoryOption[]> = {
   FT: [
     { value: "riyuexin", label: "日月新" },
     { value: "riyueguang", label: "日月光" },
+    { value: "dianji", label: "电基" },
   ],
 };
 
@@ -36,6 +37,7 @@ export const factoryInputs: Record<string, { accept: string; hint: string }> = {
   lion: { accept: ".zip,.xls,.xlsx", hint: "立昂微支持 ZIP、XLS、XLSX；系统严格区分已验收格式。" },
   riyuexin: { accept: ".xlsx", hint: "日月新当前正式支持已验收的 DC XLSX；未知布局会停止处理。" },
   riyueguang: { accept: ".xlsx", hint: "日月光当前正式支持已验收的 DC XLSX；请勿混入 DVDS、RG、HTDC 或 TF。" },
+  dianji: { accept: ".xls,.xlsx", hint: "电基当前正式支持 v2.19.0 已验收的 PowerTECH 伪 XLS 与原生 XLSX；系统动态接收右侧新增业务参数，并严格排除 CONT 等控制项。" },
 };
 
 export function isFormalFactory(stage: CapabilityStage, factoryCode: string): boolean {

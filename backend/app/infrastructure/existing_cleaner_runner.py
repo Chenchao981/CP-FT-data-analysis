@@ -124,6 +124,10 @@ class ExistingCleanerRunner:
             release_dir = self.ft_release_dir
             package = release_dir / "ft_data_cleaner.pyz"
             script = _FT_RIYUEGUANG_DC_SCRIPT
+        elif stage == "FT" and factory_code in {"dianji", "电基"}:
+            release_dir = self.ft_release_dir
+            package = release_dir / "ft_data_cleaner.pyz"
+            script = _FT_DIANJI_POWERTECH_SCRIPT
         else:
             raise ValueError(f"unsupported existing cleaner adapter: {stage}/{factory}")
 
@@ -142,6 +146,11 @@ class ExistingCleanerRunner:
                 {"outlier_method": "iqr", "convert_units": True}
             ),
             lot_overrides=None,
+            ft_allowed_suffixes=(
+                frozenset({".xls", ".xlsx"})
+                if stage == "FT" and factory_code in {"dianji", "电基"}
+                else frozenset({".xlsx"})
+            ),
         )
 
     def run_release(
@@ -170,6 +179,7 @@ class ExistingCleanerRunner:
             "GUOYU_CP_PYZ": _CP_GUOYU_SCRIPT,
             "RIYUEXIN_FT_PYZ": _FT_RIYUEXIN_DC_SCRIPT,
             "RIYUEGUANG_FT_PYZ": _FT_RIYUEGUANG_DC_SCRIPT,
+            "DIANJI_FT_PYZ": _FT_DIANJI_POWERTECH_SCRIPT,
         }
         try:
             script = scripts[release.adapter_code]
@@ -196,6 +206,7 @@ class ExistingCleanerRunner:
             lot_overrides=lot_overrides,
             expected_sha256=expected_sha256,
             require_registered_hash=release.test_stage == "FT",
+            ft_allowed_suffixes=_ft_allowed_suffixes(release.adapter_code),
         )
 
     def _execute_registered_inputs(
@@ -215,6 +226,7 @@ class ExistingCleanerRunner:
         lot_overrides: dict[str, str] | None,
         expected_sha256: Sequence[str | None] | None = None,
         require_registered_hash: bool = False,
+        ft_allowed_suffixes: frozenset[str] = frozenset({".xlsx"}),
     ) -> ExistingCleanerRunResult:
         validated_hashes = _verify_expected_sha256(
             normalized_inputs,
@@ -237,7 +249,9 @@ class ExistingCleanerRunner:
                 lot_overrides=lot_overrides,
             )
 
-        registered_files = _registered_ft_files(normalized_inputs)
+        registered_files = _registered_ft_files(
+            normalized_inputs, allowed_suffixes=ft_allowed_suffixes
+        )
         with tempfile.TemporaryDirectory(prefix="tms_ft_registered_") as temporary:
             isolated = Path(temporary)
             seen_names: set[str] = set()
@@ -362,14 +376,25 @@ class ExistingCleanerRunner:
         )
 
 
-def _registered_ft_files(inputs: tuple[Path, ...]) -> tuple[Path, ...]:
+def _ft_allowed_suffixes(adapter_code: str) -> frozenset[str]:
+    if adapter_code == "DIANJI_FT_PYZ":
+        return frozenset({".xls", ".xlsx"})
+    return frozenset({".xlsx"})
+
+
+def _registered_ft_files(
+    inputs: tuple[Path, ...], *, allowed_suffixes: frozenset[str]
+) -> tuple[Path, ...]:
     if not all(
         path.is_file()
-        and path.suffix.lower() == ".xlsx"
+        and path.suffix.lower() in allowed_suffixes
         and not path.name.startswith("~$")
         for path in inputs
     ):
-        raise ValueError("FT DC adapter requires exact registered XLSX files")
+        expected = "/".join(sorted(allowed_suffixes))
+        raise ValueError(
+            f"FT adapter requires exact registered files with suffixes: {expected}"
+        )
     files = inputs
     if not files:
         raise ValueError("FT DC adapter received no registered XLSX files")
@@ -702,4 +727,103 @@ except LotOverrideRequired as exc:
         payload, ensure_ascii=False, separators=(',', ':')
     ) + '\\n')
     raise SystemExit(42)
+"""
+
+
+_FT_DIANJI_POWERTECH_SCRIPT = """
+import json, os, sys
+from pathlib import Path, PureWindowsPath
+sys.path.insert(0, os.environ['TMS_EXISTING_CLEANER_PACKAGE'])
+from factories.dianji.dc_cleaner import DianjiDCCleaner
+from factories.dianji.powertech_parser import (
+    _locate_header_rows,
+    _metadata_value,
+    _read_source_text,
+)
+from factories.dianji.powertech_xlsx_parser import _header_metadata, _read_workbook
+from factories.dianji.source_registry import parse_dianji_source_file
+inputs = json.loads(os.environ['TMS_EXISTING_CLEANER_INPUTS'])
+if len(inputs) != 1 or not Path(inputs[0]).is_dir():
+    raise SystemExit('电基 FT Adapter 需要一个已隔离的源文件目录')
+cleaner = DianjiDCCleaner(
+    input_dir=inputs[0],
+    output_dir=os.environ['TMS_EXISTING_CLEANER_OUTPUT'],
+)
+if not cleaner.process_all():
+    raise SystemExit('电基 FT-ALL cleaner returned false')
+manifest_path = cleaner.last_scatter_manifest
+if manifest_path is None or not Path(manifest_path).is_file():
+    raise SystemExit('电基 FT-ALL cleaner did not create a scatter manifest')
+manifest_path = Path(manifest_path).resolve()
+manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+product = str(cleaner.last_run_summary.get('product') or '').strip()
+if manifest.get('factory') != '电基' or manifest.get('data_type') != 'FT-ALL' or not product:
+    raise SystemExit('电基 FT-ALL output identity is incomplete')
+source_identities = []
+for source in cleaner.scan_source_files():
+    parsed = parse_dianji_source_file(source)
+    identity = parsed.identity
+    if parsed.source_format == 'PowerTECH':
+        source_text, _encoding = _read_source_text(source)
+        source_rows = [
+            [field.strip() for field in line.split('\\t')]
+            for line in source_text.splitlines()
+        ]
+        labels = _locate_header_rows(source_rows, source)
+        test_file_name = PureWindowsPath(_metadata_value(
+            source_rows, labels['Serial#'], 'TestFileName', source
+        )).name
+    elif parsed.source_format == 'PowerTECH XLSX':
+        test_file_name = PureWindowsPath(
+            _header_metadata(_read_workbook(source))['test_file']
+        ).name
+    else:
+        raise SystemExit('电基 FT Adapter 仅支持 PowerTECH 文本/XLSX')
+    if not test_file_name:
+        raise SystemExit('电基 FT TestFileName is missing')
+    source_identities.append({
+        'source_id': source.stem,
+        'source_file': source.name,
+        'product_name': identity.product,
+        'lot_id': identity.batch,
+        'manufacturing_lot': identity.manufacturing_lot,
+        'test_tag': identity.test_tag,
+        'test_file_name': test_file_name,
+        'source_segment': identity.source_segment,
+        'source_format': parsed.source_format,
+        'metadata_lot': parsed.metadata_lot,
+    })
+if (
+    {item['source_id'] for item in source_identities} != set(manifest.get('sources') or [])
+    or {item['lot_id'] for item in source_identities} != set(manifest.get('lots') or [])
+    or {item['product_name'] for item in source_identities} != {product}
+):
+    raise SystemExit('电基 FT-ALL source identity reconciliation failed')
+manifest['factory_code'] = 'DIANJI'
+manifest['product_name'] = product
+manifest['adapter_contract_version'] = 'DIANJI_POWERTECH_TMS_V1'
+manifest['source_identities'] = source_identities
+output_root = manifest_path.parent.resolve()
+data_path = (output_root / str(manifest.get('data_file') or '')).resolve()
+spec_path = (output_root / str(manifest.get('spec_file') or '')).resolve()
+fixed_data_path = output_root / 'ft_scatter_data.csv.gz'
+fixed_spec_path = output_root / 'ft_scatter_spec.csv'
+fixed_manifest_path = output_root / 'ft_scatter_manifest.json'
+if (
+    data_path.parent != output_root
+    or spec_path.parent != output_root
+    or data_path == spec_path
+    or not data_path.is_file()
+    or not spec_path.is_file()
+):
+    raise SystemExit('电基 FT-ALL scatter artifacts are incomplete')
+data_path.replace(fixed_data_path)
+spec_path.replace(fixed_spec_path)
+manifest['data_file'] = fixed_data_path.name
+manifest['spec_file'] = fixed_spec_path.name
+fixed_manifest_path.write_text(
+    json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8'
+)
+if fixed_manifest_path != manifest_path:
+    manifest_path.unlink()
 """

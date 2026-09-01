@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from app.domain.cleaner_registry import CleanerRelease
 from app.infrastructure.existing_cleaner_runner import (
+    _FT_DIANJI_POWERTECH_SCRIPT,
     _FT_RIYUEGUANG_DC_SCRIPT,
     _FT_RIYUEXIN_DC_SCRIPT,
     CleanerInputRequired,
@@ -71,7 +72,7 @@ def test_ft_adapter_requires_registered_xlsx_files(tmp_path: Path) -> None:
         ft_release_dir=ft_release,
         python_executable=python,
     )
-    with pytest.raises(ValueError, match="exact registered XLSX"):
+    with pytest.raises(ValueError, match=r"suffixes: \.xlsx"):
         runner.run(
             test_stage="FT",
             factory="riyuexin",
@@ -224,6 +225,77 @@ def test_released_ft_contract_uses_independent_factory_adapter(
         expected_sha256=[hashlib.sha256(registered.read_bytes()).hexdigest()],
     )
 
+    assert {artifact.role for artifact in result.artifacts} == {
+        "cleaned",
+        "scatter_data",
+        "scatter_spec",
+        "scatter_manifest",
+    }
+
+
+def test_released_dianji_contract_accepts_exact_registered_xls_and_xlsx(
+    tmp_path: Path,
+) -> None:
+    python, _cp_release, ft_release = _runtime(tmp_path)
+    package = ft_release / "ft_data_cleaner.pyz"
+    package.write_bytes(b"released-ft-cleaner-v2.19.0")
+    legacy = tmp_path / "M260616003-005 C207458.07 DC260716090330.xls"
+    native = tmp_path / "M260616003-006 C207458.07 DC260716090331.xlsx"
+    legacy.write_bytes(b"powertech-tab-text")
+    native.write_bytes(b"powertech-workbook")
+    output = tmp_path / "output"
+    release = CleanerRelease(
+        20,
+        9,
+        "FT",
+        "DIANJI",
+        "DIANJI_POWERTECH_DYNAMIC_EXISTING",
+        "route-a-v1",
+        "DIANJI_FT_POWERTECH_EXISTING",
+        "v2.19.0",
+        hashlib.sha256(package.read_bytes()).hexdigest(),
+        str(package),
+        str(python),
+        "factories.dianji.dc_cleaner.DianjiDCCleaner.process_all via TMS manifest adapter",
+        "DIANJI_FT_PYZ",
+        "DIANJI_POWERTECH_DIRECTORY_V1",
+        "DIANJI_FT_SCATTER_V1",
+        None,
+        30,
+        10000,
+    )
+
+    def fake_run(command, **kwargs):
+        script = command[2]
+        assert "DianjiDCCleaner" in script
+        assert "parse_dianji_source_file" in script
+        assert "DIANJI_POWERTECH_TMS_V1" in script
+        assert "test_file_name" in script
+        assert "_read_source_text" in script
+        assert "_read_workbook" in script
+        isolated = Path(json.loads(kwargs["env"]["TMS_EXISTING_CLEANER_INPUTS"])[0])
+        assert isolated != tmp_path
+        assert sorted(path.name for path in isolated.iterdir()) == sorted(
+            [legacy.name, native.name]
+        )
+        output.mkdir(exist_ok=True)
+        (output / "result.xlsx").write_bytes(b"xlsx")
+        (output / "ft_scatter_data.csv.gz").write_bytes(b"data")
+        (output / "ft_scatter_spec.csv").write_bytes(b"spec")
+        (output / "ft_scatter_manifest.json").write_bytes(b"manifest")
+        return subprocess.CompletedProcess(command, 0, stdout="ok", stderr="")
+
+    result = ExistingCleanerRunner(process_runner=fake_run).run_release(
+        release=release,
+        inputs=[legacy, native],
+        output_root=output,
+        expected_sha256=[
+            hashlib.sha256(legacy.read_bytes()).hexdigest(),
+            hashlib.sha256(native.read_bytes()).hexdigest(),
+        ],
+    )
+
+    assert result.factory == "dianji"
     assert {artifact.role for artifact in result.artifacts} == {
         "cleaned",
         "scatter_data",
@@ -444,3 +516,18 @@ def test_ft_subprocess_script_freezes_lot_input_contract(script: str) -> None:
     assert "except LotOverrideRequired as exc" in script
     assert "TMS_INPUT_REQUIRED_JSON=" in script
     assert "'original_file_name': name" in script
+
+
+def test_dianji_subprocess_script_freezes_powertech_output_contract() -> None:
+    compile(_FT_DIANJI_POWERTECH_SCRIPT, "<existing-dianji-cleaner>", "exec")
+    assert "DianjiDCCleaner" in _FT_DIANJI_POWERTECH_SCRIPT
+    assert "parse_dianji_source_file" in _FT_DIANJI_POWERTECH_SCRIPT
+    assert "manifest.get('data_type') != 'FT-ALL'" in _FT_DIANJI_POWERTECH_SCRIPT
+    assert "DIANJI_POWERTECH_TMS_V1" in _FT_DIANJI_POWERTECH_SCRIPT
+    assert "source_identities" in _FT_DIANJI_POWERTECH_SCRIPT
+    assert "test_file_name" in _FT_DIANJI_POWERTECH_SCRIPT
+    assert "_read_source_text" in _FT_DIANJI_POWERTECH_SCRIPT
+    assert "_read_workbook" in _FT_DIANJI_POWERTECH_SCRIPT
+    assert "ft_scatter_data.csv.gz" in _FT_DIANJI_POWERTECH_SCRIPT
+    assert "ft_scatter_spec.csv" in _FT_DIANJI_POWERTECH_SCRIPT
+    assert "ft_scatter_manifest.json" in _FT_DIANJI_POWERTECH_SCRIPT

@@ -20,7 +20,7 @@ const activeUploadStatuses = new Set(["RECEIVED", "QUEUED", "PROCESSING"]);
 const domainName: Record<BusinessDomain, string> = { ENGINEERING: "工程", PRODUCTION: "量产" };
 const stageDescription: Record<TestStage, string> = {
   CP: "选择晶圆厂并上传对应CP源文件后，系统自动调用该厂现有清洗程序并形成Wafer分析数据。",
-  FT: "选择日月新或日月光并提交已验收的FT DC XLSX，系统按各自格式严格校验后形成产品/Lot分析数据。",
+  FT: "选择日月新、日月光或电基并提交对应已验收源文件，系统按独立厂家合同严格校验后形成产品/Lot分析数据。",
 };
 const visibilityDescription: Record<BusinessDomain, { message: string; description: string }> = {
   ENGINEERING: {
@@ -252,7 +252,7 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
         inputMode === "CATALOG" ? sourceManifest.data?.sha : undefined,
       );
     },
-    onSuccess: async (data) => { messageApi.success(`批次 ${data.import_batch_id} 已进入后台清洗队列（任务 ${data.job_id}）`); setOpen(false); setFiles([]); setInputMode("UPLOAD"); setSourceRootCode(undefined); setSourceRelativePath("."); setConfirmedManifestSha(undefined); form.resetFields(); onOpenJob?.(data.job_id); await queryClient.invalidateQueries({ queryKey: scopeKey }); },
+    onSuccess: async (data) => { messageApi.success(`批次 ${data.import_batch_id} 已进入后台清洗队列（任务 ${data.job_id}；Cleaner ${data.cleaner_release.cleaner_code} ${data.cleaner_release.cleaner_version}）`); setOpen(false); setFiles([]); setInputMode("UPLOAD"); setSourceRootCode(undefined); setSourceRelativePath("."); setConfirmedManifestSha(undefined); form.resetFields(); onOpenJob?.(data.job_id); await queryClient.invalidateQueries({ queryKey: scopeKey }); },
     onError: async (error) => {
       messageApi.error(error.message);
       if (inputMode === "CATALOG") {

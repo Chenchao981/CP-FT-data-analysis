@@ -37,6 +37,7 @@ _FACTORY_ALIASES = {
     "日月新": "RIYUEXIN",
     "ASE": "RIYUEGUANG",
     "日月光": "RIYUEGUANG",
+    "电基": "DIANJI",
 }
 
 _DATASET_APPLOCK_SQL = (

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import hashlib
 import json
 import os
@@ -23,6 +24,7 @@ class ExistingRelease:
     entrypoint: str
     input_contract: str
     output_contract: str
+    cleaner_version: str | None = None
 
 
 def _sha256(path: Path) -> str:
@@ -152,6 +154,18 @@ def _definitions() -> tuple[ExistingRelease, ...]:
         ),
         ExistingRelease(
             "FT",
+            "DIANJI",
+            "DIANJI_POWERTECH_DYNAMIC_EXISTING",
+            "DIANJI_FT_POWERTECH_EXISTING",
+            ft_package,
+            "DIANJI_FT_PYZ",
+            "factories.dianji.dc_cleaner.DianjiDCCleaner.process_all via TMS manifest adapter",
+            "DIANJI_POWERTECH_DIRECTORY_V1",
+            "DIANJI_FT_SCATTER_V1",
+            "v2.19.0",
+        ),
+        ExistingRelease(
+            "FT",
             "JIEQUN",
             "JIEQUN_FT_QUICK_PAT_EXISTING",
             "JIEQUN_FT_QUICK_PAT_EXISTING",
@@ -164,7 +178,36 @@ def _definitions() -> tuple[ExistingRelease, ...]:
     )
 
 
-def main() -> None:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Register immutable snapshots for explicitly selected Cleaner factories"
+    )
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument(
+        "--factory",
+        action="append",
+        choices=(
+            "HUAHONG",
+            "JETECH",
+            "LION",
+            "GUOYU",
+            "RIYUEXIN",
+            "RIYUEGUANG",
+            "DIANJI",
+            "JIEQUN",
+        ),
+        help="Register only this factory; repeat to select more than one",
+    )
+    selection.add_argument(
+        "--all",
+        action="store_true",
+        help="Explicitly register every configured Cleaner definition",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> None:
+    args = _parse_args(argv)
     database_url = os.environ.get("TMS_DATABASE_URL")
     if not database_url:
         raise RuntimeError("TMS_DATABASE_URL is required")
@@ -181,6 +224,11 @@ def main() -> None:
         raise FileNotFoundError(f"Cleaner Python runtime is unavailable: {runtime}")
 
     releases = _definitions()
+    if not args.all:
+        selected = set(args.factory or ())
+        releases = tuple(item for item in releases if item.factory in selected)
+    if not releases:
+        raise RuntimeError("no Cleaner definitions were selected")
     for release in releases:
         if not release.package.is_file():
             raise FileNotFoundError(
@@ -212,7 +260,7 @@ def main() -> None:
                 checksum,
                 snapshot_root,
             )
-            version = f"sha256-{checksum[:12]}"
+            version = definition.cleaner_version or f"sha256-{checksum[:12]}"
             profile_id = connection.execute(
                 text(
                     "SELECT format_profile_id FROM ingestion.format_profile "

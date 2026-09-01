@@ -44,13 +44,14 @@ class FtSpecItem:
     bias1: str | None
     bias2: str | None
     test_condition: str | None
+    source_parameter_present: bool = True
 
 
 @dataclass(frozen=True, slots=True)
 class FtCleanedRow:
     lot_id: str
     source_id: str
-    tester_id: str
+    tester_id: str | None
     source_file: str
     seq_no: int
     values: tuple[str, ...]
@@ -79,10 +80,11 @@ class FtXlsxScatter:
 class FtSourceSpec:
     source_id: str
     lot_id: str
-    tester_id: str
+    tester_id: str | None
     source_file: str
     items: tuple[FtSpecItem, ...]
     sha256: str
+    identity_metadata: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,12 +135,48 @@ def _optional(raw: str | None) -> str | None:
     return value or None
 
 
+def _spec_fingerprint_item(item: FtSpecItem) -> dict[str, Any]:
+    """Keep legacy FT fingerprints stable while recording DIANJI absence."""
+    payload = asdict(item)
+    if item.source_parameter_present:
+        payload.pop("source_parameter_present")
+    return payload
+
+
+def _condition_payload(item: FtSpecItem) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "text": item.test_condition,
+        "bias1": item.bias1,
+        "bias2": item.bias2,
+    }
+    if not item.source_parameter_present:
+        payload["source_parameter_present"] = False
+    return payload
+
+
+def _validate_dianji_parameters(parameters: tuple[str, ...]) -> None:
+    controls = [
+        name
+        for name in parameters
+        if name.strip().upper().startswith("CONT")
+        or name.strip().upper() in {"SAME", "DELAY"}
+    ]
+    if controls:
+        raise FtXlsxScatterError(
+            "DIANJI FT Cleaner output contains control items: "
+            + ", ".join(controls)
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class FtFactoryConfig:
     code: str
     name: str
     program_name: str
     parser_format: str
+    output_contract: str = "FT_XLSX_SCATTER_V1"
+    manifest_data_type: str = "DC"
+    supplier_type: str = "OSAT"
 
 
 FT_FACTORY_CONFIGS = {
@@ -153,6 +191,15 @@ FT_FACTORY_CONFIGS = {
         "日月光",
         "日月光 FT DC Cleaner 标准输出",
         "RIYUEGUANG_FT_XLSX_SCATTER",
+    ),
+    "DIANJI": FtFactoryConfig(
+        "DIANJI",
+        "电基",
+        "电基 FT-ALL PowerTECH Cleaner 标准输出",
+        "DIANJI_FT_POWERTECH_SCATTER",
+        output_contract="DIANJI_FT_SCATTER_V1",
+        manifest_data_type="FT-ALL",
+        supplier_type="INTERNAL",
     ),
 }
 _LOT_PATTERN = r"[A-Z0-9]{4}-\d{4}"
@@ -195,8 +242,18 @@ def _factory_identity_from_source_file(
     factory_code: str,
     *,
     spec_lot_id: str | None = None,
+    manifest_product_name: str | None = None,
 ) -> tuple[str, str, str]:
     stem = Path(source_file).stem
+    if factory_code == "DIANJI":
+        product = (manifest_product_name or "").strip()
+        lot_id = (spec_lot_id or "").strip().upper()
+        if not product or not lot_id:
+            raise FtXlsxScatterError(
+                "DIANJI FT manifest/spec 缺少 Product 或 Lot 身份"
+            )
+        return stem, product, lot_id
+
     match = _SOURCE_FIRST_PATTERN.fullmatch(stem)
     if match is None and factory_code == "RIYUEXIN":
         match = _RIYUEXIN_PRODUCT_FIRST_PATTERN.fullmatch(stem)
@@ -232,6 +289,98 @@ def _factory_identity_from_source_file(
     )
 
 
+def _dianji_manifest_product(
+    manifest: Mapping[str, Any], cleaned_path: Path
+) -> str:
+    product = str(manifest.get("product_name") or "").strip()
+    if (
+        not product
+        or len(product) > 128
+        or Path(product).name != product
+        or cleaned_path.name.casefold() != f"{product} DJ PAT.xlsx".casefold()
+    ):
+        raise FtXlsxScatterError(
+            "DIANJI FT manifest Product 与 cleaned_file 身份不一致"
+        )
+    return product
+
+
+def _dianji_manifest_sources(
+    manifest: Mapping[str, Any],
+    *,
+    product_name: str,
+    sources: tuple[str, ...],
+    lots: tuple[str, ...],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    if manifest.get("adapter_contract_version") != "DIANJI_POWERTECH_TMS_V1":
+        raise FtXlsxScatterError("DIANJI FT adapter contract is unsupported")
+    raw_identities = manifest.get("source_identities")
+    if not isinstance(raw_identities, list) or not raw_identities:
+        raise FtXlsxScatterError("DIANJI FT source identities are missing")
+    required = {
+        "source_id",
+        "source_file",
+        "product_name",
+        "lot_id",
+        "manufacturing_lot",
+        "test_tag",
+        "test_file_name",
+        "source_segment",
+        "source_format",
+        "metadata_lot",
+    }
+    identities: dict[tuple[str, str], dict[str, Any]] = {}
+    for raw in raw_identities:
+        if not isinstance(raw, dict) or set(raw) != required:
+            raise FtXlsxScatterError("DIANJI FT source identity schema is invalid")
+        source_id = str(raw["source_id"] or "").strip()
+        raw_source_file = str(raw["source_file"] or "").strip()
+        source_file = Path(raw_source_file).name
+        lot_id = str(raw["lot_id"] or "").strip()
+        source_format = str(raw["source_format"] or "").strip()
+        test_file_name = str(raw["test_file_name"] or "").strip()
+        if (
+            not source_id
+            or source_file != raw_source_file
+            or Path(source_file).stem != source_id
+            or str(raw["product_name"] or "").strip() != product_name
+            or not lot_id
+            or not str(raw["manufacturing_lot"] or "").strip()
+            or not str(raw["test_tag"] or "").strip()
+            or not test_file_name
+            or len(test_file_name) > 128
+            or Path(test_file_name).name != test_file_name
+            or source_format not in {"PowerTECH", "PowerTECH XLSX"}
+            or not str(raw["metadata_lot"] or "").strip()
+        ):
+            raise FtXlsxScatterError("DIANJI FT source identity values are invalid")
+        expected_suffix = ".xlsx" if source_format == "PowerTECH XLSX" else ".xls"
+        if Path(source_file).suffix.casefold() != expected_suffix:
+            raise FtXlsxScatterError("DIANJI FT source format/suffix is inconsistent")
+        key = (source_id, lot_id)
+        if key in identities:
+            raise FtXlsxScatterError("DIANJI FT source identities are duplicated")
+        source_segment = raw["source_segment"]
+        if source_segment is not None and not str(source_segment).strip():
+            raise FtXlsxScatterError("DIANJI FT source segment is invalid")
+        identities[key] = {
+            **raw,
+            "source_id": source_id,
+            "source_file": source_file,
+            "lot_id": lot_id,
+            "source_segment": (
+                str(source_segment).strip() if source_segment is not None else None
+            ),
+            "source_format": source_format,
+            "test_file_name": test_file_name,
+        }
+    if {key[0] for key in identities} != set(sources) or {
+        key[1] for key in identities
+    } != set(lots):
+        raise FtXlsxScatterError("DIANJI FT source identities differ from manifest")
+    return identities
+
+
 def summarize_ft_xlsx_scatter_identity(
     artifacts: tuple[CleanerArtifact, ...],
 ) -> FtArtifactIdentitySummary:
@@ -244,13 +393,21 @@ def summarize_ft_xlsx_scatter_identity(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise FtXlsxScatterError("FT scatter manifest is invalid") from exc
-    if manifest.get("schema_version") != 1 or manifest.get("data_type") != "DC":
+    if manifest.get("schema_version") != 1:
         raise FtXlsxScatterError("FT scatter manifest contract is unsupported")
     factory_code = str(manifest.get("factory_code") or "").strip().upper()
-    if factory_code not in FT_FACTORY_CONFIGS:
+    factory_config = FT_FACTORY_CONFIGS.get(factory_code)
+    if factory_config is None:
         raise FtXlsxScatterError(
             "FT scatter summary requires an approved manifest factory_code"
         )
+    if manifest.get("data_type") != factory_config.manifest_data_type:
+        raise FtXlsxScatterError("FT scatter manifest data_type is unsupported")
+    manifest_product = (
+        _dianji_manifest_product(manifest, cleaned_path)
+        if factory_code == "DIANJI"
+        else None
+    )
     if manifest.get("cleaned_file") != cleaned_path.name:
         raise FtXlsxScatterError("FT manifest cleaned_file does not match artifact")
     if manifest.get("data_file") != data_path.name:
@@ -267,6 +424,8 @@ def summarize_ft_xlsx_scatter_identity(
         or len(set(parameters)) != len(parameters)
     ):
         raise FtXlsxScatterError("FT manifest parameters are empty or duplicated")
+    if factory_code == "DIANJI":
+        _validate_dianji_parameters(parameters)
     if not sources or any(not value for value in sources) or len(set(sources)) != len(sources):
         raise FtXlsxScatterError("FT manifest sources are empty or duplicated")
     if not lots or any(not value for value in lots) or len(set(lots)) != len(lots):
@@ -277,6 +436,17 @@ def summarize_ft_xlsx_scatter_identity(
         raise FtXlsxScatterError("FT manifest row_count is invalid") from exc
     if row_count < 0:
         raise FtXlsxScatterError("FT manifest row_count is invalid")
+
+    dianji_identities = (
+        _dianji_manifest_sources(
+            manifest,
+            product_name=manifest_product or "",
+            sources=sources,
+            lots=lots,
+        )
+        if factory_code == "DIANJI"
+        else {}
+    )
 
     required_spec = {"Source_ID", "lot_ID", "Parameter", "Source_File"}
     spec_keys: set[tuple[str, str, str]] = set()
@@ -301,13 +471,25 @@ def summarize_ft_xlsx_scatter_identity(
                     f"FT scatter spec row {source_row_no} has invalid summary identity"
                 )
             file_source, product, file_lot = _factory_identity_from_source_file(
-                source_file, factory_code, spec_lot_id=lot_id
+                source_file,
+                factory_code,
+                spec_lot_id=lot_id,
+                manifest_product_name=manifest_product,
             )
             if Path(source_file).stem != source_id or file_lot != lot_id.upper():
                 raise FtXlsxScatterError(
                     f"FT Source_File identity differs from spec row {source_row_no}"
                 )
             group = (source_id, lot_id)
+            if factory_code == "DIANJI":
+                dianji_identity = dianji_identities.get(group)
+                if (
+                    dianji_identity is None
+                    or dianji_identity["source_file"] != source_file
+                ):
+                    raise FtXlsxScatterError(
+                        "DIANJI FT manifest identity differs from spec row"
+                    )
             identity = (file_source, product, source_file)
             previous = identity_by_group.get(group)
             if previous is not None and previous != identity:
@@ -323,12 +505,23 @@ def summarize_ft_xlsx_scatter_identity(
         lot_id for _, lot_id in spec_groups
     } != set(lots):
         raise FtXlsxScatterError("FT scatter spec Source/Lot differs from manifest")
+    if factory_code == "DIANJI" and spec_groups != set(dianji_identities):
+        raise FtXlsxScatterError(
+            "DIANJI FT scatter spec groups differ from source identities"
+        )
     expected_spec_keys = {
         (source_id, lot_id, parameter)
         for source_id, lot_id in spec_groups
         for parameter in parameters
     }
-    if spec_keys != expected_spec_keys:
+    if factory_code == "DIANJI":
+        if not spec_keys.issubset(expected_spec_keys) or {
+            parameter for _, _, parameter in spec_keys
+        } != set(parameters):
+            raise FtXlsxScatterError(
+                "DIANJI FT scatter spec parameter coverage is invalid"
+            )
+    elif spec_keys != expected_spec_keys:
         raise FtXlsxScatterError("FT scatter spec does not cover Source/Lot/Parameter")
     if len(products) != 1:
         raise FtXlsxScatterError("FT upload must resolve exactly one Product")
@@ -355,12 +548,20 @@ def parse_ft_xlsx_scatter(
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise FtXlsxScatterError("FT scatter manifest is invalid") from exc
-    if manifest.get("schema_version") != 1 or manifest.get("data_type") != "DC":
+    if manifest.get("schema_version") != 1:
         raise FtXlsxScatterError("FT scatter manifest contract is unsupported")
     explicit_factory_code = str(manifest.get("factory_code") or "").strip().upper()
     if explicit_factory_code and explicit_factory_code not in FT_FACTORY_CONFIGS:
         raise FtXlsxScatterError("FT scatter manifest factory_code is unsupported")
     factory_code = explicit_factory_code or "RIYUEXIN"
+    factory_config = FT_FACTORY_CONFIGS[factory_code]
+    if manifest.get("data_type") != factory_config.manifest_data_type:
+        raise FtXlsxScatterError("FT scatter manifest data_type is unsupported")
+    manifest_product = (
+        _dianji_manifest_product(manifest, cleaned_path)
+        if factory_code == "DIANJI"
+        else None
+    )
     if manifest.get("cleaned_file") != cleaned_path.name:
         raise FtXlsxScatterError("FT manifest cleaned_file does not match artifact")
     if manifest.get("data_file") != data_path.name:
@@ -376,6 +577,8 @@ def parse_ft_xlsx_scatter(
         or len(set(parameters)) != len(parameters)
     ):
         raise FtXlsxScatterError("FT manifest parameters are empty or duplicated")
+    if factory_code == "DIANJI":
+        _validate_dianji_parameters(parameters)
     if (
         not sources
         or any(not value for value in sources)
@@ -384,6 +587,17 @@ def parse_ft_xlsx_scatter(
         raise FtXlsxScatterError("FT manifest sources are empty or duplicated")
     if not lots or any(not value for value in lots) or len(set(lots)) != len(lots):
         raise FtXlsxScatterError("FT manifest lots are empty or duplicated")
+
+    dianji_identities = (
+        _dianji_manifest_sources(
+            manifest,
+            product_name=manifest_product or "",
+            sources=sources,
+            lots=lots,
+        )
+        if factory_code == "DIANJI"
+        else {}
+    )
 
     required_spec = {
         "Source_ID",
@@ -394,13 +608,16 @@ def parse_ft_xlsx_scatter(
         "High_Limit",
         "Low_Limit_Raw",
         "High_Limit_Raw",
-        "Bias1",
-        "Bias2",
         "Test_Condition",
         "Source_File",
     }
+    if factory_code != "DIANJI":
+        required_spec.update({"Bias1", "Bias2"})
     spec_by_key: dict[tuple[str, str, str], FtSpecItem] = {}
-    identity_by_group: dict[tuple[str, str], tuple[str, str]] = {}
+    identity_by_group: dict[tuple[str, str], tuple[str | None, str]] = {}
+    identity_metadata_by_group: dict[
+        tuple[str, str], Mapping[str, Any]
+    ] = {}
     products: set[str] = set()
     with spec_path.open("r", encoding="utf-8-sig", newline="") as stream:
         reader = csv.DictReader(stream)
@@ -447,9 +664,13 @@ def parse_ft_xlsx_scatter(
                 raise FtXlsxScatterError(
                     f"FT scatter spec row {source_row_no} has no Source_File"
                 )
+            group = (source_id, lot_id)
             if explicit_factory_code:
                 file_source, product, file_lot = _factory_identity_from_source_file(
-                    source_file, factory_code, spec_lot_id=lot_id
+                    source_file,
+                    factory_code,
+                    spec_lot_id=lot_id,
+                    manifest_product_name=manifest_product,
                 )
                 if (
                     Path(source_file).stem != source_id
@@ -459,11 +680,27 @@ def parse_ft_xlsx_scatter(
                         f"FT Source_File identity differs from spec row {source_row_no}"
                     )
                 products.add(product)
-                identity = (file_source, source_file)
+                if factory_code == "DIANJI":
+                    dianji_identity = dianji_identities.get(group)
+                    if (
+                        dianji_identity is None
+                        or dianji_identity["source_file"] != source_file
+                    ):
+                        raise FtXlsxScatterError(
+                            "DIANJI FT manifest identity differs from spec row"
+                        )
+                    tester_id = (
+                        dianji_identity["source_segment"]
+                        if dianji_identity["source_format"] == "PowerTECH XLSX"
+                        else None
+                    )
+                    identity = (tester_id, source_file)
+                    identity_metadata_by_group[group] = dianji_identity
+                else:
+                    identity = (file_source, source_file)
             else:
                 products.add(_legacy_product_from_source_file(source_file))
                 identity = (source_id, source_file)
-            group = (source_id, lot_id)
             previous_identity = identity_by_group.get(group)
             if previous_identity is not None and previous_identity != identity:
                 raise FtXlsxScatterError(
@@ -475,42 +712,26 @@ def parse_ft_xlsx_scatter(
         lot_id for _, lot_id in spec_groups
     } != set(lots):
         raise FtXlsxScatterError("FT scatter spec Source/Lot differs from manifest")
+    if factory_code == "DIANJI" and spec_groups != set(dianji_identities):
+        raise FtXlsxScatterError(
+            "DIANJI FT scatter spec groups differ from source identities"
+        )
     expected_spec_keys = {
         (source_id, lot_id, parameter)
         for source_id, lot_id in spec_groups
         for parameter in parameters
     }
-    if set(spec_by_key) != expected_spec_keys:
+    if factory_code == "DIANJI":
+        if not set(spec_by_key).issubset(expected_spec_keys) or {
+            parameter for _, _, parameter in spec_by_key
+        } != set(parameters):
+            raise FtXlsxScatterError(
+                "DIANJI FT scatter spec parameter coverage is invalid"
+            )
+    elif set(spec_by_key) != expected_spec_keys:
         raise FtXlsxScatterError("FT scatter spec does not cover Source/Lot/Parameter")
     if len(products) != 1:
         raise FtXlsxScatterError("FT upload must resolve exactly one Product")
-
-    source_order = {source_id: index for index, source_id in enumerate(sources)}
-    source_specs: list[FtSourceSpec] = []
-    for source_id, lot_id in sorted(
-        spec_groups, key=lambda item: (source_order.get(item[0], len(sources)), item[1])
-    ):
-        items = tuple(
-            spec_by_key[(source_id, lot_id, parameter)] for parameter in parameters
-        )
-        tester_id, source_file = identity_by_group[(source_id, lot_id)]
-        fingerprint_payload = json.dumps(
-            [asdict(item) for item in items],
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-        source_specs.append(
-            FtSourceSpec(
-                source_id=source_id,
-                lot_id=lot_id,
-                tester_id=tester_id,
-                source_file=source_file,
-                items=items,
-                sha256=hashlib.sha256(fingerprint_payload).hexdigest(),
-            )
-        )
-    representative_specs = source_specs[0].items
 
     rows: list[FtCleanedRow] = []
     seen_keys: set[str] = set()
@@ -556,6 +777,83 @@ def parse_ft_xlsx_scatter(
     if actual_sources != set(sources) or actual_lots != set(lots):
         raise FtXlsxScatterError("FT scatter manifest Source/Lot reconciliation failed")
 
+    missing_spec_keys = expected_spec_keys - set(spec_by_key)
+    if missing_spec_keys:
+        if factory_code != "DIANJI":
+            raise FtXlsxScatterError(
+                "FT scatter spec does not cover Source/Lot/Parameter"
+            )
+        parameter_indexes = {
+            parameter: index for index, parameter in enumerate(parameters)
+        }
+        units_by_parameter = {
+            parameter: {
+                item.unit
+                for (source_id, lot_id, item_parameter), item in spec_by_key.items()
+                if item_parameter == parameter
+            }
+            for parameter in parameters
+        }
+        for source_id, lot_id, parameter in sorted(missing_spec_keys):
+            if any(
+                row.values[parameter_indexes[parameter]]
+                for row in rows
+                if row.source_id == source_id and row.lot_id == lot_id
+            ):
+                raise FtXlsxScatterError(
+                    "DIANJI FT data has a value without a Source parameter spec: "
+                    f"{source_id}/{lot_id}/{parameter}"
+                )
+            units = units_by_parameter[parameter]
+            if not units or len(units) != 1:
+                raise FtXlsxScatterError(
+                    "DIANJI FT absent parameter unit cannot be reconciled: "
+                    f"{parameter}"
+                )
+            spec_by_key[(source_id, lot_id, parameter)] = FtSpecItem(
+                name=parameter,
+                unit=next(iter(units)),
+                lsl=None,
+                usl=None,
+                raw_lsl=None,
+                raw_usl=None,
+                bias1=None,
+                bias2=None,
+                test_condition=None,
+                source_parameter_present=False,
+            )
+
+    source_order = {source_id: index for index, source_id in enumerate(sources)}
+    source_specs: list[FtSourceSpec] = []
+    for source_id, lot_id in sorted(
+        spec_groups,
+        key=lambda item: (source_order.get(item[0], len(sources)), item[1]),
+    ):
+        items = tuple(
+            spec_by_key[(source_id, lot_id, parameter)] for parameter in parameters
+        )
+        tester_id, source_file = identity_by_group[(source_id, lot_id)]
+        fingerprint_payload = json.dumps(
+            [_spec_fingerprint_item(item) for item in items],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        source_specs.append(
+            FtSourceSpec(
+                source_id=source_id,
+                lot_id=lot_id,
+                tester_id=tester_id,
+                source_file=source_file,
+                items=items,
+                sha256=hashlib.sha256(fingerprint_payload).hexdigest(),
+                identity_metadata=identity_metadata_by_group.get(
+                    (source_id, lot_id)
+                ),
+            )
+        )
+    representative_specs = source_specs[0].items
+
     return FtXlsxScatter(
         factory_code=factory_code,
         product_name=next(iter(products)),
@@ -597,7 +895,23 @@ class FtXlsxScatterWriter:
         parameters: tuple[str, ...],
         source_spec: FtSourceSpec,
     ) -> tuple[int, int, dict[str, int]]:
-        version_code = f"SPEC-{source_spec.sha256[:16].upper()}"
+        spec_version = f"SPEC-{source_spec.sha256[:16].upper()}"
+        raw_program_name = program_code
+        version_code = spec_version
+        if factory_config.code == "DIANJI":
+            identity_metadata = source_spec.identity_metadata or {}
+            raw_program_name = str(
+                identity_metadata.get("test_file_name") or ""
+            ).strip()
+            version_code = f"{raw_program_name}@{spec_version}"
+            if (
+                not raw_program_name
+                or Path(raw_program_name).name != raw_program_name
+                or len(version_code) > 128
+            ):
+                raise FtXlsxScatterError(
+                    "DIANJI FT TestFileName cannot form a program version"
+                )
         program_version_id = connection.execute(
             text(
                 "SELECT program_version_id FROM mdm.test_program_version "
@@ -613,12 +927,17 @@ class FtXlsxScatterWriter:
                 {
                     "program": program_id,
                     "version": version_code,
-                    "raw": program_code,
+                    "raw": raw_program_name,
                     "sha": source_spec.sha256,
                     "metadata": json.dumps(
                         {
                             "source_spec_rule": "SOURCE_RUN_SPEC_FINGERPRINT",
                             "factory_code": factory_config.code,
+                            "test_file_name": (
+                                raw_program_name
+                                if factory_config.code == "DIANJI"
+                                else None
+                            ),
                         }
                     ),
                 },
@@ -643,11 +962,7 @@ class FtXlsxScatterWriter:
                         "raw_lsl": item.raw_lsl,
                         "raw_usl": item.raw_usl,
                         "condition": json.dumps(
-                            {
-                                "text": item.test_condition,
-                                "bias1": item.bias1,
-                                "bias2": item.bias2,
-                            },
+                            _condition_payload(item),
                             ensure_ascii=False,
                         ),
                         "column_index": index + 3,
@@ -715,11 +1030,7 @@ class FtXlsxScatterWriter:
                             ensure_ascii=False,
                         ),
                         "condition": json.dumps(
-                            {
-                                "text": item.test_condition,
-                                "bias1": item.bias1,
-                                "bias2": item.bias2,
-                            },
+                            _condition_payload(item),
                             ensure_ascii=False,
                         ),
                     }
@@ -777,8 +1088,24 @@ class FtXlsxScatterWriter:
             context = preparation.context
             if context["test_stage"] != "FT":
                 raise FtXlsxScatterError("FT writer received a non-FT upload task")
-            if context["output_contract_version"] != "FT_XLSX_SCATTER_V1":
+            context_factory = str(context["factory_code"]).strip().upper()
+            context_factory = {
+                "日月新": "RIYUEXIN",
+                "ASE": "RIYUEGUANG",
+                "日月光": "RIYUEGUANG",
+                "电基": "DIANJI",
+            }.get(context_factory, context_factory)
+            factory_config = FT_FACTORY_CONFIGS.get(context_factory)
+            if factory_config is None:
+                raise FtXlsxScatterError(
+                    f"FT factory is not supported by this writer: {context_factory}"
+                )
+            if context["output_contract_version"] != factory_config.output_contract:
                 raise FtXlsxScatterError("FT Cleaner output contract is not supported")
+            if output.factory_code != factory_config.code:
+                raise FtXlsxScatterError(
+                    "FT Cleaner factory identity differs from import batch"
+                )
             if preparation.existing is not None:
                 existing = preparation.existing
                 return FtCanonicalImportResult(
@@ -790,34 +1117,34 @@ class FtXlsxScatterWriter:
                     unit_count=existing.unit_count,
                     measurement_count=existing.measurement_count,
                 )
-
-            context_factory = str(context["factory_code"]).strip().upper()
-            context_factory = {
-                "日月新": "RIYUEXIN",
-                "ASE": "RIYUEGUANG",
-                "日月光": "RIYUEGUANG",
-            }.get(context_factory, context_factory)
-            factory_config = FT_FACTORY_CONFIGS.get(context_factory)
-            if factory_config is None:
-                raise FtXlsxScatterError(
-                    f"FT factory is not supported by this writer: {context_factory}"
-                )
-            if output.factory_code != factory_config.code:
-                raise FtXlsxScatterError(
-                    "FT Cleaner factory identity differs from import batch"
-                )
             supplier_code = factory_config.code
-            supplier_id = connection.execute(
-                text("SELECT supplier_id FROM mdm.supplier WHERE supplier_code=:code"),
+            supplier_row = connection.execute(
+                text(
+                    "SELECT supplier_id,supplier_type FROM mdm.supplier "
+                    "WHERE supplier_code=:code"
+                ),
                 {"code": supplier_code},
-            ).scalar_one_or_none()
-            if supplier_id is None:
+            ).mappings().one_or_none()
+            if supplier_row is None:
                 supplier_id = self._scalar(
                     connection,
                     "INSERT mdm.supplier(supplier_code,supplier_name,supplier_type,active) "
-                    "OUTPUT INSERTED.supplier_id VALUES(:code,:name,'OSAT',1)",
-                    {"code": supplier_code, "name": factory_config.name},
+                    "OUTPUT INSERTED.supplier_id VALUES(:code,:name,:type,1)",
+                    {
+                        "code": supplier_code,
+                        "name": factory_config.name,
+                        "type": factory_config.supplier_type,
+                    },
                 )
+            else:
+                supplier_id = int(supplier_row["supplier_id"])
+                if (
+                    str(supplier_row["supplier_type"] or "").strip().upper()
+                    != factory_config.supplier_type
+                ):
+                    raise FtXlsxScatterError(
+                        "FT supplier type differs from approved factory contract"
+                    )
             product_id = connection.execute(
                 text("SELECT product_id FROM mdm.product WHERE product_code=:code"),
                 {"code": output.product_name},
@@ -921,6 +1248,11 @@ class FtXlsxScatterWriter:
                             "output_contract": program_code,
                             "business_domain": context["business_domain"],
                             "source_paths": output.source_paths,
+                            "source_identities": [
+                                dict(source_spec.identity_metadata)
+                                for source_spec in output.source_specs
+                                if source_spec.identity_metadata is not None
+                            ],
                             "spec_set_ids": spec_set_ids,
                             "spec_selection_rule": "SOURCE_RUN_SPEC_FINGERPRINT",
                             "pass_fail_available": False,
@@ -954,6 +1286,15 @@ class FtXlsxScatterWriter:
                                 "spec_set_id": spec_set_id,
                                 "source_id": source_spec.source_id,
                                 "source_file": source_spec.source_file,
+                                **(
+                                    {
+                                        "source_identity": dict(
+                                            source_spec.identity_metadata
+                                        )
+                                    }
+                                    if source_spec.identity_metadata is not None
+                                    else {}
+                                ),
                             },
                             ensure_ascii=False,
                         ),
@@ -1087,6 +1428,15 @@ class FtXlsxScatterWriter:
                                 "spec_set_id": profiles_by_source[
                                     (source_spec.source_id, source_spec.lot_id)
                                 ][1],
+                                **(
+                                    {
+                                        "source_identity": dict(
+                                            source_spec.identity_metadata
+                                        )
+                                    }
+                                    if source_spec.identity_metadata is not None
+                                    else {}
+                                ),
                             }
                             for source_spec in output.source_specs
                         ],

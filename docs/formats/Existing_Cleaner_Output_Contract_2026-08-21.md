@@ -35,6 +35,18 @@ TMS 不重写 CP/FT 清洗逻辑。FastAPI Worker 通过独立进程调用两个
 - 两个源文件共用物理测试机号 `NCT6528073` 和 Lot `FA54-9815`，但 `HVBCES1/HVBCES2` 的 LSL 分别为 `1.29 kV` 与 `1.27 kV`。因此它们必须作为两个测试 Run 和两个规格指纹处理，不能按测试机号合并。
 - `ASE`/`日月光` 只映射到 `RIYUEGUANG`；`日月新` 只映射到 `RIYUEXIN`，两家身份、Release、Adapter、Supplier 和 Dataset 均独立。
 
+## 电基 FT-ALL PowerTECH（2026-09-01）
+
+- 发布包固定为 `F:\data_IGBT_multiple\packaging\release\ft_data_cleaner.pyz` v2.19.0，SHA256 为 `CCE726DE758DDE85966FA7C601F455FC3A025F9C095DB860C59AFFDF0B7FB272`；TMS 只执行 Cleaner Registry 中该哈希的不可变快照。
+- 输入合同为 `DIANJI_POWERTECH_DIRECTORY_V1`，只接受已登记的 `.xls` / `.xlsx` 文件。伪 `.xls` 按 PowerTECH 文本合同处理，原生 `.xlsx` 按 PowerTECH XLSX 合同处理；未知布局或身份冲突失败关闭。
+- 输出合同为 `DIANJI_FT_SCATTER_V1`，沿用成熟 Cleaner 生成的 cleaned XLSX、scatter data/spec/manifest，再由 TMS Adapter 增补经过同一 v2.19.0 Parser 验证的 Source 身份，不复制参数、单位、限值或清洗算法。
+- `source_identities` 必须逐源保存 `source_id`、`source_file`、`product_name`、`lot_id`、`manufacturing_lot`、`test_tag`、`test_file_name`、`source_segment`、`source_format` 和 `metadata_lot`。缺少任一必填身份、Source/Lot/Product 对账不一致时停止入库。
+- `TestFileName` 原样保存到 `mdm.test_program_version.raw_program_name`；正式 Program Version 采用 `<TestFileName>@SPEC-<规格指纹>`，既可在前端追溯 `M08M15`，又不会把不同规格的 Run 错误合并。该提取依赖 v2.19.0 已固定的 Parser 内部读取函数，升级发布包时必须做 Adapter 合同回归。
+- 参数集合按本次输入各 Source 的业务参数并集生成。某 Source 没有后续动态新增参数时，只允许对应数据列全部为空，并生成 `source_parameter_present=false`、无伪造上下限的缺失规格；只要存在值但无 Source 规格就失败关闭。
+- `CONT*`、`SAME`、`DELAY` 均为控制项，不得进入正式参数、Program Item 或 Measurement；发现控制项即失败关闭。
+- 电基在主数据中作为 `INTERNAL` Supplier，仍只进入工程/FT、量产/FT以及历史正式数据分析三个既有入口，不新增独立菜单，也不与其他 FT 厂家的 Parser、Release 或 Supplier 合并。
+- 当前电基样本没有可信 PASS/FAIL/Bin 语义，Unit 的 `overall_result` 保持 `UNKNOWN`，Yield 保持 `NULL`；不得显示为 0% 或猜测良率。
+
 ## FT 身份与规格补充合同（2026-08-27）
 
 1. `Source_ID` 表示唯一源文件 Run，当前取完整文件名 stem；`tester_id` 只保存物理测试机号（例如 `NCT6528073`）。

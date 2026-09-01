@@ -15,6 +15,7 @@ from app.infrastructure.existing_cleaner_runner import (
     ExistingCleanerRunResult,
 )
 from app.infrastructure.ft_xlsx_scatter_writer import (
+    FT_FACTORY_CONFIGS,
     FtXlsxScatterError,
     FtXlsxScatterWriter,
     parse_ft_xlsx_scatter,
@@ -137,6 +138,89 @@ def _approved_output(
     )
 
 
+def _dianji_output(
+    tmp_path: Path,
+    *,
+    old_source_dynamic_value: str = "",
+    adapter_contract_version: str = "DIANJI_POWERTECH_TMS_V1",
+) -> tuple[CleanerArtifact, ...]:
+    product = "C207458.07"
+    lot_id = "M260616003"
+    old_source = "M260616003-001 C207458.07 DC260716024650(1)"
+    new_source = "M260616003-005 C207458.07 DC260716090330"
+    cleaned = tmp_path / f"{product} DJ PAT.xlsx"
+    cleaned.write_bytes(b"xlsx-contract-placeholder")
+    data = tmp_path / "ft_scatter_data.csv.gz"
+    with gzip.open(data, "wt", encoding="utf-8", newline="") as stream:
+        stream.write(
+            "NUM,lot_ID,Source_ID,P1(V),DynamicLeak(nA)\n"
+            f"1,{lot_id},{old_source},1.5,{old_source_dynamic_value}\n"
+            f"2,{lot_id},{new_source},1.6,12\n"
+        )
+    spec = tmp_path / "ft_scatter_spec.csv"
+    spec.write_text(
+        "Source_ID,lot_ID,Parameter,Unit,Low_Limit,High_Limit,Low_Limit_Raw,"
+        "High_Limit_Raw,Test_Condition,Source_File\n"
+        f"{old_source},{lot_id},P1(V),V,1,5,>1,<5,ID=1mA,{old_source}.xls\n"
+        f"{new_source},{lot_id},P1(V),V,1,5,>1,<5,ID=1mA,{new_source}.xls\n"
+        f"{new_source},{lot_id},DynamicLeak(nA),nA,,100,,<100,VDS=40V,{new_source}.xls\n",
+        encoding="utf-8",
+    )
+    source_identities = [
+        {
+            "source_id": old_source,
+            "source_file": f"{old_source}.xls",
+            "product_name": product,
+            "lot_id": lot_id,
+            "manufacturing_lot": "M260616003-001",
+            "test_tag": "DC260716024650",
+            "source_segment": "1",
+            "source_format": "PowerTECH",
+            "test_file_name": "NCEAP020N10LL(M)-7E00_ALL_M08M09_Ver1.07_20260520.ptf",
+            "metadata_lot": lot_id,
+        },
+        {
+            "source_id": new_source,
+            "source_file": f"{new_source}.xls",
+            "product_name": product,
+            "lot_id": lot_id,
+            "manufacturing_lot": "M260616003-005",
+            "test_tag": "DC260716090330",
+            "source_segment": None,
+            "source_format": "PowerTECH",
+            "test_file_name": "NCEAP020N10LL(M)-7E00_ALL_M08M15_Ver1.07_20260520.ptf",
+            "metadata_lot": lot_id,
+        },
+    ]
+    manifest = tmp_path / "ft_scatter_manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "factory_code": "DIANJI",
+                "data_type": "FT-ALL",
+                "product_name": product,
+                "adapter_contract_version": adapter_contract_version,
+                "cleaned_file": cleaned.name,
+                "data_file": data.name,
+                "spec_file": spec.name,
+                "row_count": 2,
+                "parameters": ["P1(V)", "DynamicLeak(nA)"],
+                "sources": [old_source, new_source],
+                "lots": [lot_id],
+                "source_identities": source_identities,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return (
+        _artifact("cleaned", cleaned),
+        _artifact("scatter_data", data),
+        _artifact("scatter_spec", spec),
+        _artifact("scatter_manifest", manifest),
+    )
+
+
 def test_parse_ft_scatter_reconciles_manifest_specs_and_rows(tmp_path: Path) -> None:
     parsed = parse_ft_xlsx_scatter(_output(tmp_path))
 
@@ -147,6 +231,93 @@ def test_parse_ft_scatter_reconciles_manifest_specs_and_rows(tmp_path: Path) -> 
     assert parsed.rows[0].logical_key == "FT:L1:S1:1"
     assert parsed.rows[1].values == ("", "11")
     assert parsed.spec_items[0].test_condition == "ID=1mA"
+
+
+def test_parse_dianji_ft_scatter_supports_dynamic_parameter_union(
+    tmp_path: Path,
+) -> None:
+    parsed = parse_ft_xlsx_scatter(_dianji_output(tmp_path))
+
+    assert parsed.factory_code == "DIANJI"
+    assert parsed.product_name == "C207458.07"
+    assert parsed.parameters == ("P1(V)", "DynamicLeak(nA)")
+    assert FT_FACTORY_CONFIGS["DIANJI"].output_contract == "DIANJI_FT_SCATTER_V1"
+    assert len(parsed.source_specs) == 2
+    old_source_spec = parsed.source_specs[0]
+    assert old_source_spec.source_file.endswith(".xls")
+    assert old_source_spec.identity_metadata == {
+        "source_id": "M260616003-001 C207458.07 DC260716024650(1)",
+        "source_file": "M260616003-001 C207458.07 DC260716024650(1).xls",
+        "product_name": "C207458.07",
+        "lot_id": "M260616003",
+        "manufacturing_lot": "M260616003-001",
+        "test_tag": "DC260716024650",
+        "source_segment": "1",
+        "source_format": "PowerTECH",
+        "test_file_name": "NCEAP020N10LL(M)-7E00_ALL_M08M09_Ver1.07_20260520.ptf",
+        "metadata_lot": "M260616003",
+    }
+    old_dynamic_spec = old_source_spec.items[1]
+    assert old_dynamic_spec.name == "DynamicLeak(nA)"
+    assert old_dynamic_spec.unit == "nA"
+    assert old_dynamic_spec.lsl is None
+    assert old_dynamic_spec.usl is None
+    assert old_dynamic_spec.bias1 is None
+    assert old_dynamic_spec.bias2 is None
+    assert old_dynamic_spec.test_condition is None
+    assert old_dynamic_spec.source_parameter_present is False
+    assert parsed.source_specs[1].items[1].source_parameter_present is True
+    assert (
+        parsed.source_specs[1].identity_metadata["test_file_name"]
+        == "NCEAP020N10LL(M)-7E00_ALL_M08M15_Ver1.07_20260520.ptf"
+    )
+
+
+def test_dianji_writer_uses_exact_test_file_name_in_program_version() -> None:
+    source = inspect.getsource(FtXlsxScatterWriter._ensure_spec_profile)
+
+    assert 'identity_metadata.get("test_file_name")' in source
+    assert 'version_code = f"{raw_program_name}@{spec_version}"' in source
+    assert '"raw": raw_program_name' in source
+
+
+def test_parse_dianji_ft_scatter_rejects_value_without_source_spec(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(
+        FtXlsxScatterError,
+        match="DIANJI FT data has a value without a Source parameter spec",
+    ):
+        parse_ft_xlsx_scatter(
+            _dianji_output(tmp_path, old_source_dynamic_value="9")
+        )
+
+
+def test_parse_dianji_ft_scatter_rejects_wrong_adapter_contract(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(
+        FtXlsxScatterError,
+        match="DIANJI FT adapter contract is unsupported",
+    ):
+        parse_ft_xlsx_scatter(
+            _dianji_output(tmp_path, adapter_contract_version="UNKNOWN_V1")
+        )
+
+
+def test_dianji_ft_summary_accepts_partial_source_parameter_spec(
+    tmp_path: Path,
+) -> None:
+    artifacts = _dianji_output(tmp_path)
+
+    summary = summarize_existing_cleaner_result(
+        ExistingCleanerRunResult("FT", "dianji", str(tmp_path), artifacts, "ok")
+    )
+
+    assert summary["product_name"] == "C207458.07"
+    assert summary["lot_id"] == "M260616003"
+    assert summary["unit_count"] == 2
+    assert summary["test_item_count"] == 2
 
 
 def test_ft_writer_uses_atomic_draft_stage_without_current_publish() -> None:

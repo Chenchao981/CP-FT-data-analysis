@@ -27,6 +27,7 @@ FACTORY_ALLOWED_SUFFIXES = {
     "lion": {".zip", ".xls", ".xlsx"},
     "riyuexin": {".xlsx"},
     "riyueguang": {".xlsx"},
+    "dianji": {".xls", ".xlsx"},
 }
 BUSINESS_DOMAINS = {"engineering": "ENGINEERING", "production": "PRODUCTION"}
 LIST_TEST_STAGES = {
@@ -42,7 +43,7 @@ LIST_TEST_STAGES = {
 UPLOAD_TEST_STAGES = {"cp": "CP", "ft": "FT"}
 STAGE_FACTORIES = {
     "CP": {"huahong", "jetech", "lion"},
-    "FT": {"riyuexin", "riyueguang"},
+    "FT": {"riyuexin", "riyueguang", "dianji"},
 }
 CP_FACTORIES = STAGE_FACTORIES["CP"]
 FACTORY_ALIASES = {
@@ -54,6 +55,7 @@ FACTORY_ALIASES = {
     "日月新": "riyuexin",
     "日月光": "riyueguang",
     "ase": "riyueguang",
+    "电基": "dianji",
 }
 REGISTRY_FACTORY_CODES = {
     "huahong": "HUAHONG",
@@ -61,6 +63,7 @@ REGISTRY_FACTORY_CODES = {
     "lion": "LION",
     "riyuexin": "RIYUEXIN",
     "riyueguang": "RIYUEGUANG",
+    "dianji": "DIANJI",
 }
 UPLOAD_PAGE_STATUSES = frozenset(
     {
@@ -825,11 +828,19 @@ def reprocess_batch(
         "日月新": "RIYUEXIN",
         "日月光": "RIYUEGUANG",
         "ase": "RIYUEGUANG",
+        "电基": "DIANJI",
     }
     factory = factory_aliases.get(
         info.factory_code.strip().lower(), info.factory_code.strip().upper()
     )
-    if factory not in {"HUAHONG", "JETECH", "LION", "RIYUEXIN", "RIYUEGUANG"}:
+    if factory not in {
+        "HUAHONG",
+        "JETECH",
+        "LION",
+        "RIYUEXIN",
+        "RIYUEGUANG",
+        "DIANJI",
+    }:
         raise DomainError(
             "CAPABILITY_NOT_FORMAL_IMPORT",
             "该历史批次属于定制能力，不能从通用正式入库入口重新处理",

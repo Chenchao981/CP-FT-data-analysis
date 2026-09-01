@@ -79,6 +79,8 @@ def _read_ft_summary(run_result) -> dict[str, object]:
         "riyueguang": "RIYUEGUANG",
         "日月光": "RIYUEGUANG",
         "ase": "RIYUEGUANG",
+        "dianji": "DIANJI",
+        "电基": "DIANJI",
     }.get(str(run_result.factory).strip().casefold())
     if expected_factory is None or identity.factory_code != expected_factory:
         raise RuntimeError("FT Cleaner 运行厂家与 manifest factory_code 不一致")

@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from scripts.g0.bootstrap_existing_cleaner_releases import _sha256, _snapshot_package
+from scripts.g0.bootstrap_existing_cleaner_releases import (
+    _definitions,
+    _parse_args,
+    _sha256,
+    _snapshot_package,
+)
 
 
 def test_cleaner_release_snapshot_is_content_addressed_and_reusable(
@@ -48,3 +53,32 @@ def test_cleaner_release_snapshot_rejects_corrupted_existing_content(
         _snapshot_package(package, checksum, snapshot_root)
 
     assert corrupted.read_bytes() == b"tampered"
+
+
+def test_bootstrap_requires_explicit_factory_selection() -> None:
+    with pytest.raises(SystemExit):
+        _parse_args([])
+
+    selected = _parse_args(["--factory", "DIANJI"])
+    assert selected.factory == ["DIANJI"]
+    assert selected.all is False
+
+    repeated = _parse_args(
+        ["--factory", "RIYUEXIN", "--factory", "DIANJI"]
+    )
+    assert repeated.factory == ["RIYUEXIN", "DIANJI"]
+
+    with pytest.raises(SystemExit):
+        _parse_args(["--all", "--factory", "DIANJI"])
+
+
+def test_bootstrap_defines_dianji_as_an_independent_powertech_release() -> None:
+    dianji = next(item for item in _definitions() if item.factory == "DIANJI")
+
+    assert dianji.stage == "FT"
+    assert dianji.format_code == "DIANJI_POWERTECH_DYNAMIC_EXISTING"
+    assert dianji.cleaner_code == "DIANJI_FT_POWERTECH_EXISTING"
+    assert dianji.adapter_code == "DIANJI_FT_PYZ"
+    assert dianji.input_contract == "DIANJI_POWERTECH_DIRECTORY_V1"
+    assert dianji.output_contract == "DIANJI_FT_SCATTER_V1"
+    assert dianji.cleaner_version == "v2.19.0"

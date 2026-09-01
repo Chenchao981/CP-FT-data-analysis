@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
         description="Register and process one real FT DC directory through Route A"
     )
     parser.add_argument(
-        "--factory", required=True, choices=("riyuexin", "riyueguang")
+        "--factory", required=True, choices=("riyuexin", "riyueguang", "dianji")
     )
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument(
@@ -48,8 +48,13 @@ def main() -> None:
     source = args.source.resolve()
     if not source.is_dir():
         raise NotADirectoryError(source)
-    if not any(path.is_file() for path in source.glob("*.xlsx")):
-        raise FileNotFoundError(f"FT DC directory has no direct XLSX files: {source}")
+    suffixes = (".xls", ".xlsx") if args.factory == "dianji" else (".xlsx",)
+    if not any(
+        path.is_file() and path.suffix.lower() in suffixes for path in source.iterdir()
+    ):
+        raise FileNotFoundError(
+            f"FT directory has no direct {suffixes} files: {source}"
+        )
 
     engine = get_engine()
     with engine.connect() as connection:
@@ -72,7 +77,7 @@ def main() -> None:
                 source,
                 "FT",
                 args.factory.upper(),
-                (".xlsx",),
+                suffixes,
                 "FORMAL_IMPORT",
                 (args.domain.upper(),),
             ),

@@ -44,6 +44,7 @@ class StubStageService:
             "lion",
             "riyuexin",
             "riyueguang",
+            "dianji",
         }
         assert files[0].sha256
         return 41
@@ -370,6 +371,35 @@ def test_production_ft_upload_queues_ft_release(monkeypatch, tmp_path: Path) -> 
     assert body["status"] == "QUEUED"
     assert body["cleaner_release"]["cleaner_release_id"] == 18
     assert service.calls == [("PRODUCTION", "FT")]
+
+
+def test_engineering_dianji_ft_upload_accepts_powertech_legacy_xls(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _stub_ft_cleaner(monkeypatch, tmp_path)
+    service = StubStageService()
+    source_name = "M260616003-005 C207458.07 DC260716090330.xls"
+    response = _client(service).post(
+        "/api/v1/engineering/ft/uploads",
+        files={
+            "files": (
+                source_name,
+                b"PowerTECH Test System\tM08M15\r\n",
+                "application/vnd.ms-excel",
+            )
+        },
+        data={"factory_code": "dianji"},
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["business_domain"] == "ENGINEERING"
+    assert body["test_stage"] == "FT"
+    assert body["status"] == "QUEUED"
+    assert body["cleaner_release"]["cleaner_code"] == "DIANJI_FT"
+    assert service.calls == [("ENGINEERING", "FT")]
+    assert service.registered_files[0].original_name == source_name
+    assert service.registered_files[0].path.suffix.lower() == ".xls"
 
 
 def test_upload_rejects_factory_stage_mismatch(monkeypatch, tmp_path: Path) -> None:

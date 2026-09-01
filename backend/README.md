@@ -41,7 +41,10 @@ Windows PowerShell 5.1 必须通过 `scripts/windows/TmsRuntime.Common.ps1` 显�
 . .\scripts\windows\TmsRuntime.Common.ps1
 Import-TmsRuntimeConfig -Path (Join-Path $PWD '.env.runtime.ps1')
 & .\.conda-env\Scripts\alembic.exe -c db\alembic\alembic.ini upgrade head
-& .\.conda-env\python.exe scripts\g0\bootstrap_existing_cleaner_releases.py
+& .\.conda-env\python.exe scripts\g0\bootstrap_existing_cleaner_releases.py --all
+
+# 新厂家/新包应按厂家单独登记，避免把其他已验收路由静默切到当前共享包：
+& .\.conda-env\python.exe scripts\g0\bootstrap_existing_cleaner_releases.py --factory DIANJI
 ```
 
 接口：
