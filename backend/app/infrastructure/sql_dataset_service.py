@@ -989,7 +989,7 @@ class SqlDatasetService:
             "dataset_id": dataset_id
         }
         joins = ""
-        scope = "(:is_admin=1 OR d.owner_user_id=:user_id)"
+        scope = "(d.access_scope='PERSONAL' AND d.owner_user_id=:user_id)"
         if normalized_mode == "READ":
             version_predicate = (
                 "access_dv.dataset_id=d.dataset_id AND "
@@ -1033,12 +1033,13 @@ class SqlDatasetService:
                         text(
                             "INSERT dataset.dataset("
                             "dataset_code,dataset_name,dataset_type,test_stage,supplier_id,"
-                            "product_id,project_code,owner_user_id) OUTPUT "
+                            "product_id,project_code,owner_user_id,access_scope,"
+                            "data_domain_id,source_definition_id) OUTPUT "
                             "INSERTED.dataset_id,INSERTED.dataset_code,INSERTED.dataset_name,"
                             "INSERTED.dataset_type,INSERTED.test_stage,INSERTED.supplier_id,"
                             "INSERTED.product_id,INSERTED.owner_user_id VALUES("
                             ":dataset_code,:dataset_name,:dataset_type,:test_stage,:supplier_id,"
-                            ":product_id,:project_code,:owner_user_id)"
+                            ":product_id,:project_code,:owner_user_id,'PERSONAL',NULL,NULL)"
                         ),
                         request.model_dump(mode="json"),
                     )
@@ -4580,38 +4581,72 @@ class SqlDatasetService:
         )
 
     def create_version(
-        self, dataset_id: int, request: CreateDatasetVersionRequest
+        self,
+        dataset_id: int,
+        request: CreateDatasetVersionRequest,
+        principal: Principal,
     ) -> DatasetVersionRecord:
         with self._engine.begin() as connection:
-            dataset_exists = connection.execute(
-                text(
-                    "SELECT dataset_id FROM dataset.dataset WITH (UPDLOCK,HOLDLOCK) "
-                    "WHERE dataset_id=:dataset_id"
-                ),
-                {"dataset_id": dataset_id},
-            ).scalar_one_or_none()
-            if dataset_exists is None:
-                raise DomainError("DATASET_NOT_FOUND", "dataset was not found", 404)
-            batch_exists = connection.execute(
-                text(
-                    "SELECT import_batch_id FROM ingestion.import_batch "
-                    "WHERE import_batch_id=:input_batch_id"
-                ),
-                {"input_batch_id": request.input_batch_id},
-            ).scalar_one_or_none()
-            if batch_exists is None:
-                raise DomainError(
-                    "INPUT_BATCH_NOT_FOUND", "input batch was not found", 404
+            context = (
+                connection.execute(
+                    text(
+                        "SELECT d.dataset_id,d.owner_user_id AS dataset_owner_user_id,"
+                        "d.access_scope AS dataset_access_scope,"
+                        "d.data_domain_id AS dataset_data_domain_id,"
+                        "d.source_definition_id AS dataset_source_definition_id,"
+                        "d.test_stage AS dataset_test_stage,d.supplier_id,d.product_id,"
+                        "b.import_batch_id,b.owner_user_id AS batch_owner_user_id,"
+                        "b.access_scope AS batch_access_scope,"
+                        "b.data_domain_id AS batch_data_domain_id,"
+                        "b.source_definition_id AS batch_source_definition_id,"
+                        "b.business_domain,b.test_stage AS batch_test_stage,b.factory_code "
+                        "FROM dataset.dataset d WITH (UPDLOCK,HOLDLOCK) "
+                        "CROSS JOIN ingestion.import_batch b WITH (UPDLOCK,HOLDLOCK) "
+                        "WHERE d.dataset_id=:dataset_id "
+                        "AND b.import_batch_id=:input_batch_id"
+                    ),
+                    {
+                        "dataset_id": dataset_id,
+                        "input_batch_id": request.input_batch_id,
+                    },
                 )
-            found_runs = self._find_runs(connection, request.processing_run_ids)
-            missing = sorted(set(request.processing_run_ids) - found_runs)
-            if missing:
-                raise DomainError(
-                    "PROCESSING_RUN_NOT_FOUND",
-                    "one or more processing runs were not found",
-                    404,
-                    details=[{"processing_run_ids": missing}],
+                .mappings()
+                .one_or_none()
+            )
+            if context is None or not self._is_personal_version_context(
+                context, principal
+            ):
+                self._raise_version_source_not_found()
+
+            previous_batch_contexts = (
+                connection.execute(
+                    text(
+                        "SELECT DISTINCT b.owner_user_id,b.access_scope,b.data_domain_id,"
+                        "b.source_definition_id,b.business_domain,b.test_stage,b.factory_code "
+                        "FROM dataset.dataset_version dv WITH (HOLDLOCK) "
+                        "JOIN ingestion.import_batch b WITH (HOLDLOCK) "
+                        "ON b.import_batch_id=dv.input_batch_id "
+                        "WHERE dv.dataset_id=:dataset_id"
+                    ),
+                    {"dataset_id": dataset_id},
                 )
+                .mappings()
+                .all()
+            )
+            if any(
+                not self._batch_context_matches(previous, context)
+                for previous in previous_batch_contexts
+            ):
+                self._raise_version_source_not_found()
+
+            self._assert_version_runs_in_scope(
+                connection,
+                request.processing_run_ids,
+                input_batch_id=request.input_batch_id,
+                test_stage=str(context["dataset_test_stage"]),
+                supplier_id=context["supplier_id"],
+                product_id=context["product_id"],
+            )
 
             version_no = int(
                 connection.execute(
@@ -4677,21 +4712,101 @@ class SqlDatasetService:
         return _version(row, run_count=len(request.processing_run_ids))
 
     @staticmethod
-    def _find_runs(connection: Connection, run_ids: list[int]) -> set[int]:
-        found: set[int] = set()
+    def _is_personal_version_context(
+        context: Mapping[str, Any], principal: Principal
+    ) -> bool:
+        return (
+            context["dataset_access_scope"] == "PERSONAL"
+            and context["dataset_owner_user_id"] == principal.user_id
+            and context["batch_access_scope"] == context["dataset_access_scope"]
+            and context["batch_owner_user_id"] == context["dataset_owner_user_id"]
+            and context["batch_data_domain_id"] == context["dataset_data_domain_id"]
+            and context["batch_source_definition_id"]
+            == context["dataset_source_definition_id"]
+            and context["batch_test_stage"] == context["dataset_test_stage"]
+        )
+
+    @staticmethod
+    def _batch_context_matches(
+        previous: Mapping[str, Any], current: Mapping[str, Any]
+    ) -> bool:
+        return (
+            previous["owner_user_id"] == current["batch_owner_user_id"]
+            and previous["access_scope"] == current["batch_access_scope"]
+            and previous["data_domain_id"] == current["batch_data_domain_id"]
+            and previous["source_definition_id"]
+            == current["batch_source_definition_id"]
+            and previous["business_domain"] == current["business_domain"]
+            and previous["test_stage"] == current["batch_test_stage"]
+            and previous["factory_code"] == current["factory_code"]
+        )
+
+    @staticmethod
+    def _raise_version_source_not_found() -> None:
+        raise DomainError(
+            "DATASET_VERSION_SOURCE_NOT_FOUND",
+            "dataset version source was not found or is outside the owner scope",
+            404,
+        )
+
+    @classmethod
+    def _assert_version_runs_in_scope(
+        cls,
+        connection: Connection,
+        run_ids: list[int],
+        *,
+        input_batch_id: int,
+        test_stage: str,
+        supplier_id: object,
+        product_id: object,
+    ) -> None:
         for offset in range(0, len(run_ids), 500):
             chunk = run_ids[offset : offset + 500]
             placeholders = ",".join(f":run_{index}" for index in range(len(chunk)))
-            params = {f"run_{index}": value for index, value in enumerate(chunk)}
-            rows = connection.execute(
-                text(
-                    "SELECT processing_run_id FROM ingestion.processing_run "
-                    f"WHERE processing_run_id IN ({placeholders})"
-                ),
-                params,
-            ).all()
-            found.update(int(row[0]) for row in rows)
-        return found
+            params: dict[str, object] = {
+                f"run_{index}": value for index, value in enumerate(chunk)
+            }
+            params.update(
+                {
+                    "test_stage": test_stage,
+                    "supplier_id": supplier_id,
+                    "product_id": product_id,
+                }
+            )
+            rows = (
+                connection.execute(
+                    text(
+                        "SELECT pr.processing_run_id,pr.status AS processing_run_status,"
+                        "pj.import_batch_id AS job_import_batch_id,"
+                        "pj.status AS processing_job_status,"
+                        "CASE WHEN NOT EXISTS(SELECT 1 FROM test.test_run tr "
+                        "WHERE tr.processing_run_id=pr.processing_run_id) OR EXISTS("
+                        "SELECT 1 FROM test.test_run tr "
+                        "WHERE tr.processing_run_id=pr.processing_run_id AND ("
+                        "tr.test_stage<>:test_stage OR "
+                        "(:supplier_id IS NOT NULL AND "
+                        "(tr.supplier_id IS NULL OR tr.supplier_id<>:supplier_id)) OR "
+                        "(:product_id IS NOT NULL AND "
+                        "(tr.product_id IS NULL OR tr.product_id<>:product_id)))) "
+                        "THEN 1 ELSE 0 END AS identity_mismatch "
+                        "FROM ingestion.processing_run pr WITH (UPDLOCK,HOLDLOCK) "
+                        "JOIN ingestion.processing_job pj WITH (HOLDLOCK) "
+                        "ON pj.job_id=pr.job_id "
+                        f"WHERE pr.processing_run_id IN ({placeholders})"
+                    ),
+                    params,
+                )
+                .mappings()
+                .all()
+            )
+            if len(rows) != len(chunk) or any(
+                row["job_import_batch_id"] != input_batch_id
+                or row["processing_run_status"] not in {"READY", "PUBLISHED"}
+                or row["processing_job_status"] != "SUCCESS"
+                or bool(row["identity_mismatch"])
+                for row in rows
+            ):
+                cls._raise_version_source_not_found()
 
     def _version_context(
         self,

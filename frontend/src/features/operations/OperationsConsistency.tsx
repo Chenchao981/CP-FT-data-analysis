@@ -52,8 +52,8 @@ function StatusCounts({ counts, names }: { counts: OperationalStatusCount[]; nam
 const issueValue = (value: number | null) => value == null ? "待 0015 升级" : value;
 
 export function OperationsConsistency() {
-  const { user } = useAuth();
-  const isSystemAdmin = Boolean(user?.roles.includes("SYSTEM_ADMIN"));
+  const { can } = useAuth();
+  const canOperateWorkers = can("SYSTEM_OPERATE");
   const queryClient = useQueryClient();
   const [messageApi, messageContext] = message.useMessage();
   const summary = useQuery({
@@ -106,8 +106,8 @@ export function OperationsConsistency() {
     { title: "停止时间", dataIndex: "stopped_at_utc", width: 180, render: formatUtcDateTime },
     { title: "数据库", dataIndex: "database_name", width: 150, render: (value) => value || "—" },
     { title: "Schema", dataIndex: "schema_revision", width: 155, render: (value) => value || "—" },
-    ...(isSystemAdmin ? [{
-      title: "系统管理员操作",
+    ...(canOperateWorkers ? [{
+      title: "Worker 操作",
       key: "actions",
       width: 170,
       fixed: "right" as const,
@@ -214,7 +214,7 @@ export function OperationsConsistency() {
       </Row>
       <Typography.Paragraph type="secondary">快照：{formatUtcDateTime(fleet.observed_at_utc)}；STALE 阈值：{fleet.stale_after_seconds} 秒。Drain/Resume 只改变后端期望状态，实际 READY/心跳状态仍以 Worker 后续上报为准。</Typography.Paragraph>
       <Card className="production-table-card">
-        <Table rowKey="worker_id" columns={workerColumns} dataSource={fleet.workers} pagination={false} scroll={{ x: isSystemAdmin ? 1600 : 1400 }} locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无活动Worker" /> }} />
+        <Table rowKey="worker_id" columns={workerColumns} dataSource={fleet.workers} pagination={false} scroll={{ x: canOperateWorkers ? 1600 : 1400 }} locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无活动Worker" /> }} />
       </Card>
     </> : null}
   </div>;

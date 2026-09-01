@@ -18,7 +18,7 @@ import { EChart } from "../../components/EChart";
 import { factoryNames } from "../capabilities/capabilityCatalog";
 import { AnalysisRuleRegistryPanel } from "./AnalysisRuleRegistryPanel";
 
-type QualityFilterValues = Omit<QualitySummaryRequest, "recent_limit" | "from_utc" | "to_utc"> & {
+type QualityFilterValues = Omit<QualitySummaryRequest, "access_scope" | "data_domain_id" | "recent_limit" | "from_utc" | "to_utc"> & {
   from_local?: string;
   to_local?: string;
 };
@@ -51,6 +51,7 @@ const methodologyName: Record<string, string> = {
   time_range: "时间边界",
   trend_period: "趋势业务日",
   failed_job_scope: "失败 Job 适用范围",
+  access_scope: "数据权限范围",
 };
 const methodologyValue: Record<string, string> = {
   CURRENT_PUBLISHED_DATASET_VERSION_RUNS: "当前已发布 Dataset Version 及其正式 Run",
@@ -65,6 +66,7 @@ const methodologyValue: Record<string, string> = {
   "from_utc is inclusive and to_utc is exclusive, based on Dataset published_at_utc.": "按 Dataset published_at_utc 筛选：from_utc 含，to_utc 不含",
   "Trend periods are Asia/Shanghai business dates; period_start_utc is the UTC instant of Shanghai local midnight.": "趋势按 Asia/Shanghai 业务日分组；周期起点是上海当地零点对应的 UTC 时刻",
   "Failed Job counts use time, business domain, test stage, and factory filters only; Product and Lot filters do not apply.": "失败 Job 仅按时间、业务域、阶段和厂家筛选；产品与 Lot 筛选不适用",
+  "PERSONAL is always owner-only; DOMAIN requires an active, unexpired grant. Dashboard queries never use break-glass access.": "我的数据始终只统计归属本人的数据；数据域必须有未过期的有效授权；驾驶舱不使用紧急数据访问权限。",
 };
 const breakdownDimensions = [
   { key: "FACTORY", label: "按厂家" },
@@ -77,6 +79,7 @@ export function QualityManagementDashboard({ searchParams, onSearchParamsChange,
   const [form] = Form.useForm<QualityFilterValues>();
   const searchKey = searchParams.toString();
   const request = useMemo<QualitySummaryRequest>(() => ({
+    access_scope: "PERSONAL",
     from_utc: searchParams.get("from_utc") || undefined,
     to_utc: searchParams.get("to_utc") || undefined,
     business_domain: (searchParams.get("business_domain") as QualitySummaryRequest["business_domain"]) || undefined,
@@ -223,7 +226,7 @@ export function QualityManagementDashboard({ searchParams, onSearchParamsChange,
       <div>
         <Typography.Text type="secondary">管理驾驶舱 / Current Dataset 质量</Typography.Text>
         <Typography.Title level={2}>质量与良率管理摘要</Typography.Title>
-        <Typography.Text type="secondary">只基于后端返回的正式 Current 事实和已审批口径，UNKNOWN 不会被补成 FAIL 或零。</Typography.Text>
+        <Space wrap><Tag color="cyan">当前范围：我的数据</Tag><Typography.Text type="secondary">只基于后端返回的正式 Current 事实和已审批口径，UNKNOWN 不会被补成 FAIL 或零。</Typography.Text></Space>
       </div>
       {canReadManagement && <Button icon={<ReloadOutlined />} loading={summary.isFetching} onClick={() => void summary.refetch()}>刷新摘要</Button>}
     </div>

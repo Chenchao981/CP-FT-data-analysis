@@ -139,11 +139,12 @@ def test_upload_page_uses_domain_aware_scope_offset_fetch_and_ignores_validated_
     page_sql, page_parameters = connection.calls[1]
     assert "COUNT_BIG(*)" in count_sql
     assert "b.owner_user_id=:user_id" in page_sql
-    assert "b.business_domain='PRODUCTION'" in page_sql
+    assert "b.access_scope='DOMAIN'" in page_sql
+    assert "iam.data_domain_grant" in page_sql
     assert "DATEDIFF(second,j.not_before_utc,SYSUTCDATETIME())" in page_sql
     assert "OFFSET :offset ROWS FETCH NEXT :page_size ROWS ONLY" in page_sql
-    assert "iam.data_scope_grant" not in count_sql
-    assert "iam.data_scope_grant" not in page_sql
+    assert "business_domain='PRODUCTION'" not in count_sql
+    assert "business_domain='PRODUCTION'" not in page_sql
     assert ":product_name" not in page_sql
     assert ":lot_id" not in page_sql
     assert count_parameters["is_admin"] is False
@@ -214,10 +215,11 @@ def test_result_page_returns_job_id_nullable_metrics_and_no_storage_fields() -> 
     assert item.uploader_login == "owner"
     assert item.uploader_name == "Owner"
     for scoped_sql in (count_sql, sql):
-        assert "b.business_domain='PRODUCTION'" in scoped_sql
+        assert "b.access_scope='DOMAIN'" in scoped_sql
+        assert "iam.data_domain_grant" in scoped_sql
         assert "result_dv.status='PUBLISHED'" in scoped_sql
         assert "result_dv.is_current=1" in scoped_sql
-        assert "iam.data_scope_grant" not in scoped_sql
+        assert "business_domain='PRODUCTION'" not in scoped_sql
 
 
 def test_current_catalog_only_returns_owner_visible_published_current_versions() -> (
@@ -290,9 +292,10 @@ def test_current_catalog_only_returns_owner_visible_published_current_versions()
     for sql in (count_sql, page_sql):
         assert "dv.status='PUBLISHED'" in sql
         assert "dv.is_current=1" in sql
-        assert ":is_admin=1 OR d.owner_user_id=:user_id" in sql
-        assert "b.business_domain='PRODUCTION'" in sql
-        assert "iam.data_scope_grant" not in sql
+        assert "d.access_scope='PERSONAL'" in sql
+        assert "d.access_scope='DOMAIN'" in sql
+        assert "iam.data_domain_grant" in sql
+        assert "business_domain='PRODUCTION'" not in sql
     assert "ingestion.processing_run_input_file" in page_sql
     assert "OFFSET :offset ROWS FETCH NEXT :page_size ROWS ONLY" in page_sql
     assert "COALESCE(pr.finished_at_utc,dv.published_at_utc)" in page_sql
@@ -306,7 +309,7 @@ def test_current_catalog_only_returns_owner_visible_published_current_versions()
     assert "lot_filter_dvr.dataset_version_id=dv.dataset_version_id" in page_sql
     assert "lot_filter_tr.lot_id LIKE :lot_id ESCAPE '\\'" in page_sql
     assert "summary_row.lot_id" not in page_sql
-    assert "CASE WHEN :is_admin=1 OR d.owner_user_id=:user_id" in page_sql
+    assert "CASE WHEN d.access_scope='PERSONAL' AND d.owner_user_id=:user_id" in page_sql
     assert "AS can_edit_product" in page_sql
     assert "AS can_export" in page_sql
     assert "AS can_reprocess" in page_sql
@@ -470,15 +473,20 @@ def test_job_details_returns_safe_trace_chain_timeline_and_actions() -> None:
     assert "j.idempotency_key" not in main_sql
     assert "storage_uri" not in main_sql
     assert "artifact_uri" not in main_sql
-    assert ":is_admin=1 OR b.owner_user_id=:user_id" in main_sql
-    assert ":is_admin=1 OR b.owner_user_id=:user_id" in links_sql
+    assert "b.access_scope='PERSONAL' AND b.owner_user_id=:user_id" in main_sql
+    assert "iam.data_domain_grant" in main_sql
+    assert "iam.data_domain_grant" in links_sql
     assert "lifecycle_job_target lt" in main_sql
     assert "lifecycle_job_target lt" in links_sql
     for sql in (main_sql, links_sql):
         assert "j.import_batch_id IS NOT NULL" in sql
-        assert "b.business_domain='PRODUCTION'" in sql
-        assert "iam.data_scope_grant" not in sql
-    assert main_parameters == {"user_id": 1, "is_admin": True, "job_id": 101}
+        assert "business_domain='PRODUCTION'" not in sql
+    assert main_parameters == {
+        "user_id": 1,
+        "is_admin": True,
+        "has_data_break_glass": True,
+        "job_id": 101,
+    }
     assert links_parameters["parent_job_id"] == 100
     assert "processing_run_input_file" in sources_sql
     assert "storage_uri" not in sources_sql
@@ -496,11 +504,18 @@ def test_job_details_hides_existence_when_owner_scope_does_not_match() -> None:
     assert len(connection.calls) == 1
 
 
-def test_job_read_scope_is_domain_aware_without_global_grant() -> None:
+def test_job_read_scope_requires_active_data_domain_grant() -> None:
     for job_sql in (_JOB_DETAILS_SQL, _JOB_LINKS_SQL):
         assert "j.import_batch_id IS NOT NULL" in job_sql
-        assert "b.business_domain='PRODUCTION'" in job_sql
-        assert "iam.data_scope_grant" not in job_sql
+        assert "b.access_scope='DOMAIN'" in job_sql
+        assert "iam.data_domain_grant" in job_sql
+        assert "ws.access_scope='PERSONAL'" in job_sql
+        assert "ws.owner_user_id=:user_id" in job_sql
+        assert "access_grant.data_domain_id=ws.data_domain_id" in job_sql
+        assert "access_grant.status='ACTIVE'" in job_sql
+        assert "access_domain.active=1" in job_sql
+        assert "access_grant.expires_at_utc>SYSUTCDATETIME()" in job_sql
+        assert "business_domain='PRODUCTION'" not in job_sql
 
 
 def test_m2_read_queries_keep_sql_server_2014_compatible_constructs() -> None:

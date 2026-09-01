@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import threading
 from datetime import UTC, datetime, timedelta
 
@@ -7,6 +8,8 @@ from app.core.errors import DomainError
 from app.domain.analytics_export_worker import AnalyticsExportWorkerRepository
 from app.infrastructure.analytics_export_files import UnsafeAnalyticsExportPath
 from app.infrastructure.analytics_export_renderer import AnalyticsExportRenderer
+
+logger = logging.getLogger(__name__)
 
 
 class AnalyticsExportWorker:
@@ -28,6 +31,7 @@ class AnalyticsExportWorker:
         if work_item is None:
             return None
         artifact = None
+        completed = False
         try:
             heartbeat = _AnalyticsExportHeartbeat(
                 self._repository,
@@ -35,6 +39,7 @@ class AnalyticsExportWorker:
                 interval_seconds=self._heartbeat_seconds,
             )
             with heartbeat:
+                self._repository.assert_execution_authorized(work_item)
                 artifact = self._renderer.render(work_item)
             heartbeat.raise_if_failed()
             expires = datetime.now(UTC) + timedelta(hours=work_item.artifact_ttl_hours)
@@ -43,37 +48,45 @@ class AnalyticsExportWorker:
                 artifact,
                 expires_at_utc=expires,
             )
+            completed = True
         except DomainError as exc:
             if exc.code == "ANALYTICS_EXPORT_WORKER_CLAIM_LOST":
-                if artifact is not None:
-                    self._renderer.discard(work_item, artifact)
+                pass
             else:
                 self._record_failure(
                     work_item,
-                    artifact,
                     error_code=exc.code,
                     error_message=exc.message,
                 )
         except UnsafeAnalyticsExportPath:
             self._record_failure(
                 work_item,
-                artifact,
                 error_code="ANALYTICS_EXPORT_PATH_BLOCKED",
                 error_message="managed export path validation failed closed",
             )
         except Exception:  # noqa: BLE001 - do not leak unexpected server details
             self._record_failure(
                 work_item,
-                artifact,
                 error_code="ANALYTICS_EXPORT_RENDER_FAILED",
                 error_message="unexpected server rendering failure",
             )
+        finally:
+            if not completed:
+                try:
+                    self._renderer.discard_attempt(work_item)
+                except (OSError, UnsafeAnalyticsExportPath):
+                    logger.exception(
+                        "failed to clean rejected Analytics Export attempt",
+                        extra={
+                            "export_job_id": work_item.export_job_id,
+                            "attempt_count": work_item.attempt_count,
+                        },
+                    )
         return work_item
 
     def _record_failure(
         self,
         work_item,
-        artifact,
         *,
         error_code: str,
         error_message: str,
@@ -84,16 +97,9 @@ class AnalyticsExportWorker:
                 error_code=error_code,
                 error_message=error_message,
             )
-            if artifact is not None:
-                try:
-                    self._renderer.discard(work_item, artifact)
-                except UnsafeAnalyticsExportPath:
-                    pass
         except DomainError as exc:
             if exc.code != "ANALYTICS_EXPORT_WORKER_CLAIM_LOST":
                 raise
-            if artifact is not None:
-                self._renderer.discard(work_item, artifact)
 
 
 class _AnalyticsExportHeartbeat:

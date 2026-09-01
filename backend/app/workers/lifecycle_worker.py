@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -9,7 +10,13 @@ from app.domain.cleaner_registry import CleanerRegistry
 from app.domain.jobs import Job, JobStatus, JobType
 from app.domain.lifecycle import LifecycleService, TemporaryArtifactInput
 from app.infrastructure.existing_cleaner_runner import ExistingCleanerRunner
-from app.infrastructure.formal_artifact_files import ManagedJobPathPolicy
+from app.infrastructure.formal_artifact_files import (
+    FormalArtifactFileCleaner,
+    ManagedJobPathPolicy,
+    UnsafeFormalArtifactPath,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class ExportLatestHandler:
@@ -59,37 +66,86 @@ class ExportLatestHandler:
                 "Export Cleaner Release 与 Current Dataset 来源不一致",
                 409,
             )
-        inputs = [Path(item.storage_uri) for item in context.files]
-        lot_overrides = {
-            Path(item.original_file_name).name: item.lot_id_override
-            for item in context.files
-            if item.lot_id_override
-        }
         output_root = (
             self._path_policy.job_root(job.job_id)
             / f"attempt-{job.attempt_count}"
         )
-        result = self._runner.run_release(
-            release=release,
-            inputs=inputs,
-            output_root=output_root,
-            lot_overrides=lot_overrides if context.test_stage == "FT" else None,
-            expected_sha256=tuple(item.expected_sha256 for item in context.files),
-        )
-        self._lifecycle.record_export_artifacts(
-            job.job_id,
-            job.lease_token,
-            tuple(
-                TemporaryArtifactInput(
-                    role=item.role,
-                    path=item.path,
-                    size_bytes=item.size_bytes,
-                    sha256=item.sha256,
+        result = None
+        completed = False
+        try:
+            # Keep this as a short transaction immediately before handing source
+            # paths to the released Cleaner.  Revocation after this boundary may
+            # allow an already-started trusted process to finish computing, but
+            # record_export_artifacts rechecks again before any success delivery.
+            execution_context = self._lifecycle.worker_context(
+                job.job_id, job.lease_token, JobType.EXPORT_LATEST.value
+            )
+            if (
+                execution_context.dataset_id != context.dataset_id
+                or execution_context.dataset_version_id != context.dataset_version_id
+                or execution_context.import_batch_id != context.import_batch_id
+                or execution_context.requested_by_user_id
+                != context.requested_by_user_id
+            ):
+                raise DomainError(
+                    "LIFECYCLE_JOB_SCOPE_MISMATCH",
+                    "Export Job authorization context changed before Cleaner execution",
+                    409,
                 )
-                for item in result.artifacts
-            ),
-            datetime.now(UTC) + self._artifact_ttl,
-        )
+            context = execution_context
+            inputs = [Path(item.storage_uri) for item in context.files]
+            lot_overrides = {
+                Path(item.original_file_name).name: item.lot_id_override
+                for item in context.files
+                if item.lot_id_override
+            }
+            result = self._runner.run_release(
+                release=release,
+                inputs=inputs,
+                output_root=output_root,
+                lot_overrides=lot_overrides if context.test_stage == "FT" else None,
+                expected_sha256=tuple(
+                    item.expected_sha256 for item in context.files
+                ),
+            )
+            self._lifecycle.record_export_artifacts(
+                job.job_id,
+                job.lease_token,
+                tuple(
+                    TemporaryArtifactInput(
+                        role=item.role,
+                        path=item.path,
+                        size_bytes=item.size_bytes,
+                        sha256=item.sha256,
+                    )
+                    for item in result.artifacts
+                ),
+                datetime.now(UTC) + self._artifact_ttl,
+            )
+            completed = True
+        finally:
+            if not completed:
+                artifact_paths = (
+                    tuple(str(item.path) for item in result.artifacts)
+                    if result is not None
+                    else ()
+                )
+                try:
+                    FormalArtifactFileCleaner(self._path_policy).cleanup_attempt(
+                        job.job_id,
+                        job.attempt_count,
+                        artifact_paths,
+                        dry_run=False,
+                    )
+                except (OSError, UnsafeFormalArtifactPath):
+                    logger.exception(
+                        "failed to clean rejected Lifecycle Export attempt; "
+                        "formal orphan cleanup must retry after terminal retention",
+                        extra={
+                            "job_id": job.job_id,
+                            "attempt_count": job.attempt_count,
+                        },
+                    )
         return replace(
             job,
             status=JobStatus.SUCCESS,

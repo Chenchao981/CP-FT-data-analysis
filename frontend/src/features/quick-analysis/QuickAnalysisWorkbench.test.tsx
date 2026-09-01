@@ -16,6 +16,10 @@ import {
 } from "../../api/quickAnalysis";
 import { QuickAnalysisWorkbench } from "./QuickAnalysisWorkbench";
 
+vi.mock("./LocalQuickAnalysisPanel", () => ({
+  LocalQuickAnalysisPanel: () => <div>local-agent-panel</div>,
+}));
+
 vi.mock("../../api/quickAnalysis", () => ({
   createQuickPat: vi.fn(),
   downloadQuickPat: vi.fn(),
@@ -50,6 +54,9 @@ const completed: QuickAnalysisSession = {
   owner_user_id: 1,
   owner_login: "engineer",
   owner_name: "一线工程师",
+  access_scope: "DOMAIN",
+  data_domain_id: 7,
+  data_domain_code: "JIEQUN_FT",
   analysis_type: "QUICK_PAT",
   test_stage: "FT",
   factory_code: "JIEQUN",
@@ -94,6 +101,8 @@ describe("QuickAnalysisWorkbench", () => {
       test_stage: "FT",
       factory_code: "JIEQUN",
       allowed_suffixes: [".csv"],
+      data_domain_code: "JIEQUN_FT",
+      data_domain_id: 7,
       available: true,
     }]);
     vi.mocked(listQuickSourceDirectories).mockResolvedValue({
@@ -131,7 +140,10 @@ describe("QuickAnalysisWorkbench", () => {
   it("previews and confirms the exact recursive manifest before creating PAT", async () => {
     renderWorkbench();
 
+    expect(await screen.findByText("local-agent-panel")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: /服务器 \/ FTP \/ NAS/ }));
     await screen.findByText("杰群原始数据");
+    expect(screen.getByText("数据域 JIEQUN_FT")).toBeInTheDocument();
     await waitFor(() => expect(listQuickAnalysisSessions).toHaveBeenCalledWith(expect.objectContaining({
       page: 1,
       page_size: 20,

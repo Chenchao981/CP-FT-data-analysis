@@ -10,7 +10,11 @@ export type PermissionCode =
   | "DQ_WAIVE_ERROR"
   | "AUDIT_READ"
   | "MANAGEMENT_READ"
-  | "USER_ADMIN";
+  | "USER_ADMIN"
+  | "DATA_DOMAIN_ADMIN"
+  | "SOURCE_ADMIN"
+  | "SYSTEM_OPERATE"
+  | "DATA_BREAK_GLASS";
 export type CurrentUser = { user_id: number; login_name: string; display_name: string; department_code: string | null; roles: string[]; permissions: string[] };
 export type UserRecord = CurrentUser & { email: string | null; status: "PENDING" | "ACTIVE" | "LOCKED" | "DISABLED"; created_at_utc: string; last_login_at_utc: string | null };
 export type LoginResult = { access_token: string; token_type: "bearer"; expires_at_utc: string; user: CurrentUser };

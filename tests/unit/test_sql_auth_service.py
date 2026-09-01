@@ -4,7 +4,7 @@ from contextlib import contextmanager
 
 import pytest
 from app.core.errors import DomainError
-from app.domain.auth import Principal
+from app.domain.auth import BUSINESS_PERMISSIONS, Principal
 from app.infrastructure.sql_auth_service import SqlAuthService
 
 
@@ -39,6 +39,43 @@ class _DevelopmentPrincipalEngine:
             def execute(self, statement):
                 engine.statements.append(str(statement))
                 return _ScalarResult(engine._selected_user_id)
+
+        yield Connection()
+
+
+class _PrincipalRowsResult:
+    def __init__(self, rows) -> None:
+        self._rows = rows
+
+    def mappings(self):
+        return self
+
+    def one_or_none(self):
+        return self._rows[0] if self._rows else None
+
+    def all(self):
+        return self._rows
+
+
+class _ActiveBusinessUserEngine:
+    @contextmanager
+    def connect(self):
+        class Connection:
+            def execute(self, statement, _parameters=None):
+                sql = str(statement)
+                if "FROM iam.app_user WHERE user_id" in sql:
+                    return _PrincipalRowsResult(
+                        [
+                            {
+                                "user_id": 31,
+                                "login_name": "business.user",
+                                "display_name": "Business User",
+                                "department_code": None,
+                                "status": "ACTIVE",
+                            }
+                        ]
+                    )
+                return _PrincipalRowsResult([])
 
         yield Connection()
 
@@ -112,3 +149,19 @@ def test_development_principal_requires_an_active_system_admin(monkeypatch) -> N
 
     assert exc_info.value.code == "DEVELOPMENT_PRINCIPAL_NOT_CONFIGURED"
     assert exc_info.value.status_code == 503
+
+
+def test_active_user_receives_business_permissions_without_control_plane() -> None:
+    principal = SqlAuthService(_ActiveBusinessUserEngine()).principal_for_user(31)
+
+    assert principal.roles == ()
+    assert principal.permissions == BUSINESS_PERMISSIONS
+    assert principal.permissions.isdisjoint(
+        {
+            "USER_ADMIN",
+            "DATA_DOMAIN_ADMIN",
+            "SOURCE_ADMIN",
+            "SYSTEM_OPERATE",
+            "DATA_BREAK_GLASS",
+        }
+    )

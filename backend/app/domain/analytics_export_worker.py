@@ -64,6 +64,10 @@ class RenderedAnalyticsExport:
 class AnalyticsExportWorkerRepository(Protocol):
     def claim_next(self) -> AnalyticsExportWorkItem | None: ...
 
+    def assert_execution_authorized(
+        self, work_item: AnalyticsExportWorkItem
+    ) -> None: ...
+
     def heartbeat(self, work_item: AnalyticsExportWorkItem) -> None: ...
 
     def complete(

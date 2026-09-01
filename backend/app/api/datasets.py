@@ -108,8 +108,7 @@ def create_version(
     request: Request,
     principal: Principal = Depends(require_permission("TASK_CREATE")),
 ) -> dict:
-    service(request).assert_dataset_access(dataset_id, principal, "WRITE")
-    return asdict(service(request).create_version(dataset_id, payload))
+    return asdict(service(request).create_version(dataset_id, payload, principal))
 
 
 @router.get("/{dataset_id}/versions/{version_no}/gate")

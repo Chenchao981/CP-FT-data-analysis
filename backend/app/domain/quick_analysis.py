@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from threading import Lock
-from typing import Any, Protocol
+from typing import Annotated, Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.errors import DomainError
 from app.domain.auth import Principal
@@ -32,6 +33,115 @@ class CreateQuickPatRequest(BaseModel):
     source_manifest_sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
 
 
+LOCAL_RESULT_CONTRACT_VERSION = "TMS_LOCAL_RESULT_V1"
+LOCAL_QUICK_PAT_TOOL_CODE = "JIEQUN_FT_QUICK_PAT_EXISTING"
+LOCAL_QUICK_PAT_ADAPTER_CODE = "JIEQUN_FT_QUICK_PAT_PYZ"
+LOCAL_QUICK_PAT_INPUT_CONTRACT = "JIEQUN_UNIFIED_CSV_DIRECTORY_V1"
+LOCAL_QUICK_PAT_OUTPUT_CONTRACT = "FT_PAT_RESULT_V1"
+
+Sha256 = Annotated[str, Field(pattern=r"^[0-9a-fA-F]{64}$")]
+
+
+class LocalSourceManifestReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+
+    mode: Literal["LOCAL_PATH_SIZE_MTIME_V1"]
+    sha256: Sha256
+    file_count: int = Field(gt=0, le=1_000_000)
+    total_bytes: int = Field(ge=0, le=9_223_372_036_854_775_807)
+
+    @field_validator("sha256")
+    @classmethod
+    def normalize_sha256(cls, value: str) -> str:
+        return value.lower()
+
+
+class LocalPatSummaryReceipt(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        str_strip_whitespace=True,
+        allow_inf_nan=False,
+    )
+
+    parameter_count: int = Field(gt=0, le=100_000)
+    record_count: int = Field(gt=0, le=9_223_372_036_854_775_807)
+    elapsed_seconds: float = Field(gt=0)
+
+
+class LocalPatResultReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+
+    filename: str = Field(min_length=6, max_length=255)
+    size_bytes: int = Field(gt=0, le=9_223_372_036_854_775_807)
+    sha256: Sha256
+
+    @field_validator("filename")
+    @classmethod
+    def validate_filename(cls, value: str) -> str:
+        windows_device_name = value.split(".", 1)[0].upper()
+        if (
+            value in {".", ".."}
+            or "/" in value
+            or "\\" in value
+            or ":" in value
+            or any(character in '<>"|?*' for character in value)
+            or any(ord(character) < 32 for character in value)
+            or not value.lower().endswith(".xlsx")
+            or windows_device_name
+            in {
+                "CON",
+                "PRN",
+                "AUX",
+                "NUL",
+                *(f"COM{number}" for number in range(1, 10)),
+                *(f"LPT{number}" for number in range(1, 10)),
+            }
+        ):
+            raise ValueError("result filename must be one safe .xlsx basename")
+        return value
+
+    @field_validator("sha256")
+    @classmethod
+    def normalize_sha256(cls, value: str) -> str:
+        return value.lower()
+
+
+class LocalQuickPatResultReceipt(BaseModel):
+    """Strict, path-free receipt emitted by the user-side Local Agent."""
+
+    model_config = ConfigDict(extra="forbid", strict=True, str_strip_whitespace=True)
+
+    contract_version: Literal["TMS_LOCAL_RESULT_V1"]
+    tool_code: Literal["JIEQUN_FT_QUICK_PAT_EXISTING"]
+    analysis_type: Literal["QUICK_PAT"]
+    test_stage: Literal["FT"]
+    factory_code: Literal["JIEQUN"]
+    release_sha256: Sha256
+    source_label: str = Field(min_length=1, max_length=200)
+    manifest: LocalSourceManifestReceipt
+    summary: LocalPatSummaryReceipt
+    result: LocalPatResultReceipt
+
+    @field_validator("release_sha256")
+    @classmethod
+    def normalize_release_sha256(cls, value: str) -> str:
+        return value.lower()
+
+    @field_validator("source_label")
+    @classmethod
+    def validate_source_label(cls, value: str) -> str:
+        if (
+            value in {".", ".."}
+            or "/" in value
+            or "\\" in value
+            or ":" in value
+            or any(ord(character) < 32 for character in value)
+        ):
+            raise ValueError("source_label must be a desensitized label, not a path")
+        return value
+
+
 @dataclass(frozen=True, slots=True)
 class NewQuickAnalysisSession:
     analysis_type: str
@@ -47,6 +157,9 @@ class NewQuickAnalysisSession:
     retention_mode: str
     cleaner_release_id: int
     expires_at_utc: datetime
+    access_scope: Literal["PERSONAL", "DOMAIN"]
+    data_domain_id: int | None
+    data_domain_code: str | None = None
     reserved_bytes: int = 0
 
 
@@ -56,6 +169,9 @@ class QuickAnalysisSession:
     owner_user_id: int
     owner_login: str
     owner_name: str
+    access_scope: Literal["PERSONAL", "DOMAIN"]
+    data_domain_id: int | None
+    data_domain_code: str | None
     analysis_type: str
     test_stage: str
     factory_code: str
@@ -96,6 +212,10 @@ class QuickAnalysisPage:
 @dataclass(frozen=True, slots=True)
 class QuickAnalysisWorkItem:
     analysis_session_id: int
+    owner_user_id: int
+    access_scope: Literal["PERSONAL", "DOMAIN"]
+    data_domain_id: int | None
+    data_domain_code: str | None
     analysis_type: str
     test_stage: str
     factory_code: str
@@ -118,23 +238,33 @@ class QuickAnalysisArtifact:
 
 
 class InMemoryQuickAnalysisService:
-    def __init__(self, capacity: QuickCapacityPolicy | None = None) -> None:
+    def __init__(
+        self,
+        capacity: QuickCapacityPolicy | None = None,
+        *,
+        domain_grant_checker: Callable[[int, int], bool] | None = None,
+    ) -> None:
         self._items: dict[int, QuickAnalysisSession] = {}
         self._work: dict[int, QuickAnalysisWorkItem] = {}
         self._artifacts: dict[int, tuple[QuickAnalysisArtifact, ...]] = {}
         self._next_id = 1
         self._lock = Lock()
         self._capacity = capacity
+        self._domain_grant_checker = domain_grant_checker or (
+            lambda _user_id, _data_domain_id: False
+        )
 
     def create(
         self, principal: Principal, request: NewQuickAnalysisSession
     ) -> QuickAnalysisSession:
         with self._lock:
+            self._assert_new_session_access(principal, request)
             if self._capacity is not None:
                 active = tuple(
                     item
                     for item in self._items.values()
-                    if item.status in {
+                    if item.status
+                    in {
                         QuickAnalysisStatus.QUEUED,
                         QuickAnalysisStatus.RUNNING,
                     }
@@ -154,6 +284,9 @@ class InMemoryQuickAnalysisService:
                 owner_user_id=principal.user_id,
                 owner_login=principal.login_name,
                 owner_name=principal.display_name,
+                access_scope=request.access_scope,
+                data_domain_id=request.data_domain_id,
+                data_domain_code=request.data_domain_code,
                 analysis_type=request.analysis_type,
                 test_stage=request.test_stage,
                 factory_code=request.factory_code,
@@ -182,6 +315,10 @@ class InMemoryQuickAnalysisService:
             self._items[item.analysis_session_id] = item
             self._work[item.analysis_session_id] = QuickAnalysisWorkItem(
                 item.analysis_session_id,
+                item.owner_user_id,
+                item.access_scope,
+                item.data_domain_id,
+                item.data_domain_code,
                 item.analysis_type,
                 item.test_stage,
                 item.factory_code,
@@ -203,11 +340,17 @@ class InMemoryQuickAnalysisService:
             self._items[analysis_session_id] = replace(item, job_id=job_id)
 
     def list_for_principal(
-        self, principal: Principal
+        self,
+        principal: Principal,
+        *,
+        access_scope: Literal["PERSONAL", "DOMAIN"] | None = None,
     ) -> tuple[QuickAnalysisSession, ...]:
-        items = self._items.values()
-        if "SYSTEM_ADMIN" not in principal.roles:
-            items = (item for item in items if item.owner_user_id == principal.user_id)
+        items = (
+            item
+            for item in self._items.values()
+            if self._can_read(item, principal)
+            and (access_scope is None or item.access_scope == access_scope)
+        )
         return tuple(
             self._effective(item)
             for item in sorted(
@@ -224,8 +367,9 @@ class InMemoryQuickAnalysisService:
         status: QuickAnalysisStatus | None = None,
         from_utc: datetime | None = None,
         to_utc: datetime | None = None,
+        access_scope: Literal["PERSONAL", "DOMAIN"] | None = None,
     ) -> QuickAnalysisPage:
-        items = self.list_for_principal(principal)
+        items = self.list_for_principal(principal, access_scope=access_scope)
         filtered = tuple(
             item
             for item in items
@@ -245,10 +389,7 @@ class InMemoryQuickAnalysisService:
         self, analysis_session_id: int, principal: Principal
     ) -> QuickAnalysisSession:
         item = self._required(analysis_session_id)
-        if (
-            "SYSTEM_ADMIN" not in principal.roles
-            and item.owner_user_id != principal.user_id
-        ):
+        if not self._can_read(item, principal):
             raise DomainError(
                 "QUICK_ANALYSIS_NOT_FOUND", "快速分析会话不存在或无权访问", 404
             )
@@ -266,6 +407,7 @@ class InMemoryQuickAnalysisService:
         with self._lock:
             now = datetime.now(UTC)
             item = self._required(analysis_session_id)
+            self._assert_execution_authorized(item)
             self._items[analysis_session_id] = replace(
                 item,
                 status=QuickAnalysisStatus.RUNNING,
@@ -290,6 +432,7 @@ class InMemoryQuickAnalysisService:
     ) -> None:
         with self._lock:
             item = self._required(analysis_session_id)
+            self._assert_execution_authorized(item)
             report = next(
                 (artifact for artifact in artifacts if artifact.role == "pat_report"),
                 None,
@@ -332,6 +475,27 @@ class InMemoryQuickAnalysisService:
                 self._work[analysis_session_id], status=QuickAnalysisStatus.FAILED
             )
 
+    def mark_failed_cleaned(
+        self, analysis_session_id: int, error_code: str, error_message: str
+    ) -> None:
+        """Mark a failure after bounded files were removed or before any existed."""
+        with self._lock:
+            item = self._required(analysis_session_id)
+            self._items[analysis_session_id] = replace(
+                item,
+                status=QuickAnalysisStatus.FAILED,
+                job_status="FAILED",
+                error_code=error_code,
+                error_message=error_message,
+                finished_at_utc=datetime.now(UTC),
+                reserved_bytes=0,
+                cleanup_status="CLEANED",
+            )
+            self._work[analysis_session_id] = replace(
+                self._work[analysis_session_id], status=QuickAnalysisStatus.FAILED
+            )
+            self._artifacts.pop(analysis_session_id, None)
+
     def result_artifact(
         self, analysis_session_id: int, principal: Principal
     ) -> QuickAnalysisArtifact:
@@ -358,6 +522,51 @@ class InMemoryQuickAnalysisService:
                 "QUICK_ANALYSIS_NOT_FOUND", "快速分析会话不存在", 404
             ) from exc
 
+    def _can_read(self, item: QuickAnalysisSession, principal: Principal) -> bool:
+        if item.access_scope == "PERSONAL":
+            return item.owner_user_id == principal.user_id
+        return bool(
+            item.data_domain_id is not None
+            and self._domain_grant_checker(principal.user_id, item.data_domain_id)
+        )
+
+    def _assert_execution_authorized(self, item: QuickAnalysisSession) -> None:
+        if item.access_scope == "PERSONAL":
+            return
+        if item.data_domain_id is not None and self._domain_grant_checker(
+            item.owner_user_id, item.data_domain_id
+        ):
+            return
+        raise DomainError(
+            "QUICK_DATA_DOMAIN_ACCESS_REVOKED",
+            "快速分析发起人的数据域授权已失效，任务已停止",
+            409,
+        )
+
+    def _assert_new_session_access(
+        self, principal: Principal, request: NewQuickAnalysisSession
+    ) -> None:
+        if (
+            request.access_scope == "PERSONAL"
+            and request.source_root_code == "LOCAL_AGENT"
+            and request.data_domain_id is None
+            and request.data_domain_code is None
+        ):
+            return
+        if (
+            request.access_scope == "DOMAIN"
+            and request.source_root_code != "LOCAL_AGENT"
+            and request.data_domain_id is not None
+            and request.data_domain_code
+            and self._domain_grant_checker(principal.user_id, request.data_domain_id)
+        ):
+            return
+        raise DomainError(
+            "QUICK_ACCESS_SCOPE_INVALID",
+            "快速分析来源与数据权限范围不一致，已停止创建",
+            409,
+        )
+
     @staticmethod
     def _effective(item: QuickAnalysisSession) -> QuickAnalysisSession:
         if (
@@ -376,7 +585,10 @@ class QuickAnalysisService(Protocol):
     def attach_job(self, analysis_session_id: int, job_id: int) -> None: ...
 
     def list_for_principal(
-        self, principal: Principal
+        self,
+        principal: Principal,
+        *,
+        access_scope: Literal["PERSONAL", "DOMAIN"] | None = None,
     ) -> tuple[QuickAnalysisSession, ...]: ...
 
     def list_page_for_principal(
@@ -388,13 +600,16 @@ class QuickAnalysisService(Protocol):
         status: QuickAnalysisStatus | None = None,
         from_utc: datetime | None = None,
         to_utc: datetime | None = None,
+        access_scope: Literal["PERSONAL", "DOMAIN"] | None = None,
     ) -> QuickAnalysisPage: ...
 
     def get_for_principal(
         self, analysis_session_id: int, principal: Principal
     ) -> QuickAnalysisSession: ...
 
-    def worker_session_info(self, analysis_session_id: int) -> QuickAnalysisWorkItem: ...
+    def worker_session_info(
+        self, analysis_session_id: int
+    ) -> QuickAnalysisWorkItem: ...
 
     def mark_running(self, analysis_session_id: int) -> None: ...
 
@@ -410,6 +625,10 @@ class QuickAnalysisService(Protocol):
     ) -> None: ...
 
     def mark_failed(
+        self, analysis_session_id: int, error_code: str, error_message: str
+    ) -> None: ...
+
+    def mark_failed_cleaned(
         self, analysis_session_id: int, error_code: str, error_message: str
     ) -> None: ...
 

@@ -2,6 +2,8 @@ import { apiRequest } from "./auth";
 import type { BusinessDomain, TestStage } from "./stageData";
 
 export interface QualitySummaryRequest {
+  access_scope: "PERSONAL" | "DOMAIN";
+  data_domain_id?: number;
   from_utc?: string;
   to_utc?: string;
   business_domain?: BusinessDomain;
@@ -83,7 +85,7 @@ export interface QualityManagementSummary {
   observed_at_utc: string;
   from_utc: string;
   to_utc: string;
-  filters: Record<string, string | null>;
+  filters: Record<string, string | number | null>;
   methodology: Record<string, string>;
   kpis: QualityKpis;
   trends: QualityTrendPoint[];
@@ -94,6 +96,10 @@ export interface QualityManagementSummary {
 
 export function getQualityManagementSummary(request: QualitySummaryRequest): Promise<QualityManagementSummary> {
   const query = new URLSearchParams();
+  query.set("access_scope", request.access_scope);
+  if (request.access_scope === "DOMAIN" && request.data_domain_id != null) {
+    query.set("data_domain_id", String(request.data_domain_id));
+  }
   for (const key of ["from_utc", "to_utc", "business_domain", "test_stage", "factory_code", "product_name", "lot_id"] as const) {
     const value = request[key]?.trim();
     if (value) query.set(key, value);

@@ -21,6 +21,9 @@ class StubManagementService:
         assert kwargs["principal"].user_id == 9
         assert kwargs["from_utc"].tzinfo is UTC
         assert kwargs["to_utc"].tzinfo is UTC
+        assert kwargs["access_scope"] in {"PERSONAL", "DOMAIN"}
+        if kwargs["access_scope"] == "DOMAIN":
+            assert kwargs["data_domain_id"] == 17
         return QualityManagementSummary(
             observed_at_utc="2026-08-29T06:00:00.000Z",
             from_utc="2026-08-01T00:00:00.000Z",
@@ -108,6 +111,7 @@ def test_quality_summary_keeps_unknown_out_of_yield_denominator() -> None:
     response = _client().get(
         "/api/v1/management/quality-summary",
         params={
+            "access_scope": "PERSONAL",
             "from_utc": "2026-08-01T00:00:00Z",
             "to_utc": "2026-09-01T00:00:00Z",
             "factory_code": " RIYUEXIN ",
@@ -136,6 +140,7 @@ def test_quality_summary_rejects_inverted_range() -> None:
     response = _client().get(
         "/api/v1/management/quality-summary",
         params={
+            "access_scope": "PERSONAL",
             "from_utc": datetime(2026, 9, 1, tzinfo=UTC).isoformat(),
             "to_utc": datetime(2026, 8, 1, tzinfo=UTC).isoformat(),
         },
@@ -149,7 +154,44 @@ def test_quality_summary_fails_closed_without_database() -> None:
     app = create_app()
     app.state.management_service = None
 
-    response = TestClient(app).get("/api/v1/management/quality-summary")
+    response = TestClient(app).get(
+        "/api/v1/management/quality-summary", params={"access_scope": "PERSONAL"}
+    )
 
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "DATABASE_NOT_CONFIGURED"
+
+
+def test_quality_summary_requires_explicit_access_scope() -> None:
+    response = _client().get("/api/v1/management/quality-summary")
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_quality_summary_requires_domain_id_for_domain_scope() -> None:
+    response = _client().get(
+        "/api/v1/management/quality-summary", params={"access_scope": "DOMAIN"}
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "QUALITY_DATA_DOMAIN_REQUIRED"
+
+
+def test_quality_summary_passes_explicit_domain_scope_to_service() -> None:
+    response = _client().get(
+        "/api/v1/management/quality-summary",
+        params={"access_scope": "DOMAIN", "data_domain_id": 17},
+    )
+
+    assert response.status_code == 200
+
+
+def test_quality_summary_forbids_domain_id_for_personal_scope() -> None:
+    response = _client().get(
+        "/api/v1/management/quality-summary",
+        params={"access_scope": "PERSONAL", "data_domain_id": 17},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "QUALITY_DATA_DOMAIN_NOT_ALLOWED"

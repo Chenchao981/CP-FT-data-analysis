@@ -108,6 +108,58 @@ class AnalyticsExportPathPolicy:
         self.remove_empty_job_root(export_job_id)
         return True
 
+    def remove_attempt_files(self, export_job_id: int, file_name: str) -> int:
+        """Best-effort cleanup for one fenced target and its atomic temp files.
+
+        Other attempt targets are preserved.  All matching direct children are
+        inspected before deletion so a link/reparse attack fails closed.
+        """
+
+        target = self.artifact_path(export_job_id, file_name)
+        root = target.parent
+        if not os.path.lexists(root):
+            return 0
+        self._reject_existing_links(root)
+        if not root.is_dir() or self._is_link_or_reparse(root):
+            raise UnsafeAnalyticsExportPath("managed export Job root is unsafe")
+        temporary_name = re.compile(
+            rf"^\.{re.escape(file_name)}\.[0-9a-f]{{32}}\.tmp$"
+        )
+        candidates: list[Path] = []
+        with os.scandir(root) as iterator:
+            for entry in iterator:
+                if (
+                    entry.name != file_name
+                    and temporary_name.fullmatch(entry.name) is None
+                ):
+                    continue
+                path = root / entry.name
+                if self._is_link_or_reparse(path) or not entry.is_file(
+                    follow_symlinks=False
+                ):
+                    raise UnsafeAnalyticsExportPath(
+                        "managed export attempt contains an unsafe entry"
+                    )
+                candidates.append(path)
+
+        first_error: OSError | None = None
+        removed = 0
+        for path in candidates:
+            try:
+                path.unlink()
+                removed += 1
+            except OSError as exc:
+                if first_error is None:
+                    first_error = exc
+        try:
+            self.remove_empty_job_root(export_job_id)
+        except OSError as exc:
+            if first_error is None:
+                first_error = exc
+        if first_error is not None:
+            raise first_error
+        return removed
+
     @contextmanager
     def atomic_binary_writer(
         self, export_job_id: int, file_name: str

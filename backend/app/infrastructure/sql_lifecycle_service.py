@@ -25,6 +25,10 @@ from app.infrastructure.formal_artifact_files import (
     ManagedJobPathPolicy,
     UnsafeFormalArtifactPath,
 )
+from app.infrastructure.sql_visibility import (
+    data_read_scope_sql,
+    visibility_parameters,
+)
 
 _FACTORY_ALIASES = {
     "HH": "HUAHONG",
@@ -100,6 +104,33 @@ def _hash_file(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _requester_dataset_access_sql(
+    *,
+    dataset_alias: str,
+    requester_expression: str,
+    lock_grants: bool,
+) -> str:
+    """Worker-side Dataset ACL without SYSTEM_ADMIN or break-glass bypass."""
+
+    hint = " WITH (UPDLOCK,HOLDLOCK)" if lock_grants else ""
+    return (
+        f"(EXISTS(SELECT 1 FROM iam.app_user lifecycle_user{hint} "
+        f"WHERE lifecycle_user.user_id={requester_expression} "
+        "AND lifecycle_user.status='ACTIVE') AND ("
+        f"({dataset_alias}.access_scope='PERSONAL' "
+        f"AND {dataset_alias}.owner_user_id={requester_expression}) OR "
+        f"({dataset_alias}.access_scope='DOMAIN' AND EXISTS(SELECT 1 "
+        f"FROM iam.data_domain_grant lifecycle_grant{hint} "
+        f"JOIN iam.data_domain lifecycle_domain{hint} "
+        "ON lifecycle_domain.data_domain_id=lifecycle_grant.data_domain_id "
+        f"WHERE lifecycle_grant.data_domain_id={dataset_alias}.data_domain_id "
+        f"AND lifecycle_grant.user_id={requester_expression} "
+        "AND lifecycle_grant.status='ACTIVE' AND lifecycle_domain.active=1 "
+        "AND (lifecycle_grant.expires_at_utc IS NULL "
+        "OR lifecycle_grant.expires_at_utc>SYSUTCDATETIME()))))"
+    )
 
 
 class SqlLifecycleService:
@@ -208,16 +239,22 @@ class SqlLifecycleService:
                 scope_allowed = connection.execute(
                     text(
                         "SELECT CASE WHEN t.requested_by_user_id=:user_id "
-                        "AND (d.owner_user_id=:user_id OR :is_admin=1) "
+                        "AND ((t.action_type='EXPORT_LATEST' AND "
+                        + data_read_scope_sql(
+                            access_scope_column="d.access_scope",
+                            owner_column="d.owner_user_id",
+                            data_domain_column="d.data_domain_id",
+                        )
+                        + ") OR (t.action_type<>'EXPORT_LATEST' AND "
+                        "d.access_scope='PERSONAL' AND d.owner_user_id=:user_id)) "
                         "THEN 1 ELSE 0 END "
                         "FROM ingestion.lifecycle_job_target t "
                         "JOIN dataset.dataset d ON d.dataset_id=t.dataset_id "
                         "WHERE t.job_id=:job"
                     ),
-                    {
+                    visibility_parameters(principal)
+                    | {
                         "job": existing.job_id,
-                        "user_id": principal.user_id,
-                        "is_admin": int("SYSTEM_ADMIN" in principal.roles),
                     },
                 ).scalar_one()
                 if int(scope_allowed) != 1:
@@ -228,7 +265,12 @@ class SqlLifecycleService:
                     )
                 return existing
 
-            target = self._current_target(connection, dataset_id, principal)
+            target = self._current_target(
+                connection,
+                dataset_id,
+                principal,
+                allow_domain_read=action == "EXPORT_LATEST",
+            )
             active_jobs = int(target.get("active_lifecycle_job_count") or 0)
             active_mutations = int(
                 target.get("active_lifecycle_mutation_count") or 0
@@ -397,14 +439,25 @@ class SqlLifecycleService:
 
     @staticmethod
     def _current_target(
-        connection: Connection, dataset_id: int, principal: Principal
+        connection: Connection,
+        dataset_id: int,
+        principal: Principal,
+        *,
+        allow_domain_read: bool,
     ) -> Mapping[str, Any]:
         row = (
             connection.execute(
                 text(
                     _DATASET_APPLOCK_SQL
                     +
-                    "SELECT d.dataset_id,d.owner_user_id,d.test_stage,"
+                    "SELECT d.dataset_id,d.owner_user_id,d.access_scope,"
+                    "d.data_domain_id,d.test_stage,CASE WHEN "
+                    + data_read_scope_sql(
+                        access_scope_column="d.access_scope",
+                        owner_column="d.owner_user_id",
+                        data_domain_column="d.data_domain_id",
+                    )
+                    + " THEN 1 ELSE 0 END AS can_read,"
                     "d.lifecycle_status,dv.dataset_version_id,dv.input_batch_id,"
                     "b.test_stage AS batch_test_stage,b.factory_code,"
                     "b.status AS batch_status,"
@@ -431,7 +484,7 @@ class SqlLifecycleService:
                     "ON b.import_batch_id=dv.input_batch_id "
                     "WHERE d.dataset_id=:dataset"
                 ),
-                {"dataset": dataset_id},
+                visibility_parameters(principal) | {"dataset": dataset_id},
             )
             .mappings()
             .one_or_none()
@@ -442,12 +495,16 @@ class SqlLifecycleService:
                 "Dataset 不存在或没有 Current Published Version",
                 404,
             )
-        if (
-            int(row["owner_user_id"]) != principal.user_id
-            and "SYSTEM_ADMIN" not in principal.roles
+        if allow_domain_read and not bool(row["can_read"]):
+            raise DomainError(
+                "DATASET_SCOPE_DENIED", "不能导出无权访问的 Dataset", 403
+            )
+        if not allow_domain_read and (
+            str(row["access_scope"]) != "PERSONAL"
+            or int(row["owner_user_id"]) != principal.user_id
         ):
             raise DomainError(
-                "DATASET_SCOPE_DENIED", "不能操作其他 Owner 的 Dataset", 403
+                "DATASET_SCOPE_DENIED", "只能操作本人 PERSONAL Dataset", 403
             )
         if str(row["lifecycle_status"]) != "ACTIVE":
             raise DomainError("DATASET_ARCHIVED", "Dataset 已归档", 409)
@@ -595,6 +652,13 @@ class SqlLifecycleService:
                         "t.target_dataset_version_id,t.requested_by_user_id,"
                         "t.request_reason,d.test_stage,d.lifecycle_status,"
                         "dv.status AS version_status,dv.is_current,"
+                        "CASE WHEN "
+                        + _requester_dataset_access_sql(
+                            dataset_alias="d",
+                            requester_expression="t.requested_by_user_id",
+                            lock_grants=True,
+                        )
+                        + " THEN 1 ELSE 0 END AS can_execute,"
                         "b.test_stage AS batch_test_stage,b.factory_code "
                         "FROM ingestion.processing_job j WITH (UPDLOCK,HOLDLOCK) "
                         "JOIN ingestion.lifecycle_job_target t WITH (HOLDLOCK) "
@@ -631,6 +695,12 @@ class SqlLifecycleService:
                 raise DomainError(
                     "LIFECYCLE_TARGET_DRIFTED",
                     "Lifecycle Job 目标已不是 Active Current Dataset",
+                    409,
+                )
+            if action_type == "EXPORT_LATEST" and not bool(row["can_execute"]):
+                raise DomainError(
+                    "LIFECYCLE_EXPORT_ACCESS_REVOKED",
+                    "Export Job requester no longer has access to its Dataset",
                     409,
                 )
             stage = str(row["test_stage"] or "").strip().upper()
@@ -775,8 +845,17 @@ class SqlLifecycleService:
                 text(
                     _JOB_DATASET_APPLOCK_SQL
                     +
-                    "SELECT 1 FROM ingestion.processing_job j WITH (UPDLOCK,HOLDLOCK) "
+                    "SELECT CASE WHEN "
+                    + _requester_dataset_access_sql(
+                        dataset_alias="d",
+                        requester_expression="t.requested_by_user_id",
+                        lock_grants=True,
+                    )
+                    + " THEN 1 ELSE 0 END "
+                    "FROM ingestion.processing_job j WITH (UPDLOCK,HOLDLOCK) "
                     "JOIN ingestion.lifecycle_job_target t ON t.job_id=j.job_id "
+                    "JOIN dataset.dataset d WITH (UPDLOCK,HOLDLOCK) "
+                    "ON d.dataset_id=t.dataset_id "
                     "WHERE j.job_id=:job AND j.job_type='EXPORT_LATEST' "
                     "AND t.action_type='EXPORT_LATEST' AND j.status='RUNNING' "
                     "AND j.lease_token=CONVERT(uniqueidentifier,:lease) "
@@ -786,6 +865,12 @@ class SqlLifecycleService:
             ).scalar_one_or_none()
             if scope is None:
                 raise DomainError("JOB_LEASE_LOST", "Export Job Lease 已失效", 409)
+            if int(scope) != 1:
+                raise DomainError(
+                    "LIFECYCLE_EXPORT_ACCESS_REVOKED",
+                    "Export Job requester no longer has access to its Dataset",
+                    409,
+                )
             for artifact, path in validated:
                 connection.execute(
                     text(
@@ -830,7 +915,17 @@ class SqlLifecycleService:
                     "lease_expires_at_utc=NULL,heartbeat_at_utc=NULL "
                     "WHERE job_id=:job AND status='RUNNING' "
                     "AND lease_token=CONVERT(uniqueidentifier,:lease) "
-                    "AND lease_expires_at_utc>=SYSUTCDATETIME()"
+                    "AND lease_expires_at_utc>=SYSUTCDATETIME() AND EXISTS("
+                    "SELECT 1 FROM ingestion.lifecycle_job_target finalize_t "
+                    "JOIN dataset.dataset finalize_d WITH (UPDLOCK,HOLDLOCK) "
+                    "ON finalize_d.dataset_id=finalize_t.dataset_id "
+                    "WHERE finalize_t.job_id=:job AND "
+                    + _requester_dataset_access_sql(
+                        dataset_alias="finalize_d",
+                        requester_expression="finalize_t.requested_by_user_id",
+                        lock_grants=True,
+                    )
+                    + ")"
                 ),
                 {"job": job_id, "lease": lease},
             )
@@ -1095,33 +1190,59 @@ class SqlLifecycleService:
         if not principal.can("EXPORT_DATA"):
             raise DomainError("PERMISSION_DENIED", "缺少权限：EXPORT_DATA", 403)
         with self._engine.connect() as connection:
+            identity = (
+                connection.execute(
+                    text(
+                        "SELECT a.processing_artifact_id,a.job_id,j.status,j.job_type,"
+                        "t.action_type FROM ingestion.processing_artifact a "
+                        "JOIN ingestion.processing_job j ON j.job_id=a.job_id "
+                        "JOIN ingestion.lifecycle_job_target t ON t.job_id=j.job_id "
+                        "JOIN dataset.dataset d ON d.dataset_id=t.dataset_id "
+                        "WHERE a.processing_artifact_id=:artifact AND a.job_id=:job "
+                        "AND j.job_type='EXPORT_LATEST' "
+                        "AND t.action_type='EXPORT_LATEST' AND "
+                        + data_read_scope_sql(
+                            access_scope_column="d.access_scope",
+                            owner_column="d.owner_user_id",
+                            data_domain_column="d.data_domain_id",
+                        )
+                    ),
+                    visibility_parameters(principal)
+                    | {"artifact": artifact_id, "job": job_id},
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if identity is None:
+                raise DomainError("EXPORT_ARTIFACT_NOT_FOUND", "导出文件不存在", 404)
             row = (
                 connection.execute(
                     text(
                         "SELECT a.processing_artifact_id,a.job_id,a.file_name,"
                         "a.storage_uri,a.file_size,a.sha256,a.temporary_flag,"
                         "a.expires_at_utc,a.physical_status,j.status,j.job_type,"
-                        "t.action_type,d.owner_user_id "
+                        "t.action_type "
                         "FROM ingestion.processing_artifact a "
                         "JOIN ingestion.processing_job j ON j.job_id=a.job_id "
                         "JOIN ingestion.lifecycle_job_target t ON t.job_id=j.job_id "
                         "JOIN dataset.dataset d ON d.dataset_id=t.dataset_id "
-                        "WHERE a.processing_artifact_id=:artifact AND a.job_id=:job"
+                        "WHERE a.processing_artifact_id=:artifact AND a.job_id=:job "
+                        "AND j.job_type='EXPORT_LATEST' "
+                        "AND t.action_type='EXPORT_LATEST' AND "
+                        + data_read_scope_sql(
+                            access_scope_column="d.access_scope",
+                            owner_column="d.owner_user_id",
+                            data_domain_column="d.data_domain_id",
+                        )
                     ),
-                    {"artifact": artifact_id, "job": job_id},
+                    visibility_parameters(principal)
+                    | {"artifact": artifact_id, "job": job_id},
                 )
                 .mappings()
                 .one_or_none()
             )
         if row is None:
             raise DomainError("EXPORT_ARTIFACT_NOT_FOUND", "导出文件不存在", 404)
-        if (
-            int(row["owner_user_id"]) != principal.user_id
-            and "SYSTEM_ADMIN" not in principal.roles
-        ):
-            raise DomainError("DATASET_SCOPE_DENIED", "不能下载其他 Owner 的数据", 403)
-        if str(row["job_type"]) != "EXPORT_LATEST" or str(row["action_type"]) != "EXPORT_LATEST":
-            raise DomainError("EXPORT_ARTIFACT_NOT_FOUND", "该文件不属于 Export Job", 404)
         if (
             str(row["status"]) != "SUCCESS"
             or not bool(row["temporary_flag"])
@@ -1161,35 +1282,43 @@ class SqlLifecycleService:
                 connection.execute(
                     text(
                         "SELECT j.job_id,j.status,j.error_code,j.cleaner_release_id,"
-                        "t.dataset_id,t.target_dataset_version_id,t.action_type,"
-                        "d.owner_user_id FROM ingestion.processing_job j "
+                        "t.dataset_id,t.target_dataset_version_id,t.action_type "
+                        "FROM ingestion.processing_job j "
                         "JOIN ingestion.lifecycle_job_target t ON t.job_id=j.job_id "
                         "JOIN dataset.dataset d ON d.dataset_id=t.dataset_id "
-                        "WHERE j.job_id=:job AND j.job_type='EXPORT_LATEST'"
+                        "WHERE j.job_id=:job AND j.job_type='EXPORT_LATEST' "
+                        "AND t.action_type='EXPORT_LATEST' AND "
+                        + data_read_scope_sql(
+                            access_scope_column="d.access_scope",
+                            owner_column="d.owner_user_id",
+                            data_domain_column="d.data_domain_id",
+                        )
                     ),
-                    {"job": job_id},
+                    visibility_parameters(principal) | {"job": job_id},
                 )
                 .mappings()
                 .one_or_none()
             )
-            if row is None or str(row["action_type"]) != "EXPORT_LATEST":
+            if row is None:
                 raise DomainError("EXPORT_JOB_NOT_FOUND", "Export Job 不存在", 404)
-            if (
-                int(row["owner_user_id"]) != principal.user_id
-                and "SYSTEM_ADMIN" not in principal.roles
-            ):
-                raise DomainError(
-                    "DATASET_SCOPE_DENIED", "不能查看其他 Owner 的导出任务", 403
-                )
             artifact_rows = (
                 connection.execute(
                     text(
-                        "SELECT processing_artifact_id,job_id,artifact_role,file_name,"
-                        "file_size,sha256,expires_at_utc,physical_status "
-                        "FROM ingestion.processing_artifact WHERE job_id=:job "
-                        "AND temporary_flag=1 ORDER BY processing_artifact_id"
+                        "SELECT a.processing_artifact_id,a.job_id,a.artifact_role,"
+                        "a.file_name,a.file_size,a.sha256,a.expires_at_utc,"
+                        "a.physical_status FROM ingestion.processing_artifact a "
+                        "JOIN ingestion.processing_job j ON j.job_id=a.job_id "
+                        "JOIN ingestion.lifecycle_job_target t ON t.job_id=j.job_id "
+                        "JOIN dataset.dataset d ON d.dataset_id=t.dataset_id "
+                        "WHERE a.job_id=:job AND a.temporary_flag=1 AND "
+                        + data_read_scope_sql(
+                            access_scope_column="d.access_scope",
+                            owner_column="d.owner_user_id",
+                            data_domain_column="d.data_domain_id",
+                        )
+                        + " ORDER BY a.processing_artifact_id"
                     ),
-                    {"job": job_id},
+                    visibility_parameters(principal) | {"job": job_id},
                 )
                 .mappings()
                 .all()

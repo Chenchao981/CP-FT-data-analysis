@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
+from app.core.errors import DomainError
 from app.domain.auth import DEVELOPMENT_PRINCIPAL
 from app.domain.cleaner_registry import CleanerRelease
 from app.domain.jobs import Job, JobStatus, JobType, TriggerType
@@ -29,17 +30,25 @@ class StubRegistry:
 
 
 class StubRunner:
-    def __init__(self, report: Path, mutate_source: Path | None = None) -> None:
+    def __init__(
+        self,
+        report: Path,
+        mutate_source: Path | None = None,
+        on_run=None,
+    ) -> None:
         self.report = report
         self.mutate_source = mutate_source
+        self.on_run = on_run
+        self.calls = 0
 
     def run_release(self, **kwargs) -> QuickPatRunResult:
+        self.calls += 1
         self.report.parent.mkdir(parents=True, exist_ok=True)
         self.report.write_bytes(b"pat")
         if self.mutate_source is not None:
-            (self.mutate_source / "changed.csv").write_text(
-                "x\n2\n", encoding="utf-8"
-            )
+            (self.mutate_source / "changed.csv").write_text("x\n2\n", encoding="utf-8")
+        if self.on_run is not None:
+            self.on_run()
         artifact = QuickAnalysisArtifact(
             "pat_report",
             str(self.report),
@@ -61,10 +70,23 @@ def _scenario(tmp_path: Path):
     product.mkdir(parents=True)
     (product / "one.csv").write_text("x\n1\n", encoding="utf-8")
     catalog = SourceCatalog(
-        (SourceRoot("ROOT", "Root", root, "FT", "JIEQUN", (".csv",)),)
+        (
+            SourceRoot(
+                "ROOT",
+                "Root",
+                root,
+                "FT",
+                "JIEQUN",
+                (".csv",),
+                data_domain_code="JIEQUN_FT",
+            ),
+        )
     )
     manifest = catalog.build_manifest("ROOT", "product-a")
-    service = InMemoryQuickAnalysisService()
+    grants = {(DEVELOPMENT_PRINCIPAL.user_id, 7)}
+    service = InMemoryQuickAnalysisService(
+        domain_grant_checker=lambda user_id, domain_id: (user_id, domain_id) in grants
+    )
     session = service.create(
         DEVELOPMENT_PRINCIPAL,
         NewQuickAnalysisSession(
@@ -81,6 +103,9 @@ def _scenario(tmp_path: Path):
             "RESULT_ONLY",
             21,
             datetime.now(UTC) + timedelta(days=7),
+            "DOMAIN",
+            7,
+            "JIEQUN_FT",
         ),
     )
     service.attach_job(session.analysis_session_id, 44)
@@ -127,11 +152,13 @@ def _scenario(tmp_path: Path):
         attempt_count=1,
     )
     report = tmp_path / "work" / "PAT_001" / "PAT_001.xlsx"
-    return product, catalog, service, session, release, job, report
+    return product, catalog, service, session, release, job, report, grants
 
 
 def test_quick_pat_handler_checks_manifest_and_records_result(tmp_path: Path) -> None:
-    _product, catalog, service, session, release, job, report = _scenario(tmp_path)
+    _product, catalog, service, session, release, job, report, _grants = _scenario(
+        tmp_path
+    )
     QuickPatHandler(
         StubRegistry(release),
         service,
@@ -151,7 +178,9 @@ def test_quick_pat_handler_checks_manifest_and_records_result(tmp_path: Path) ->
 def test_quick_pat_handler_rejects_source_change_during_calculation(
     tmp_path: Path,
 ) -> None:
-    product, catalog, service, session, release, job, report = _scenario(tmp_path)
+    product, catalog, service, session, release, job, report, _grants = _scenario(
+        tmp_path
+    )
     with pytest.raises(RuntimeError, match="changed while"):
         QuickPatHandler(
             StubRegistry(release),
@@ -165,3 +194,56 @@ def test_quick_pat_handler_rejects_source_change_during_calculation(
     )
     assert failed.status == QuickAnalysisStatus.FAILED
     assert failed.error_code == "QUICK_PAT_FAILED"
+
+
+def test_quick_pat_handler_rechecks_grant_before_runner_starts(tmp_path: Path) -> None:
+    (
+        _product,
+        catalog,
+        service,
+        _session,
+        release,
+        job,
+        report,
+        grants,
+    ) = _scenario(tmp_path)
+    grants.clear()
+    runner = StubRunner(report)
+
+    with pytest.raises(DomainError) as captured:
+        QuickPatHandler(
+            StubRegistry(release),
+            service,
+            catalog,
+            runner=runner,
+            work_root=tmp_path / "work",
+        )(job)
+
+    assert captured.value.code == "QUICK_DATA_DOMAIN_ACCESS_REVOKED"
+    assert runner.calls == 0
+
+
+def test_quick_pat_handler_rechecks_grant_before_success(tmp_path: Path) -> None:
+    (
+        _product,
+        catalog,
+        service,
+        _session,
+        release,
+        job,
+        report,
+        grants,
+    ) = _scenario(tmp_path)
+    runner = StubRunner(report, on_run=grants.clear)
+
+    with pytest.raises(DomainError) as captured:
+        QuickPatHandler(
+            StubRegistry(release),
+            service,
+            catalog,
+            runner=runner,
+            work_root=tmp_path / "work",
+        )(job)
+
+    assert captured.value.code == "QUICK_DATA_DOMAIN_ACCESS_REVOKED"
+    assert runner.calls == 1

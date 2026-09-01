@@ -13,6 +13,7 @@ from app.api.auth import router as auth_router
 from app.api.catalog import router as catalog_router
 from app.api.cleaners import router as cleaners_router
 from app.api.contracts import router as contracts_router
+from app.api.data_domains import router as data_domains_router
 from app.api.datasets import router as datasets_router
 from app.api.enrichments import router as enrichments_router
 from app.api.health import router as health_router
@@ -35,7 +36,11 @@ from app.core.config import get_settings
 from app.core.errors import DomainError
 from app.core.exception_handlers import domain_error_handler, validation_error_handler
 from app.core.logging import configure_logging
-from app.core.middleware import AnalyticsFeatureFlagMiddleware, RequestContextMiddleware
+from app.core.middleware import (
+    AnalyticsFeatureFlagMiddleware,
+    LocalResultBodyLimitMiddleware,
+    RequestContextMiddleware,
+)
 from app.domain.jobs import InMemoryJobService
 from app.domain.quick_analysis import InMemoryQuickAnalysisService
 from app.domain.quick_capacity import QuickCapacityPolicy
@@ -50,6 +55,7 @@ from app.infrastructure.sql_analytics_export_service import SqlAnalyticsExportSe
 from app.infrastructure.sql_analytics_service import SqlAnalyticsService
 from app.infrastructure.sql_auth_service import SqlAuthService
 from app.infrastructure.sql_cleaner_registry import SqlCleanerRegistry
+from app.infrastructure.sql_data_domain_service import SqlDataDomainService
 from app.infrastructure.sql_dataset_service import SqlDatasetService
 from app.infrastructure.sql_enrichment_service import SqlFieldEnrichmentService
 from app.infrastructure.sql_input_request_service import (
@@ -90,6 +96,7 @@ def create_app() -> FastAPI:
     )
     application.add_middleware(AnalyticsFeatureFlagMiddleware)
     application.add_middleware(RequestContextMiddleware)
+    application.add_middleware(LocalResultBodyLimitMiddleware)
     application.add_exception_handler(DomainError, domain_error_handler)
     application.add_exception_handler(RequestValidationError, validation_error_handler)
     application.state.job_service = (
@@ -107,6 +114,9 @@ def create_app() -> FastAPI:
         )
         if os.getenv("TMS_DATABASE_URL")
         else None
+    )
+    application.state.data_domain_service = (
+        SqlDataDomainService(get_engine()) if database_configured else None
     )
     application.state.analytics_service = (
         SqlAnalyticsService(get_engine()) if os.getenv("TMS_DATABASE_URL") else None
@@ -213,6 +223,9 @@ def create_app() -> FastAPI:
     application.state.source_catalog = source_catalog
     application.include_router(health_router, prefix="/api/v1/health", tags=["health"])
     application.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
+    application.include_router(
+        data_domains_router, prefix="/api/v1", tags=["data-domains"]
+    )
     application.include_router(
         contracts_router, prefix="/api/v1/contracts", tags=["contracts"]
     )

@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.errors import DomainError
 from app.domain.auth import (
+    BUSINESS_PERMISSIONS,
     Principal,
     RegisterRequest,
     UserAdminUpdateRequest,
@@ -133,7 +134,7 @@ class SqlAuthService:
                     ),
                     {"user_id": user_id},
                 ).all()
-            )
+            ) | BUSINESS_PERMISSIONS
         return Principal(
             user_id=int(row["user_id"]),
             login_name=str(row["login_name"]),

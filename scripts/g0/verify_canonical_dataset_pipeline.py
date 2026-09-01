@@ -245,10 +245,16 @@ def main() -> None:
             ids["batch"] = int(
                 connection.execute(
                     text(
-                        "INSERT ingestion.import_batch(source_channel,status,metadata_json) "
-                        "OUTPUT INSERTED.import_batch_id VALUES('SYSTEM','RECEIVED',:metadata)"
+                        "INSERT ingestion.import_batch(source_channel,status,metadata_json,"
+                        "owner_user_id,business_domain,test_stage,factory_code,access_scope,"
+                        "data_domain_id,source_definition_id) OUTPUT INSERTED.import_batch_id "
+                        "VALUES('SYSTEM','RECEIVED',:metadata,:owner,'ENGINEERING','CP',"
+                        "'HUAHONG','PERSONAL',NULL,NULL)"
                     ),
-                    {"metadata": '{"purpose":"g0-integration"}'},
+                    {
+                        "metadata": '{"purpose":"g0-integration"}',
+                        "owner": ids["user"],
+                    },
                 ).scalar_one()
             )
 
@@ -268,7 +274,7 @@ def main() -> None:
         job_service = SqlJobService(engine)
         job = job_service.create(
             CreateJobRequest(
-                source_file_id=ids["source_file"],
+                import_batch_id=ids["batch"],
                 cleaner_release_id=ids["cleaner_release"],
                 job_type="PARSE",
                 trigger_type="SYSTEM",
@@ -292,6 +298,9 @@ def main() -> None:
         )
         ids["processing_run"] = write_result.processing_run_id
         ids["test_run"] = write_result.test_run_id
+        job_service.transition(
+            job.job_id, TransitionJobRequest(target_status=JobStatus.SUCCESS)
+        )
 
         dataset_service = SqlDatasetService(engine)
         dataset = dataset_service.create_dataset(
@@ -306,14 +315,6 @@ def main() -> None:
             )
         )
         ids["dataset"] = dataset.dataset_id
-        version = dataset_service.create_version(
-            dataset.dataset_id,
-            CreateDatasetVersionRequest(
-                input_batch_id=ids["batch"],
-                processing_run_ids=[ids["processing_run"]],
-            ),
-        )
-        ids["dataset_version"] = version.dataset_version_id
         principal = Principal(
             user_id=ids["user"],
             login_name=f"g0_{token}",
@@ -321,6 +322,15 @@ def main() -> None:
             roles=("DATA_ENGINEER",),
             permissions=frozenset({"DATASET_READ"}),
         )
+        version = dataset_service.create_version(
+            dataset.dataset_id,
+            CreateDatasetVersionRequest(
+                input_batch_id=ids["batch"],
+                processing_run_ids=[ids["processing_run"]],
+            ),
+            principal,
+        )
+        ids["dataset_version"] = version.dataset_version_id
         gate = dataset_service.evaluate_gate(
             dataset.dataset_id, version.version_no, principal
         )
@@ -357,7 +367,6 @@ def main() -> None:
             raise RuntimeError(
                 f"unexpected published summary/charts: {summary} / {charts}"
             )
-        job_service.transition(job.job_id, TransitionJobRequest(target_status=JobStatus.SUCCESS))
         print(
             "canonical_dataset_pipeline=PASS "
             f"units={summary.unit_count} measurements={summary.measurement_count} "

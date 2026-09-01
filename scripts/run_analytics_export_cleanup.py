@@ -18,8 +18,13 @@ from app.core.logging import configure_logging
 from app.infrastructure.analytics_export_cleanup import AnalyticsExportFileCleaner
 from app.infrastructure.analytics_export_files import AnalyticsExportPathPolicy
 from app.infrastructure.database import check_database, get_engine
+from app.infrastructure.formal_artifact_files import (
+    FormalOrphanRootCleaner,
+    ManagedJobPathPolicy,
+)
 from app.infrastructure.sql_analytics_export_cleanup import (
     SqlAnalyticsExportCleanupService,
+    SqlAnalyticsExportOrphanCleanupService,
 )
 
 
@@ -46,8 +51,8 @@ def main() -> None:
     if not os.getenv("TMS_DATABASE_URL"):
         raise RuntimeError("TMS_DATABASE_URL is required")
     database = check_database()
-    if database["schema_revision"] != "sql2014_0023":
-        raise RuntimeError("Analytics Export cleanup requires sql2014_0023")
+    if database["schema_revision"] != "sql2014_0024":
+        raise RuntimeError("Analytics Export cleanup requires sql2014_0024")
     configured_root = os.getenv("TMS_ANALYTICS_EXPORT_ROOT", "").strip()
     if not configured_root:
         if os.getenv("TMS_ENV", "").strip().lower() == "production":
@@ -59,9 +64,21 @@ def main() -> None:
             "TMS_ANALYTICS_EXPORT_CLEANUP_STALE_MINUTES must be between 1 and 1440"
         )
     policy = AnalyticsExportPathPolicy(Path(configured_root))
+    engine = get_engine()
     service = SqlAnalyticsExportCleanupService(
-        get_engine(),
+        engine,
         AnalyticsExportFileCleaner(policy),
+    )
+    orphan_retention_hours = int(
+        os.getenv("TMS_ANALYTICS_EXPORT_ORPHAN_RETENTION_HOURS", "168")
+    )
+    if orphan_retention_hours < 1 or orphan_retention_hours > 87600:
+        raise RuntimeError(
+            "TMS_ANALYTICS_EXPORT_ORPHAN_RETENTION_HOURS must be between 1 and 87600"
+        )
+    orphan_service = SqlAnalyticsExportOrphanCleanupService(
+        engine,
+        FormalOrphanRootCleaner(ManagedJobPathPolicy(policy.export_root)),
     )
     dry_run = not args.delete
     results = service.run_due(
@@ -69,11 +86,18 @@ def main() -> None:
         dry_run=dry_run,
         stale_after=timedelta(minutes=stale_minutes),
     )
+    orphan_results = orphan_service.run(
+        limit=args.limit,
+        dry_run=dry_run,
+        retention=timedelta(hours=orphan_retention_hours),
+    )
     payload = {
         "dry_run": dry_run,
         "export_root": str(policy.export_root),
         "result_count": len(results),
         "results": [asdict(item) for item in results],
+        "orphan_result_count": len(orphan_results),
+        "orphan_results": [asdict(item) for item in orphan_results],
     }
     configure_logging()
     logging.getLogger(__name__).info(

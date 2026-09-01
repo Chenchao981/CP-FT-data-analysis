@@ -27,8 +27,10 @@ def service(request: Request) -> ManagementService:
 @router.get("/quality-summary")
 def quality_summary(
     request: Request,
-    from_utc: datetime | None = Query(default=None),
-    to_utc: datetime | None = Query(default=None),
+    access_scope: str = Query(pattern=r"^(PERSONAL|DOMAIN)$"),
+    data_domain_id: int | None = Query(default=None, gt=0),
+    from_utc: datetime | None = Query(default=None),  # noqa: B008
+    to_utc: datetime | None = Query(default=None),  # noqa: B008
     business_domain: str | None = Query(
         default=None, pattern=r"^(ENGINEERING|PRODUCTION)$"
     ),
@@ -39,6 +41,18 @@ def quality_summary(
     recent_limit: int = Query(default=20, ge=1, le=100),
     principal: Principal = Depends(require_permission("MANAGEMENT_READ")),  # noqa: B008
 ) -> dict:
+    if access_scope == "DOMAIN" and data_domain_id is None:
+        raise DomainError(
+            "QUALITY_DATA_DOMAIN_REQUIRED",
+            "查看数据域统计时必须指定 data_domain_id",
+            422,
+        )
+    if access_scope == "PERSONAL" and data_domain_id is not None:
+        raise DomainError(
+            "QUALITY_DATA_DOMAIN_NOT_ALLOWED",
+            "查看我的数据时不能指定 data_domain_id",
+            422,
+        )
     upper = _as_utc(to_utc or datetime.now(UTC))
     lower = _as_utc(from_utc or (upper - timedelta(days=30)))
     if lower >= upper:
@@ -58,6 +72,8 @@ def quality_summary(
             principal=principal,
             from_utc=lower,
             to_utc=upper,
+            access_scope=access_scope,
+            data_domain_id=data_domain_id,
             business_domain=business_domain,
             test_stage=test_stage,
             factory_code=_clean(factory_code),

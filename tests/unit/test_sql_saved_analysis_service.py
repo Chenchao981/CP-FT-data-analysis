@@ -265,6 +265,11 @@ def _dataset(
     *,
     owner_user_id: int = 10,
     business_domain: str = "ENGINEERING",
+    access_scope: str = "PERSONAL",
+    data_domain_id: int | None = None,
+    domain_granted: bool = False,
+    grant_expired: bool = False,
+    domain_active: bool = True,
     status: str = "PUBLISHED",
     is_current: bool = True,
     test_stage: str = "FT",
@@ -279,6 +284,11 @@ def _dataset(
         "spec_set_id": spec_set_id,
         "test_stage": test_stage,
         "owner_user_id": owner_user_id,
+        "access_scope": access_scope,
+        "data_domain_id": data_domain_id,
+        "domain_granted": domain_granted,
+        "grant_expired": grant_expired,
+        "domain_active": domain_active,
         "supplier_id": 7,
         "product_id": 8,
         "business_domain": business_domain,
@@ -303,7 +313,11 @@ class _Connection:
             row = self.state.datasets.get(
                 (int(params["dataset_id"]), int(params["version_no"]))
             )
-            return _Result([dict(row)] if row is not None else [])
+            if row is None:
+                return _Result()
+            result = dict(row)
+            result["can_read"] = self._can_read_dataset(result, params)
+            return _Result([result])
 
         if sql.startswith("INSERT analysis.saved_analysis("):
             saved_id = self.state.next_saved_id
@@ -415,6 +429,7 @@ class _Connection:
             ):
                 row = dict(by_version_id[version_id])
                 row["ordinal_no"] = ordinal
+                row["can_read"] = self._can_read_dataset(row, params)
                 rows.append(row)
             return _Result(rows)
 
@@ -445,41 +460,50 @@ class _Connection:
         roots = list(self.state.roots.values())
         if "sa.lifecycle_status='ACTIVE'" in sql:
             roots = [row for row in roots if row["lifecycle_status"] == "ACTIVE"]
-        if not bool(params["is_admin"]):
-            visible = []
-            for root in roots:
-                if int(root["owner_user_id"]) == int(params["user_id"]):
-                    visible.append(root)
-                    continue
-                revision = self.state.revisions[
-                    (int(root["saved_analysis_id"]), int(root["current_revision_no"]))
-                ]
-                version_ids = self.state.revision_datasets[
-                    int(revision["saved_analysis_revision_id"])
-                ]
-                datasets = [
-                    next(
-                        item
-                        for item in self.state.datasets.values()
-                        if int(item["dataset_version_id"]) == version_id
-                    )
-                    for _, version_id in version_ids
-                ]
-                if all(
-                    int(item["owner_user_id"]) == int(params["user_id"])
-                    or (
-                        item["business_domain"] == "PRODUCTION"
-                        and item["status"] == "PUBLISHED"
-                        and item["is_current"]
-                    )
-                    for item in datasets
-                ):
-                    visible.append(root)
-            roots = visible
+        visible = []
+        for root in roots:
+            revision = self.state.revisions[
+                (int(root["saved_analysis_id"]), int(root["current_revision_no"]))
+            ]
+            version_ids = self.state.revision_datasets[
+                int(revision["saved_analysis_revision_id"])
+            ]
+            datasets = [
+                next(
+                    item
+                    for item in self.state.datasets.values()
+                    if int(item["dataset_version_id"]) == version_id
+                )
+                for _, version_id in version_ids
+            ]
+            if all(self._can_read_dataset(item, params) for item in datasets):
+                visible.append(root)
+        roots = visible
         return sorted(
             roots,
             key=lambda row: (row["updated_at_utc"], row["saved_analysis_id"]),
             reverse=True,
+        )
+
+    @staticmethod
+    def _can_read_dataset(
+        row: dict[str, Any], params: dict[str, Any]
+    ) -> bool:
+        return bool(
+            params.get("has_data_break_glass")
+            or (
+                row["access_scope"] == "PERSONAL"
+                and int(row["owner_user_id"]) == int(params["user_id"])
+            )
+            or (
+                row["access_scope"] == "DOMAIN"
+                and row["data_domain_id"] is not None
+                and bool(row["domain_granted"])
+                and not bool(row.get("grant_expired"))
+                and bool(row.get("domain_active", True))
+                and row["status"] == "PUBLISHED"
+                and bool(row["is_current"])
+            )
         )
 
 
@@ -772,23 +796,42 @@ def test_selected_view_rule_with_missing_version_fails_closed() -> None:
     assert state.roots == {}
 
 
-def test_read_reports_non_current_rule_changed_and_access_revoked_without_latest() -> (
+def test_read_fails_closed_after_domain_access_is_revoked_without_decoding_state() -> (
     None
 ):
     state = _State(
-        datasets={(1, 1): _dataset(1, owner_user_id=99, business_domain="PRODUCTION")}
+        datasets={
+            (1, 1): _dataset(
+                1,
+                owner_user_id=99,
+                business_domain="PRODUCTION",
+                access_scope="DOMAIN",
+                data_domain_id=7,
+                domain_granted=True,
+            )
+        }
     )
     service = _service(state)
     owner = _principal(10)
     created = service.create(_create_request(), owner)
 
     state.datasets[(1, 1)]["is_current"] = False
-    revoked = service.get(created.saved_analysis_id, owner)
-    assert revoked.restore_status == "ACCESS_REVOKED"
-    assert revoked.revision.datasets[0].status == "ACCESS_REVOKED"
-    assert revoked.revision.datasets[0].version_no == 1
+    statement_count = len(state.statements)
+    with pytest.raises(DomainError) as revoked:
+        service.get(created.saved_analysis_id, owner)
+    assert revoked.value.code == "SAVED_ANALYSIS_NOT_FOUND"
+    read_sql = [sql for sql, _ in state.statements[statement_count:]]
+    assert not any("sar.filter_json" in sql for sql in read_sql)
+    assert service.list_page(owner, page=1, page_size=20).items == ()
 
-    state.datasets[(1, 1)]["owner_user_id"] = 10
+    state.datasets[(1, 1)].update(
+        {
+            "owner_user_id": 10,
+            "access_scope": "PERSONAL",
+            "data_domain_id": None,
+            "domain_granted": False,
+        }
+    )
     non_current = service.get(created.saved_analysis_id, owner)
     assert non_current.restore_status == "NON_CURRENT"
     assert non_current.revision.datasets[0].version_no == 1
@@ -802,7 +845,44 @@ def test_read_reports_non_current_rule_changed_and_access_revoked_without_latest
     assert rule_changed.revision.rule_context.evaluation_rule_versions == []
 
 
-def test_engineering_cross_owner_is_hidden_but_production_cross_owner_is_read_only() -> (
+@pytest.mark.parametrize(
+    "dataset_change",
+    (
+        {"domain_granted": False},
+        {"grant_expired": True},
+        {"domain_active": False},
+    ),
+    ids=("revoked", "expired", "domain-disabled"),
+)
+def test_domain_access_loss_hides_saved_state_from_owner_and_system_admin(
+    dataset_change: dict[str, Any],
+) -> None:
+    state = _State(
+        datasets={
+            (1, 1): _dataset(
+                1,
+                owner_user_id=99,
+                access_scope="DOMAIN",
+                data_domain_id=7,
+                domain_granted=True,
+            )
+        }
+    )
+    service = _service(state)
+    owner = _principal(10)
+    created = service.create(_create_request(), owner)
+    state.datasets[(1, 1)].update(dataset_change)
+
+    for principal in (owner, _principal(1, admin=True)):
+        with pytest.raises(DomainError) as hidden:
+            service.get(created.saved_analysis_id, principal)
+        assert hidden.value.code == "SAVED_ANALYSIS_NOT_FOUND"
+        page = service.list_page(principal, page=1, page_size=20)
+        assert page.total == 0
+        assert page.items == ()
+
+
+def test_personal_cross_owner_is_hidden_but_granted_domain_is_read_only() -> (
     None
 ):
     state = _State(datasets={(1, 1): _dataset(1, owner_user_id=10)})
@@ -813,9 +893,19 @@ def test_engineering_cross_owner_is_hidden_but_production_cross_owner_is_read_on
         service.get(created.saved_analysis_id, _principal(20))
     assert hidden.value.code == "SAVED_ANALYSIS_NOT_FOUND"
 
-    state.datasets[(1, 1)]["business_domain"] = "PRODUCTION"
+    state.datasets[(1, 1)].update(
+        {
+            "business_domain": "PRODUCTION",
+            "access_scope": "DOMAIN",
+            "data_domain_id": 7,
+            "domain_granted": True,
+        }
+    )
     shared = service.get(created.saved_analysis_id, _principal(20))
     assert shared.restore_status == "CURRENT"
+    visibility_sql = "\n".join(statement for statement, _ in state.statements)
+    assert "iam.data_domain_grant" in visibility_sql
+    assert "business_domain='PRODUCTION'" not in visibility_sql
     with pytest.raises(DomainError) as revise:
         service.create_revision(
             created.saved_analysis_id,
@@ -823,6 +913,13 @@ def test_engineering_cross_owner_is_hidden_but_production_cross_owner_is_read_on
             _principal(20),
         )
     assert revise.value.code == "SAVED_ANALYSIS_OWNER_REQUIRED"
+    with pytest.raises(DomainError) as admin_revise:
+        service.create_revision(
+            created.saved_analysis_id,
+            _revision_request(created.row_version),
+            _principal(1, admin=True),
+        )
+    assert admin_revise.value.code == "SAVED_ANALYSIS_OWNER_REQUIRED"
     with pytest.raises(DomainError) as delete:
         service.delete(
             created.saved_analysis_id,
@@ -940,4 +1037,8 @@ def test_list_and_logical_delete_preserve_revision_history() -> None:
     admin_page = service.list_page(
         _principal(1, admin=True), page=1, page_size=20, include_deleted=True
     )
-    assert admin_page.items[0].lifecycle_status == "DELETED"
+    assert admin_page.items == ()
+    owner_admin_page = service.list_page(
+        _principal(10, admin=True), page=1, page_size=20, include_deleted=True
+    )
+    assert owner_admin_page.items[0].lifecycle_status == "DELETED"

@@ -16,6 +16,7 @@ from app.domain.input_requests import (
 )
 from app.infrastructure.sql_visibility import (
     batch_owner_scope_sql,
+    batch_read_scope_sql,
     visibility_parameters,
 )
 
@@ -27,7 +28,9 @@ class SqlProcessingInputRequestService:
     @staticmethod
     def _scope(access_mode: str) -> str:
         normalized = access_mode.strip().upper()
-        if normalized in {"READ", "WRITE"}:
+        if normalized == "READ":
+            return batch_read_scope_sql(batch_alias="b")
+        if normalized == "WRITE":
             return batch_owner_scope_sql(batch_alias="b")
         raise ValueError("input request access mode must be READ or WRITE")
 

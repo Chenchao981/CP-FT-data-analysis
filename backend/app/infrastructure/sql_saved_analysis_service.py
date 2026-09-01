@@ -44,6 +44,10 @@ from app.infrastructure.formal_spec_context_resolver import (
     resolve_formal_spec_context,
 )
 from app.infrastructure.sql_analysis_rule_service import SqlAnalysisRuleService
+from app.infrastructure.sql_visibility import (
+    current_dataset_read_scope_sql,
+    visibility_parameters,
+)
 
 RuleContextResolver = Callable[
     [Connection, tuple[Mapping[str, Any], ...], AnalyticsContextRequest],
@@ -124,6 +128,7 @@ class SqlSavedAnalysisService:
     def _dataset_row(
         connection: Connection,
         reference: AnalyticsDatasetReference,
+        principal: Principal,
         *,
         hold_lock: bool,
     ) -> Mapping[str, Any]:
@@ -133,17 +138,21 @@ class SqlSavedAnalysisService:
                 text(
                     "SELECT dv.dataset_version_id,dv.dataset_id,dv.version_no,"
                     "dv.status,dv.is_current,dv.spec_set_id,d.test_stage,"
-                    "d.owner_user_id,d.supplier_id,d.product_id,"
-                    "b.business_domain,ss.version_code AS spec_version "
+                    "d.owner_user_id,d.access_scope,d.data_domain_id,"
+                    "d.supplier_id,d.product_id,CASE WHEN "
+                    + current_dataset_read_scope_sql(
+                        dataset_alias="d", version_alias="dv"
+                    )
+                    + " THEN 1 ELSE 0 END AS can_read,"
+                    "ss.version_code AS spec_version "
                     "FROM dataset.dataset_version dv"
                     + lock_hint
                     + " JOIN dataset.dataset d ON d.dataset_id=dv.dataset_id "
-                    "LEFT JOIN ingestion.import_batch b "
-                    "ON b.import_batch_id=dv.input_batch_id "
                     "LEFT JOIN mdm.spec_set ss ON ss.spec_set_id=dv.spec_set_id "
                     "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no"
                 ),
-                {
+                visibility_parameters(principal)
+                | {
                     "dataset_id": reference.dataset_id,
                     "version_no": reference.version_no,
                 },
@@ -169,7 +178,9 @@ class SqlSavedAnalysisService:
         hold_lock: bool,
     ) -> tuple[Mapping[str, Any], ...]:
         rows = tuple(
-            self._dataset_row(connection, reference, hold_lock=hold_lock)
+            self._dataset_row(
+                connection, reference, principal, hold_lock=hold_lock
+            )
             for reference in references
         )
         for row in rows:
@@ -206,15 +217,8 @@ class SqlSavedAnalysisService:
 
     @staticmethod
     def _can_read_dataset(row: Mapping[str, Any], principal: Principal) -> bool:
-        return bool(
-            _is_admin(principal)
-            or int(row["owner_user_id"]) == principal.user_id
-            or (
-                str(row.get("business_domain") or "") == "PRODUCTION"
-                and str(row["status"]) == "PUBLISHED"
-                and bool(row["is_current"])
-            )
-        )
+        del principal
+        return bool(row["can_read"])
 
     @staticmethod
     def _default_rule_context(
@@ -569,10 +573,10 @@ class SqlSavedAnalysisService:
 
     @staticmethod
     def _assert_manage(root: Mapping[str, Any], principal: Principal) -> None:
-        if not _is_admin(principal) and int(root["owner_user_id"]) != principal.user_id:
+        if int(root["owner_user_id"]) != principal.user_id:
             raise DomainError(
                 "SAVED_ANALYSIS_OWNER_REQUIRED",
-                "only the Saved Analysis owner or a System Admin may change it",
+                "only the Saved Analysis owner may change it",
                 403,
             )
 
@@ -726,6 +730,38 @@ class SqlSavedAnalysisService:
             ) from exc
 
     @staticmethod
+    def _revision_identity_row(
+        connection: Connection,
+        saved_analysis_id: int,
+        revision_no: int,
+    ) -> Mapping[str, Any]:
+        """Load only the non-sensitive revision identity before ACL evaluation."""
+
+        row = (
+            connection.execute(
+                text(
+                    "SELECT sar.saved_analysis_revision_id,sar.revision_no "
+                    "FROM analysis.saved_analysis_revision sar "
+                    "WHERE sar.saved_analysis_id=:saved_analysis_id "
+                    "AND sar.revision_no=:revision_no"
+                ),
+                {
+                    "saved_analysis_id": saved_analysis_id,
+                    "revision_no": revision_no,
+                },
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            raise DomainError(
+                "SAVED_ANALYSIS_REVISION_NOT_FOUND",
+                "Saved Analysis revision was not found",
+                404,
+            )
+        return row
+
+    @staticmethod
     def _revision_row(
         connection: Connection,
         saved_analysis_id: int,
@@ -760,26 +796,32 @@ class SqlSavedAnalysisService:
 
     @staticmethod
     def _revision_dataset_rows(
-        connection: Connection, saved_analysis_revision_id: int
+        connection: Connection,
+        saved_analysis_revision_id: int,
+        principal: Principal,
     ) -> tuple[Mapping[str, Any], ...]:
         rows = tuple(
             connection.execute(
                 text(
                     "SELECT sard.dataset_version_id,sard.ordinal_no,dv.dataset_id,"
                     "dv.version_no,dv.status,dv.is_current,dv.spec_set_id,d.test_stage,"
-                    "d.owner_user_id,d.supplier_id,d.product_id,b.business_domain,"
+                    "d.owner_user_id,d.access_scope,d.data_domain_id,"
+                    "d.supplier_id,d.product_id,CASE WHEN "
+                    + current_dataset_read_scope_sql(
+                        dataset_alias="d", version_alias="dv"
+                    )
+                    + " THEN 1 ELSE 0 END AS can_read,"
                     "ss.version_code AS spec_version "
                     "FROM analysis.saved_analysis_revision_dataset sard "
                     "JOIN dataset.dataset_version dv "
                     "ON dv.dataset_version_id=sard.dataset_version_id "
                     "JOIN dataset.dataset d ON d.dataset_id=dv.dataset_id "
-                    "LEFT JOIN ingestion.import_batch b "
-                    "ON b.import_batch_id=dv.input_batch_id "
                     "LEFT JOIN mdm.spec_set ss ON ss.spec_set_id=dv.spec_set_id "
                     "WHERE sard.saved_analysis_revision_id=:revision_id "
                     "ORDER BY sard.ordinal_no"
                 ),
-                {"revision_id": saved_analysis_revision_id},
+                visibility_parameters(principal)
+                | {"revision_id": saved_analysis_revision_id},
             )
             .mappings()
             .all()
@@ -864,11 +906,13 @@ class SqlSavedAnalysisService:
         *,
         revision_no: int,
     ) -> SavedAnalysisRecord:
-        revision = self._revision_row(
+        revision_identity = self._revision_identity_row(
             connection, int(root["saved_analysis_id"]), revision_no
         )
         dataset_rows = self._revision_dataset_rows(
-            connection, int(revision["saved_analysis_revision_id"])
+            connection,
+            int(revision_identity["saved_analysis_revision_id"]),
+            principal,
         )
         dataset_records: list[SavedAnalysisDatasetRecord] = []
         any_access_revoked = False
@@ -893,13 +937,21 @@ class SqlSavedAnalysisService:
                 )
             )
 
-        owns_saved = int(root["owner_user_id"]) == principal.user_id
-        if any_access_revoked and not owns_saved and not _is_admin(principal):
+        # The Saved Analysis owner and SYSTEM_ADMIN do not retain a copy of
+        # DOMAIN data after its grant expires, is revoked, or its domain is
+        # disabled.  Reject before selecting/decoding persisted filters,
+        # parameters, Rule context, or chart configuration.
+        if any_access_revoked:
             raise DomainError(
                 "SAVED_ANALYSIS_NOT_FOUND",
                 "Saved Analysis was not found or is outside the user's access scope",
                 404,
             )
+        revision = self._revision_row(
+            connection, int(root["saved_analysis_id"]), revision_no
+        )
+
+        owns_saved = int(root["owner_user_id"]) == principal.user_id
         if str(root["lifecycle_status"]) == "DELETED" and not (
             owns_saved or _is_admin(principal)
         ):
@@ -1016,8 +1068,7 @@ class SqlSavedAnalysisService:
     @staticmethod
     def _list_scope_sql() -> str:
         return (
-            "(:is_admin=1 OR sa.owner_user_id=:user_id OR ("
-            "EXISTS(SELECT 1 FROM analysis.saved_analysis_revision visible_sar "
+            "(EXISTS(SELECT 1 FROM analysis.saved_analysis_revision visible_sar "
             "JOIN analysis.saved_analysis_revision_dataset visible_sard "
             "ON visible_sard.saved_analysis_revision_id="
             "visible_sar.saved_analysis_revision_id "
@@ -1030,13 +1081,12 @@ class SqlSavedAnalysisService:
             "JOIN dataset.dataset_version denied_dv "
             "ON denied_dv.dataset_version_id=denied_sard.dataset_version_id "
             "JOIN dataset.dataset denied_d ON denied_d.dataset_id=denied_dv.dataset_id "
-            "LEFT JOIN ingestion.import_batch denied_b "
-            "ON denied_b.import_batch_id=denied_dv.input_batch_id "
             "WHERE denied_sar.saved_analysis_id=sa.saved_analysis_id "
             "AND denied_sar.revision_no=sa.current_revision_no AND NOT("
-            "denied_d.owner_user_id=:user_id OR ("
-            "denied_b.business_domain='PRODUCTION' AND "
-            "denied_dv.status='PUBLISHED' AND denied_dv.is_current=1)))))"
+            + current_dataset_read_scope_sql(
+                dataset_alias="denied_d", version_alias="denied_dv"
+            )
+            + ")))"
         )
 
     def list_page(
@@ -1068,9 +1118,7 @@ class SqlSavedAnalysisService:
             + " AND "
             + self._list_scope_sql()
         )
-        parameters = {
-            "is_admin": int(_is_admin(principal)),
-            "user_id": principal.user_id,
+        parameters = visibility_parameters(principal) | {
             "offset": (page - 1) * page_size,
             "page_size": page_size,
         }

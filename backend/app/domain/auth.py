@@ -5,6 +5,17 @@ from typing import Protocol
 
 from pydantic import BaseModel, Field, field_validator
 
+BUSINESS_PERMISSIONS = frozenset(
+    {
+        "TASK_CREATE",
+        "TASK_RETRY",
+        "DATASET_READ",
+        "ANALYSIS_RUN",
+        "EXPORT_DATA",
+        "MANAGEMENT_READ",
+    }
+)
+
 ALL_PERMISSIONS = frozenset(
     {
         "TASK_CREATE",
@@ -19,6 +30,10 @@ ALL_PERMISSIONS = frozenset(
         "AUDIT_READ",
         "MANAGEMENT_READ",
         "USER_ADMIN",
+        "DATA_DOMAIN_ADMIN",
+        "SOURCE_ADMIN",
+        "SYSTEM_OPERATE",
+        "DATA_BREAK_GLASS",
     }
 )
 
@@ -41,7 +56,10 @@ DEVELOPMENT_PRINCIPAL = Principal(
     login_name="development-admin",
     display_name="开发管理员",
     roles=("SYSTEM_ADMIN",),
-    permissions=ALL_PERMISSIONS,
+    # Authentication-disabled development mode is not an emergency-access
+    # workflow. Keep the reserved permission unusable here too; otherwise a
+    # local SYSTEM_ADMIN would silently bypass PERSONAL/DOMAIN row security.
+    permissions=ALL_PERMISSIONS - {"DATA_BREAK_GLASS"},
 )
 
 

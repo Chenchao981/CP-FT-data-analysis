@@ -96,11 +96,10 @@ const displayLot = (row: CurrentDatasetRow) => (
 const URL_FILTER_KEYS = [...FILTER_KEYS, "import_batch_id", "from_utc", "to_utc"] as const;
 
 export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOpenAnalytics, onOpenComparison, onOpenJob }: DatasetCurrentCatalogProps) {
-  const { user, can } = useAuth();
+  const { can } = useAuth();
   const canExport = can("EXPORT_DATA");
   const canEditProduct = can("TASK_CREATE");
   const canReprocess = can("TASK_CREATE");
-  const isSystemAdmin = Boolean(user?.roles.includes("SYSTEM_ADMIN"));
   const queryClient = useQueryClient();
   const [form] = Form.useForm<CatalogFilterValues>();
   const [actionForm] = Form.useForm<LifecycleActionValues>();
@@ -277,7 +276,7 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
         {canEditProduct && row.can_edit_product && <Button type="link" size="small" onClick={() => { productForm.setFieldsValue({ action: "FILL", value_text: row.product_name ?? undefined, reason: "补充或纠正正式数据产品业务信息" }); setProductTarget(row); }}>{row.product_name ? "修正产品" : "补录产品"}</Button>}
         {canExport && row.can_export && <Button type="link" size="small" icon={<DownloadOutlined />} onClick={() => openLifecycleAction("EXPORT", row)}>导出最新</Button>}
         {canReprocess && row.can_reprocess && <Button type="link" size="small" icon={<SyncOutlined />} onClick={() => openLifecycleAction("REPROCESS", row)}>显式重处理</Button>}
-        {row.can_archive && <Button type="link" danger size="small" icon={<DeleteOutlined />} title="仅 Dataset Owner 或 SYSTEM_ADMIN 可创建" onClick={() => openLifecycleAction("ARCHIVE", row)}>逻辑归档</Button>}
+        {row.can_archive && <Button type="link" danger size="small" icon={<DeleteOutlined />} title="仅 PERSONAL Dataset Owner 可创建" onClick={() => openLifecycleAction("ARCHIVE", row)}>逻辑归档</Button>}
       </Space>,
     },
   ];
@@ -300,8 +299,8 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
       description={<Space direction="vertical" size={2}>
         <Typography.Text><strong>导出最新</strong>：由后端选择最新 Cleaner 生成有 TTL 的临时 Artifact；不调用 Canonical Importer，不创建或切换 Dataset Version，不改动人工补录。</Typography.Text>
         <Typography.Text><strong>显式重处理</strong>：生成新 Dataset Version，只有全量校验成功后才原子切换 Current；失败时旧 Current 仍可用。</Typography.Text>
-        <Typography.Text><strong>逻辑归档</strong>：仅 Owner / SYSTEM_ADMIN 可执行；不删除 FTP/NAS 原始文件、Source Receipt，也不影响其他 Owner 的同 Lot 数据。{isSystemAdmin ? "当前账户具有 SYSTEM_ADMIN 角色。" : "是否为 Dataset Owner 由后端行级授权最终判定。"}</Typography.Text>
-        <Typography.Text><strong>共享边界</strong>：量产 Current 可供全员查询和分析；导出、补录、重处理与归档只在后端逐行授权时显示。</Typography.Text>
+        <Typography.Text><strong>逻辑归档</strong>：仅 PERSONAL Dataset Owner 可执行；SYSTEM_ADMIN 不因管理身份获得数据操作权。不删除 FTP/NAS 原始文件或 Source Receipt。</Typography.Text>
+        <Typography.Text><strong>可见边界</strong>：PERSONAL 仅所有者可见；DOMAIN 仅当前有效数据域授权用户可见。ENGINEERING / PRODUCTION 只是业务分类，不产生数据权限。</Typography.Text>
       </Space>}
     />
     <Card
@@ -381,7 +380,7 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
       </Descriptions>
       {action?.kind === "EXPORT" && <Alert type="info" showIcon message="非变异临时导出" description="导出只生成临时文件并登记 SHA-256/TTL；Current Dataset、Canonical 数据与补录在导出前后保持不变。" style={{ marginBottom: 16 }} />}
       {action?.kind === "REPROCESS" && <Alert type="warning" showIcon message="将创建新版本" description="新版本全量校验成功后才会取代旧 Current；Cleaner、入库或切换失败时，旧 Current 不变。" style={{ marginBottom: 16 }} />}
-      {action?.kind === "ARCHIVE" && <Alert type="error" showIcon message="仅逻辑归档，不删除源文件" description="后端仅允许 Dataset Owner 或 SYSTEM_ADMIN；FTP/NAS 原始文件、Source Receipt 和其他 Owner 的数据均不在删除范围。" style={{ marginBottom: 16 }} />}
+      {action?.kind === "ARCHIVE" && <Alert type="error" showIcon message="仅逻辑归档，不删除源文件" description="后端仅允许 PERSONAL Dataset Owner；SYSTEM_ADMIN 无隐式数据操作权，FTP/NAS 原始文件与 Source Receipt 均不在删除范围。" style={{ marginBottom: 16 }} />}
       {actionError && <Alert type="error" showIcon message="生命周期操作失败" description={actionError} style={{ marginBottom: 16 }} />}
       <Form<LifecycleActionValues>
         form={actionForm}

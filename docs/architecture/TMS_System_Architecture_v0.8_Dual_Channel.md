@@ -3,6 +3,7 @@
 - 状态：P0 实施基线
 - 日期：2026-08-26
 - 继承：`TMS_System_Architecture_v0.7_Route_A.md`
+- 2026-09-01 补充：Local Agent 与 PERSONAL/DOMAIN 边界以 `TMS_Data_Access_and_Local_Agent_Architecture_v1.0_2026-09-01.md` 为准
 
 ## 1. 架构结论
 
@@ -89,6 +90,8 @@ P0 使用 `TMS_SOURCE_ROOTS_JSON`：
     "code": "JIEQUN_FT_SHARED",
     "name": "杰群 FT 共享数据",
     "path": "F:\\shared\\ft\\jiequn",
+    "purpose": "QUICK_ANALYSIS",
+    "data_domain_code": "JIEQUN_FT",
     "test_stage": "FT",
     "factory_code": "JIEQUN",
     "allowed_suffixes": [".csv"]
@@ -96,12 +99,14 @@ P0 使用 `TMS_SOURCE_ROOTS_JSON`：
 ]
 ```
 
+每个 `QUICK_ANALYSIS` Root 和 `FORMAL_IMPORT` Root 都必须显式绑定一个 `data_domain_code`。服务端在列举、浏览、Manifest 预览和创建 PAT/正式导入任务时都重新检查当前用户对该数据域的有效、未过期授权。未绑定或未授权的 Root 不会出现在列表中，直接探测编码也只返回不泄露存在性的 `SOURCE_ROOT_NOT_FOUND`。`business_domains` 是工程/量产分类，不能替代数据域授权。
+
 结果目录由 `TMS_QUICK_WORK_ROOT` 指定；默认保留时长由 `TMS_QUICK_RESULT_TTL_HOURS` 指定。账号、密码和 FTP 凭据不得放入该 JSON 或数据库结果中。
 
 ## 5. 扩展路径
 
 - 把 Source Catalog 的本地文件实现抽象为 Storage Adapter 后，可加入 SMB、FTP 和 SFTP，而 API 合同保持不变。
-- 增加 Local Agent 时，由 Agent 在本机执行已签名工具包；服务器接收结果、工具版本和签名 Manifest，不获得任意浏览本机目录的能力。
+- Local Agent 开发候选在本机执行 Cleaner Registry 登记并按 SHA-256 固定的工具包；服务器只接收结果、工具版本和自声明一致性回执，不获得任意浏览本机目录的能力。当前包不是已完成代码签名的生产包，回执也没有设备签名、服务端 nonce 或防重放；这些可信执行能力仍是生产开放门。
 - 临时交互分析使用单独的 Parquet/Arrow Workspace 与 TTL，不把临时明细混入 Canonical。
 
 ## 6. 明确不做

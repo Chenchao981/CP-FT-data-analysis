@@ -47,11 +47,17 @@ class _ScalarResult:
     def scalar_one_or_none(self):
         return self.scalar
 
+    def mappings(self):
+        return self
+
+    def one_or_none(self):
+        return self.scalar
+
 
 class _RegisterConnection:
-    def __init__(self) -> None:
+    def __init__(self, results=(101, None, 201, 301, None)) -> None:
         self.calls: list[tuple[str, dict | None]] = []
-        self.results = iter((101, None, 201, 301, None))
+        self.results = iter(results)
 
     def execute(self, statement, parameters=None):
         self.calls.append((str(statement), parameters))
@@ -141,3 +147,108 @@ def test_registration_does_not_claim_a_false_detected_factory_format(
     assert "WITH (UPDLOCK,HOLDLOCK)" in source_lookup_sql
     assert "NULL,NULL" in import_file_sql
     assert "HUAHONG_DCP" not in import_file_sql
+
+
+def test_catalog_registration_rechecks_grant_and_writes_domain_ownership(
+    tmp_path: Path,
+) -> None:
+    connection = _RegisterConnection(
+        (
+            {
+                "data_domain_id": 17,
+                "domain_code": "RIYUEXIN_FT",
+                "service_user_id": 900,
+            },
+            101,
+            None,
+            201,
+            301,
+            None,
+        )
+    )
+    service = SqlStageDataService(_Engine(connection))  # type: ignore[arg-type]
+    source = tmp_path / "sample.xlsx"
+    source.write_bytes(b"sample")
+    principal = Principal(
+        user_id=7,
+        login_name="operator",
+        display_name="操作员",
+        department_code=None,
+        roles=("OPERATOR",),
+        permissions=frozenset({"TASK_CREATE"}),
+    )
+    metadata = {
+        "purpose": "FORMAL_IMPORT",
+        "source_root_code": "RIYUEXIN_PRODUCTION",
+        "data_domain_code": "RIYUEXIN_FT",
+        "source_relative_path": "lot-a",
+        "source_manifest_mode": "PATH_SIZE_MTIME_V1",
+        "source_manifest_sha256": "b" * 64,
+        "source_file_count": 1,
+        "source_total_bytes": 6,
+    }
+
+    batch_id = service.register_upload(
+        principal,
+        "PRODUCTION",
+        "FT",
+        "riyuexin",
+        (StoredUpload("sample.xlsx", source, 6, "a" * 64, metadata),),
+        None,
+        data_domain_id=17,
+    )
+
+    assert batch_id == 101
+    binding_sql, binding_params = connection.calls[0]
+    assert "iam.data_domain_grant" in binding_sql
+    assert "g.expires_at_utc>SYSUTCDATETIME()" in binding_sql
+    assert "WITH (UPDLOCK,HOLDLOCK)" in binding_sql
+    assert "SYSTEM_INGESTION" in binding_sql
+    assert binding_params == {
+        "data_domain_id": 17,
+        "actor_user_id": 7,
+        "stage": "FT",
+        "factory": "RIYUEXIN",
+    }
+    batch_sql, batch_params = connection.calls[1]
+    assert ":access_scope,:data_domain_id,NULL" in batch_sql
+    assert batch_params is not None
+    assert batch_params["access_scope"] == "DOMAIN"
+    assert batch_params["data_domain_id"] == 17
+    assert batch_params["owner"] == 900
+
+
+def test_catalog_registration_fails_closed_when_grant_was_revoked(
+    tmp_path: Path,
+) -> None:
+    connection = _RegisterConnection((None,))
+    service = SqlStageDataService(_Engine(connection))  # type: ignore[arg-type]
+    source = tmp_path / "sample.xlsx"
+    source.write_bytes(b"sample")
+    principal = Principal(
+        user_id=7,
+        login_name="operator",
+        display_name="操作员",
+        department_code=None,
+        roles=("OPERATOR",),
+        permissions=frozenset({"TASK_CREATE"}),
+    )
+    metadata = {
+        "purpose": "FORMAL_IMPORT",
+        "source_root_code": "RIYUEXIN_PRODUCTION",
+        "data_domain_code": "RIYUEXIN_FT",
+    }
+
+    with pytest.raises(DomainError) as exc_info:
+        service.register_upload(
+            principal,
+            "PRODUCTION",
+            "FT",
+            "riyuexin",
+            (StoredUpload("sample.xlsx", source, 6, "a" * 64, metadata),),
+            None,
+            data_domain_id=17,
+        )
+
+    assert exc_info.value.code == "SOURCE_ROOT_NOT_FOUND"
+    assert len(connection.calls) == 1

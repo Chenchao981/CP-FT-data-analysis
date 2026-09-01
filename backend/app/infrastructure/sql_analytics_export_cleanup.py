@@ -12,6 +12,11 @@ from sqlalchemy import Engine, text
 from app.domain.saved_analyses import canonical_json
 from app.infrastructure.analytics_export_cleanup import AnalyticsExportFileCleaner
 from app.infrastructure.analytics_export_files import UnsafeAnalyticsExportPath
+from app.infrastructure.formal_artifact_files import (
+    FormalOrphanRootCleaner,
+    OversizedFormalOrphanRoot,
+    UnsafeFormalArtifactPath,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +28,17 @@ class AnalyticsExportCleanupResult:
     discovered_bytes: int
     discovered_file_count: int
     message: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AnalyticsExportOrphanCleanupResult:
+    export_job_id: int | None
+    cleanup_status: str
+    physical_status: str
+    discovered_bytes: int
+    discovered_file_count: int
+    discovered_entry_count: int
+    reason_code: str
 
 
 class SqlAnalyticsExportCleanupService:
@@ -351,3 +367,271 @@ class SqlAnalyticsExportCleanupService:
                 value = value.replace(tzinfo=UTC)
             return value.astimezone(UTC).isoformat()
         return json.loads(json.dumps(str(value)))
+
+
+class SqlAnalyticsExportOrphanCleanupService:
+    """Retry cleanup of unregistered roots left by terminal failed attempts."""
+
+    def __init__(self, engine: Engine, cleaner: FormalOrphanRootCleaner) -> None:
+        self._engine = engine
+        self._cleaner = cleaner
+
+    def run(
+        self,
+        *,
+        limit: int = 100,
+        dry_run: bool = True,
+        now: datetime | None = None,
+        retention: timedelta = timedelta(days=7),
+    ) -> tuple[AnalyticsExportOrphanCleanupResult, ...]:
+        if limit < 1 or limit > 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        if retention <= timedelta(0) or retention > timedelta(days=3650):
+            raise ValueError("retention must be between 0 and 3650 days")
+        observed_at = self._naive_utc(now or datetime.now(UTC))
+        cutoff = observed_at - retention
+        results: list[AnalyticsExportOrphanCleanupResult] = []
+        for export_job_id in self._candidate_ids(limit=limit, cutoff=cutoff):
+            state = self._job_state(export_job_id, lock=False)
+            reason = self._ineligible_reason(
+                state,
+                observed_at=observed_at,
+                cutoff=cutoff,
+            )
+            if reason is not None:
+                results.append(
+                    self._result(
+                        export_job_id,
+                        "INELIGIBLE",
+                        "RETAINED",
+                        reason,
+                    )
+                )
+                continue
+            if dry_run:
+                results.append(self._inspect(export_job_id))
+                continue
+            results.append(
+                self._delete_with_recheck(
+                    export_job_id,
+                    observed_at=observed_at,
+                    cutoff=cutoff,
+                )
+            )
+        return tuple(results)
+
+    def _candidate_ids(self, *, limit: int, cutoff: datetime) -> tuple[int, ...]:
+        with self._engine.connect() as connection:
+            rows = (
+                connection.execute(
+                    text(
+                        "SELECT TOP (:limit) j.export_job_id "
+                        "FROM delivery.export_job j WHERE "
+                        "j.contract_version='ANALYTICS_EXPORT_V1' "
+                        "AND j.status IN('FAILED','CANCELLED') "
+                        "AND j.finished_at_utc<=:cutoff "
+                        "AND (j.lease_token IS NULL OR "
+                        "j.lease_expires_at_utc<=SYSUTCDATETIME()) "
+                        "AND NOT EXISTS(SELECT 1 FROM delivery.export_artifact a "
+                        "WHERE a.export_job_id=j.export_job_id) "
+                        "ORDER BY j.finished_at_utc,j.export_job_id"
+                    ),
+                    {"limit": limit, "cutoff": cutoff},
+                )
+                .mappings()
+                .all()
+            )
+        return tuple(int(row["export_job_id"]) for row in rows)
+
+    def _delete_with_recheck(
+        self,
+        export_job_id: int,
+        *,
+        observed_at: datetime,
+        cutoff: datetime,
+    ) -> AnalyticsExportOrphanCleanupResult:
+        with self._engine.begin() as connection:
+            state = self._job_state(
+                export_job_id,
+                lock=True,
+                connection=connection,
+            )
+            reason = self._ineligible_reason(
+                state,
+                observed_at=observed_at,
+                cutoff=cutoff,
+            )
+            if reason is not None:
+                return self._result(
+                    export_job_id,
+                    "INELIGIBLE",
+                    "RETAINED",
+                    f"STATE_CHANGED_{reason}",
+                )
+            try:
+                outcome = self._cleaner.cleanup_job(export_job_id, dry_run=False)
+            except OversizedFormalOrphanRoot:
+                return self._result(
+                    export_job_id,
+                    "BLOCKED",
+                    "BLOCKED",
+                    "ORPHAN_ROOT_OVERSIZED",
+                )
+            except UnsafeFormalArtifactPath:
+                return self._result(
+                    export_job_id,
+                    "BLOCKED",
+                    "BLOCKED",
+                    "ORPHAN_ROOT_PATH_UNSAFE",
+                )
+            except OSError:
+                return self._result(
+                    export_job_id,
+                    "ERROR",
+                    "ERROR",
+                    "ORPHAN_ROOT_IO_ERROR",
+                )
+            return self._result(
+                export_job_id,
+                (
+                    "MISSING"
+                    if outcome.physical_status == "MISSING"
+                    else "DELETED"
+                ),
+                outcome.physical_status,
+                (
+                    "ORPHAN_ROOT_MISSING"
+                    if outcome.physical_status == "MISSING"
+                    else "ORPHAN_ROOT_DELETED"
+                ),
+                discovered_bytes=outcome.discovered_bytes,
+                discovered_files=outcome.discovered_file_count,
+                discovered_entries=outcome.discovered_entry_count,
+            )
+
+    def _inspect(self, export_job_id: int) -> AnalyticsExportOrphanCleanupResult:
+        try:
+            outcome = self._cleaner.cleanup_job(export_job_id, dry_run=True)
+        except OversizedFormalOrphanRoot:
+            return self._result(
+                export_job_id,
+                "BLOCKED",
+                "BLOCKED",
+                "ORPHAN_ROOT_OVERSIZED",
+            )
+        except UnsafeFormalArtifactPath:
+            return self._result(
+                export_job_id,
+                "BLOCKED",
+                "BLOCKED",
+                "ORPHAN_ROOT_PATH_UNSAFE",
+            )
+        except OSError:
+            return self._result(
+                export_job_id,
+                "ERROR",
+                "ERROR",
+                "ORPHAN_ROOT_IO_ERROR",
+            )
+        return self._result(
+            export_job_id,
+            "MISSING" if outcome.physical_status == "MISSING" else "DRY_RUN",
+            outcome.physical_status,
+            (
+                "ORPHAN_ROOT_MISSING"
+                if outcome.physical_status == "MISSING"
+                else "ELIGIBLE_ORPHAN_ROOT"
+            ),
+            discovered_bytes=outcome.discovered_bytes,
+            discovered_files=outcome.discovered_file_count,
+            discovered_entries=outcome.discovered_entry_count,
+        )
+
+    def _job_state(
+        self,
+        export_job_id: int,
+        *,
+        lock: bool,
+        connection=None,
+    ) -> Mapping[str, Any] | None:
+        hint = " WITH (UPDLOCK,HOLDLOCK)" if lock else ""
+        statement = text(
+            "SELECT j.export_job_id,j.contract_version,j.status,j.finished_at_utc,"
+            "j.lease_token,j.lease_owner,j.lease_expires_at_utc,"
+            "(SELECT COUNT_BIG(*) FROM delivery.export_artifact a"
+            + hint
+            + " WHERE a.export_job_id=j.export_job_id) AS artifact_count "
+            "FROM delivery.export_job j"
+            + hint
+            + " WHERE j.export_job_id=:export_job_id"
+        )
+        parameters = {"export_job_id": export_job_id}
+        if connection is not None:
+            return (
+                connection.execute(statement, parameters)
+                .mappings()
+                .one_or_none()
+            )
+        with self._engine.connect() as opened:
+            return (
+                opened.execute(statement, parameters)
+                .mappings()
+                .one_or_none()
+            )
+
+    def _ineligible_reason(
+        self,
+        state: Mapping[str, Any] | None,
+        *,
+        observed_at: datetime,
+        cutoff: datetime,
+    ) -> str | None:
+        if state is None:
+            return "JOB_NOT_FOUND"
+        if str(state["contract_version"]) != "ANALYTICS_EXPORT_V1":
+            return "JOB_CONTRACT_NOT_ANALYTICS_EXPORT"
+        if str(state["status"]) not in {"FAILED", "CANCELLED"}:
+            return "JOB_NOT_FAILED_OR_CANCELLED"
+        finished = state["finished_at_utc"]
+        if finished is None:
+            return "JOB_FINISH_TIME_MISSING"
+        if self._naive_utc(finished) > cutoff:
+            return "ORPHAN_RETENTION_ACTIVE"
+        lease_present = state["lease_token"] is not None or bool(
+            str(state["lease_owner"] or "").strip()
+        )
+        lease_expires = state["lease_expires_at_utc"]
+        if lease_present and (
+            lease_expires is None or self._naive_utc(lease_expires) > observed_at
+        ):
+            return "JOB_LEASE_ACTIVE"
+        if int(state["artifact_count"]) != 0:
+            return "REGISTERED_ARTIFACT_PRESENT"
+        return None
+
+    @staticmethod
+    def _result(
+        export_job_id: int | None,
+        cleanup_status: str,
+        physical_status: str,
+        reason_code: str,
+        *,
+        discovered_bytes: int = 0,
+        discovered_files: int = 0,
+        discovered_entries: int = 0,
+    ) -> AnalyticsExportOrphanCleanupResult:
+        return AnalyticsExportOrphanCleanupResult(
+            export_job_id,
+            cleanup_status,
+            physical_status,
+            discovered_bytes,
+            discovered_files,
+            discovered_entries,
+            reason_code,
+        )
+
+    @staticmethod
+    def _naive_utc(value: datetime) -> datetime:
+        if value.tzinfo is None:
+            return value
+        return value.astimezone(UTC).replace(tzinfo=None)

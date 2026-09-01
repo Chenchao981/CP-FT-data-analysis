@@ -12,11 +12,11 @@ def _read(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8-sig")
 
 
-def test_analytics_performance_index_migration_is_the_single_head() -> None:
+def test_personal_domain_access_migration_is_the_single_head() -> None:
     config = Config(str(ROOT / "db" / "alembic" / "alembic.ini"))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == ["sql2014_0023"]
+    assert script.get_heads() == ["sql2014_0024"]
     revision = script.get_revision("sql2014_0023")
     assert revision is not None
     assert revision.down_revision == "sql2014_0022"

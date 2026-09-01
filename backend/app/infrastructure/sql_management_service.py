@@ -18,9 +18,25 @@ from app.domain.management import (
     QualityTrendPoint,
 )
 from app.infrastructure.sql_visibility import (
-    batch_read_scope_sql,
-    current_dataset_read_scope_sql,
-    visibility_parameters,
+    domain_grant_exists_sql,
+)
+
+_DATASET_DASHBOARD_SCOPE_SQL = (
+    "((:access_scope='PERSONAL' AND d.access_scope='PERSONAL' "
+    "AND d.owner_user_id=:user_id) OR "
+    "(:access_scope='DOMAIN' AND d.access_scope='DOMAIN' "
+    "AND d.data_domain_id=:data_domain_id AND "
+    + domain_grant_exists_sql(data_domain_column="d.data_domain_id")
+    + "))"
+)
+
+_BATCH_DASHBOARD_SCOPE_SQL = (
+    "((:access_scope='PERSONAL' AND b.access_scope='PERSONAL' "
+    "AND b.owner_user_id=:user_id) OR "
+    "(:access_scope='DOMAIN' AND b.access_scope='DOMAIN' "
+    "AND b.data_domain_id=:data_domain_id AND "
+    + domain_grant_exists_sql(data_domain_column="b.data_domain_id")
+    + "))"
 )
 
 _CURRENT_SCOPE_CTE = f"""
@@ -48,7 +64,7 @@ WITH current_scope AS (
         ORDER BY fe.enrichment_id DESC
     ) product_enrichment
     WHERE dv.status='PUBLISHED' AND dv.is_current=1
-      AND {current_dataset_read_scope_sql(dataset_alias="d", version_alias="dv", batch_alias="b")}
+      AND {_DATASET_DASHBOARD_SCOPE_SQL}
       AND dv.published_at_utc>=:from_utc AND dv.published_at_utc<:to_utc
       {{filters}}
 ), scoped_units AS (
@@ -118,6 +134,8 @@ class SqlManagementService:
         principal: Principal,
         from_utc: datetime,
         to_utc: datetime,
+        access_scope: str,
+        data_domain_id: int | None = None,
         business_domain: str | None = None,
         test_stage: str | None = None,
         factory_code: str | None = None,
@@ -125,6 +143,24 @@ class SqlManagementService:
         lot_id: str | None = None,
         recent_limit: int = 20,
     ) -> QualityManagementSummary:
+        if access_scope not in {"PERSONAL", "DOMAIN"}:
+            raise DomainError(
+                "QUALITY_ACCESS_SCOPE_INVALID",
+                "质量汇总访问范围无效",
+                422,
+            )
+        if access_scope == "DOMAIN" and data_domain_id is None:
+            raise DomainError(
+                "QUALITY_DATA_DOMAIN_REQUIRED",
+                "查看数据域统计时必须指定 data_domain_id",
+                422,
+            )
+        if access_scope == "PERSONAL" and data_domain_id is not None:
+            raise DomainError(
+                "QUALITY_DATA_DOMAIN_NOT_ALLOWED",
+                "查看我的数据时不能指定 data_domain_id",
+                422,
+            )
         if recent_limit < 1 or recent_limit > 100:
             raise DomainError(
                 "QUALITY_RECENT_LIMIT_INVALID",
@@ -143,12 +179,24 @@ class SqlManagementService:
                 "from_utc": _naive_utc(from_utc),
                 "to_utc": _naive_utc(to_utc),
                 "recent_limit": recent_limit,
+                "access_scope": access_scope,
+                "data_domain_id": data_domain_id,
+                "user_id": principal.user_id,
             }
-            | visibility_parameters(principal)
         )
         cte = _CURRENT_SCOPE_CTE.format(filters=filters)
         try:
             with self._engine.connect() as connection:
+                if access_scope == "DOMAIN" and not self._has_active_domain_grant(
+                    connection,
+                    user_id=principal.user_id,
+                    data_domain_id=int(data_domain_id or 0),
+                ):
+                    raise DomainError(
+                        "QUALITY_DATA_DOMAIN_ACCESS_DENIED",
+                        "数据域不存在、已停用或当前授权已失效",
+                        403,
+                    )
                 observed = connection.execute(
                     text("SELECT CAST(SYSUTCDATETIME() AS datetime2(3))")
                 ).scalar_one()
@@ -184,6 +232,8 @@ class SqlManagementService:
             from_utc=_iso_utc(_naive_utc(from_utc)) or "",
             to_utc=_iso_utc(_naive_utc(to_utc)) or "",
             filters={
+                "access_scope": access_scope,
+                "data_domain_id": data_domain_id,
                 "business_domain": business_domain,
                 "test_stage": test_stage,
                 "factory_code": factory_code,
@@ -198,12 +248,33 @@ class SqlManagementService:
                 "time_range": "from_utc is inclusive and to_utc is exclusive, based on Dataset published_at_utc.",
                 "trend_period": "Trend periods are Asia/Shanghai business dates; period_start_utc is the UTC instant of Shanghai local midnight.",
                 "failed_job_scope": "Failed Job counts use time, business domain, test stage, and factory filters only; Product and Lot filters do not apply.",
+                "access_scope": "PERSONAL is always owner-only; DOMAIN requires an active, unexpired grant. Dashboard queries never use break-glass access.",
             },
             kpis=kpis,
             trends=trends,
             breakdowns=breakdowns,
             fail_bins=fail_bins,
             recent_datasets=recent_datasets,
+        )
+
+    @staticmethod
+    def _has_active_domain_grant(
+        connection: Any, *, user_id: int, data_domain_id: int
+    ) -> bool:
+        return bool(
+            connection.execute(
+                text(
+                    "SELECT CASE WHEN EXISTS(SELECT 1 FROM iam.data_domain d "
+                    "JOIN iam.data_domain_grant g "
+                    "ON g.data_domain_id=d.data_domain_id "
+                    "WHERE d.data_domain_id=:data_domain_id AND d.active=1 "
+                    "AND g.user_id=:user_id AND g.status='ACTIVE' "
+                    "AND (g.expires_at_utc IS NULL "
+                    "OR g.expires_at_utc>SYSUTCDATETIME())) "
+                    "THEN 1 ELSE 0 END"
+                ),
+                {"user_id": user_id, "data_domain_id": data_domain_id},
+            ).scalar_one()
         )
 
 
@@ -642,7 +713,7 @@ JOIN ingestion.import_batch b ON b.import_batch_id=j.import_batch_id
 WHERE j.status='FAILED' AND COALESCE(j.finished_at_utc,j.requested_at_utc)>=:from_utc
   AND COALESCE(j.finished_at_utc,j.requested_at_utc)<:to_utc
   AND """
-    + batch_read_scope_sql(batch_alias="b")
+    + _BATCH_DASHBOARD_SCOPE_SQL
     + """
   {filters};
 """

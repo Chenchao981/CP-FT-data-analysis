@@ -35,7 +35,10 @@ from app.domain.analytics_export_worker import (
     RenderedAnalyticsExport,
 )
 from app.domain.saved_analyses import canonical_json
-from app.infrastructure.analytics_export_files import AnalyticsExportPathPolicy
+from app.infrastructure.analytics_export_files import (
+    AnalyticsExportPathPolicy,
+    UnsafeAnalyticsExportPath,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -117,10 +120,7 @@ class AnalyticsExportRenderer:
             )
         self._require_format_dependency(format_name)
         extension, mime_type = contract
-        file_name = (
-            f"analytics-export-{work_item.export_job_id}-"
-            f"attempt-{work_item.attempt_count}.{extension}"
-        )
+        file_name = self._attempt_file_name(work_item, extension)
         self._path_policy.prepare_job_root(work_item.export_job_id)
         try:
             table = self._content_source.table(work_item)
@@ -182,6 +182,24 @@ class AnalyticsExportRenderer:
         """Discard only this fenced attempt's unregistered output."""
 
         self._path_policy.remove_artifact(work_item.export_job_id, artifact.path)
+
+    def discard_attempt(self, work_item: AnalyticsExportWorkItem) -> None:
+        """Remove only this fenced attempt's deterministic output path."""
+
+        contract = _FORMAT_CONTRACT.get(work_item.export_format.value)
+        if contract is None:
+            raise UnsafeAnalyticsExportPath("analytics export format is unsupported")
+        file_name = self._attempt_file_name(work_item, contract[0])
+        self._path_policy.remove_attempt_files(work_item.export_job_id, file_name)
+
+    @staticmethod
+    def _attempt_file_name(
+        work_item: AnalyticsExportWorkItem, extension: str
+    ) -> str:
+        return (
+            f"analytics-export-{work_item.export_job_id}-"
+            f"attempt-{work_item.attempt_count}.{extension}"
+        )
 
     @staticmethod
     def _require_format_dependency(format_name: str) -> None:

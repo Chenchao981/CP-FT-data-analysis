@@ -316,7 +316,8 @@ describe("DatasetCurrentCatalog", () => {
     expect(within(dataRow).queryByRole("button", { name: /导出最新/ })).not.toBeInTheDocument();
     expect(within(dataRow).queryByRole("button", { name: /显式重处理/ })).not.toBeInTheDocument();
     expect(within(dataRow).getByRole("button", { name: /逻辑归档/ })).toBeInTheDocument();
-    expect(document.body).toHaveTextContent("是否为 Dataset Owner 由后端行级授权最终判定");
+    expect(document.body).toHaveTextContent("仅 PERSONAL Dataset Owner 可执行");
+    expect(document.body).toHaveTextContent("SYSTEM_ADMIN 不因管理身份获得数据操作权");
     expect(document.body).toHaveTextContent("不删除 FTP/NAS 原始文件");
   }, 15_000);
 
@@ -342,7 +343,8 @@ describe("DatasetCurrentCatalog", () => {
     expect(within(dataRow).queryByRole("button", { name: /导出最新/ })).not.toBeInTheDocument();
     expect(within(dataRow).queryByRole("button", { name: /显式重处理/ })).not.toBeInTheDocument();
     expect(within(dataRow).getByRole("button", { name: /分析$/ })).toBeInTheDocument();
-    expect(document.body).toHaveTextContent("量产 Current 可供全员查询和分析");
+    expect(document.body).toHaveTextContent("DOMAIN 仅当前有效数据域授权用户可见");
+    expect(document.body).toHaveTextContent("ENGINEERING / PRODUCTION 只是业务分类");
   });
 
   it("uses each backend row capability only for its matching action", async () => {

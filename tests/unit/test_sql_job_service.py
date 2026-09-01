@@ -189,15 +189,33 @@ class _SqlResult:
 
 
 class _AtomicInitialImportConnection:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        batch_row: dict[str, Any] | None = None,
+        active_domain_grant: bool = True,
+    ) -> None:
         self.statements: list[tuple[str, dict[str, Any]]] = []
+        self.batch_row = batch_row or {
+            "status": "PROCESSED",
+            "owner_user_id": 1,
+            "access_scope": "PERSONAL",
+            "data_domain_id": None,
+            "source_channel": "WEB",
+            "uploaded_by": "user-1",
+        }
+        self.active_domain_grant = active_domain_grant
 
     def execute(self, statement, parameters=None):
         sql = str(statement)
         parameters = parameters or {}
         self.statements.append((sql, parameters))
         if "SELECT status,owner_user_id" in sql:
-            return _SqlResult(rows=[{"status": "PROCESSED", "owner_user_id": 1}])
+            return _SqlResult(rows=[self.batch_row])
+        if "SELECT TOP (1) 1 FROM iam.data_domain_grant g" in sql:
+            return _SqlResult(rows=[{"allowed": 1}] if self.active_domain_grant else [])
+        if "SELECT 1 FROM ingestion.import_batch b" in sql:
+            return _SqlResult(rows=[{"allowed": 1}] if self.active_domain_grant else [])
         if "UPDATE ingestion.import_batch SET status='QUEUED'" in sql:
             return _SqlResult(rowcount=1)
         if "WHERE idempotency_key=:key" in sql:
@@ -276,6 +294,126 @@ def test_initial_import_job_and_batch_queue_are_written_in_one_transaction() -> 
     assert "status='QUEUED'" in statements[1]
     assert "INSERT ingestion.processing_job" in statements[-1]
     assert connection.statements[-1][1]["finalize_protocol"] == "ATOMIC_V1"
+
+
+def test_catalog_submitter_with_active_domain_grant_can_queue_received_batch() -> None:
+    principal = _principal(7)
+    request = CreateJobRequest(
+        import_batch_id=17,
+        cleaner_release_id=2,
+        job_type=JobType.INITIAL_IMPORT,
+        trigger_type=TriggerType.AUTO,
+        requested_by="untrusted",
+        requested_by_user_id=999,
+        reason="catalog import",
+        idempotency_key="initial-import:17",
+    )
+    connection = _AtomicInitialImportConnection(
+        batch_row={
+            "status": "RECEIVED",
+            "owner_user_id": 900,
+            "access_scope": "DOMAIN",
+            "data_domain_id": 23,
+            "source_channel": "SOURCE_CATALOG",
+            "uploaded_by": principal.login_name,
+        }
+    )
+    service = SqlJobService(_AtomicEngine(connection))  # type: ignore[arg-type]
+
+    job = service.create_initial_import_for_batch(
+        request,
+        principal,
+        allowed_batch_statuses=("RECEIVED",),
+    )
+
+    assert job.job_id == 91
+    grant_sql, grant_parameters = connection.statements[1]
+    assert "iam.data_domain_grant" in grant_sql
+    assert "WITH (UPDLOCK,HOLDLOCK)" in grant_sql
+    assert "JOIN iam.data_domain d WITH (UPDLOCK,HOLDLOCK)" in grant_sql
+    assert "d.active=1" in grant_sql
+    assert "JOIN iam.app_user u WITH (UPDLOCK,HOLDLOCK)" in grant_sql
+    assert "u.status='ACTIVE'" in grant_sql
+    assert "g.expires_at_utc>SYSUTCDATETIME()" in grant_sql
+    assert grant_parameters == {"user_id": 7, "data_domain_id": 23}
+    assert "status='QUEUED'" in connection.statements[2][0]
+
+
+def test_catalog_submitter_cannot_queue_after_domain_grant_revocation() -> None:
+    principal = _principal(7)
+    request = CreateJobRequest(
+        import_batch_id=17,
+        cleaner_release_id=2,
+        job_type=JobType.INITIAL_IMPORT,
+        trigger_type=TriggerType.AUTO,
+        requested_by="untrusted",
+        requested_by_user_id=999,
+        reason="catalog import",
+        idempotency_key="initial-import:17",
+    )
+    connection = _AtomicInitialImportConnection(
+        batch_row={
+            "status": "RECEIVED",
+            "owner_user_id": 900,
+            "access_scope": "DOMAIN",
+            "data_domain_id": 23,
+            "source_channel": "SOURCE_CATALOG",
+            "uploaded_by": principal.login_name,
+        },
+        active_domain_grant=False,
+    )
+    service = SqlJobService(_AtomicEngine(connection))  # type: ignore[arg-type]
+
+    with pytest.raises(DomainError) as error:
+        service.create_initial_import_for_batch(
+            request,
+            principal,
+            allowed_batch_statuses=("RECEIVED",),
+        )
+
+    assert error.value.code == "BATCH_NOT_FOUND"
+    assert all("status='QUEUED'" not in sql for sql, _ in connection.statements)
+
+
+def test_system_admin_cannot_queue_another_users_personal_batch() -> None:
+    principal = Principal(
+        1,
+        "admin",
+        "Admin",
+        ("SYSTEM_ADMIN",),
+        frozenset({"TASK_CREATE"}),
+    )
+    request = CreateJobRequest(
+        import_batch_id=17,
+        cleaner_release_id=2,
+        job_type=JobType.INITIAL_IMPORT,
+        trigger_type=TriggerType.MANUAL,
+        requested_by=principal.login_name,
+        requested_by_user_id=principal.user_id,
+        reason="cross-owner attempt",
+        idempotency_key="initial-import:17:cross-owner",
+    )
+    connection = _AtomicInitialImportConnection(
+        batch_row={
+            "status": "PROCESSED",
+            "owner_user_id": 2,
+            "access_scope": "PERSONAL",
+            "data_domain_id": None,
+            "source_channel": "WEB",
+            "uploaded_by": "user-2",
+        }
+    )
+    service = SqlJobService(_AtomicEngine(connection))  # type: ignore[arg-type]
+
+    with pytest.raises(DomainError) as error:
+        service.create_initial_import_for_batch(
+            request,
+            principal,
+            allowed_batch_statuses=("PROCESSED", "FAILED"),
+        )
+
+    assert error.value.code == "BATCH_NOT_FOUND"
+    assert all("status='QUEUED'" not in sql for sql, _ in connection.statements)
 
 
 class _BatchFailureConnection:
@@ -392,7 +530,21 @@ class _JobAccessEngine:
         yield self.connection
 
 
-def test_non_owner_can_read_redacted_production_job() -> None:
+class _QuickCreateDeniedEngine:
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    @contextmanager
+    def begin(self):
+        yield self
+
+    def execute(self, statement, parameters=None):
+        del parameters
+        self.statements.append(str(statement))
+        return _SqlResult()
+
+
+def test_domain_member_can_read_redacted_domain_job() -> None:
     connection = _JobAccessConnection(business_domain="PRODUCTION")
     service = SqlJobService(_JobAccessEngine(connection))  # type: ignore[arg-type]
 
@@ -408,10 +560,12 @@ def test_non_owner_can_read_redacted_production_job() -> None:
     assert job.idempotency_key is None
     assert job.lease_token is None
     assert job.lease_owner is None
-    assert "b.business_domain='PRODUCTION'" in connection.statements[0]
+    assert "b.access_scope='DOMAIN'" in connection.statements[0]
+    assert "iam.data_domain_grant" in connection.statements[0]
+    assert "business_domain='PRODUCTION'" not in connection.statements[0]
 
 
-def test_non_owner_cannot_read_engineering_job() -> None:
+def test_non_member_cannot_read_domain_job() -> None:
     service = SqlJobService(  # type: ignore[arg-type]
         _JobAccessEngine(_JobAccessConnection(business_domain="ENGINEERING"))
     )
@@ -434,7 +588,120 @@ def test_non_owner_production_reader_cannot_transition_job() -> None:
         )
 
     assert error.value.code == "JOB_NOT_FOUND"
-    assert "b.business_domain='PRODUCTION'" not in connection.statements[0]
+    assert "b.access_scope='PERSONAL'" in connection.statements[0]
+    assert "access_grant.data_domain_id=ws.data_domain_id" in connection.statements[0]
+
+
+def test_system_admin_cannot_create_quick_job_without_session_access() -> None:
+    engine = _QuickCreateDeniedEngine()
+    service = SqlJobService(engine)  # type: ignore[arg-type]
+    admin = Principal(
+        99,
+        "admin",
+        "Admin",
+        ("SYSTEM_ADMIN",),
+        frozenset({"SYSTEM_OPERATE"}),
+    )
+    request = CreateJobRequest(
+        analysis_session_id=77,
+        cleaner_release_id=2,
+        job_type=JobType.QUICK_PAT,
+        trigger_type=TriggerType.MANUAL,
+        requested_by=admin.login_name,
+        requested_by_user_id=admin.user_id,
+        reason="must not bypass Quick ACL",
+    )
+
+    with pytest.raises(DomainError) as error:
+        service.create_for_principal(request, admin)
+
+    assert error.value.code == "JOB_INPUT_NOT_FOUND"
+    assert len(engine.statements) == 1
+    assert (
+        "workspace.analysis_session ws WITH (UPDLOCK,HOLDLOCK)" in engine.statements[0]
+    )
+    assert "ws.owner_user_id=:user_id" in engine.statements[0]
+    assert "access_grant WITH (UPDLOCK,HOLDLOCK)" in engine.statements[0]
+    assert "access_domain WITH (UPDLOCK,HOLDLOCK)" in engine.statements[0]
+    assert "access_grant.status='ACTIVE'" in engine.statements[0]
+    assert "expires_at_utc>SYSUTCDATETIME()" in engine.statements[0]
+
+
+def test_system_admin_cannot_create_job_for_another_users_personal_batch() -> None:
+    engine = _QuickCreateDeniedEngine()
+    service = SqlJobService(engine)  # type: ignore[arg-type]
+    admin = Principal(
+        99,
+        "admin",
+        "Admin",
+        ("SYSTEM_ADMIN",),
+        frozenset({"TASK_CREATE", "SYSTEM_OPERATE"}),
+    )
+    request = CreateJobRequest(
+        import_batch_id=77,
+        cleaner_release_id=2,
+        job_type=JobType.REPROCESS,
+        trigger_type=TriggerType.MANUAL,
+        requested_by=admin.login_name,
+        requested_by_user_id=admin.user_id,
+        reason="must not bypass PERSONAL ACL",
+    )
+
+    with pytest.raises(DomainError) as error:
+        service.create_for_principal(request, admin)
+
+    assert error.value.code == "JOB_INPUT_NOT_FOUND"
+    assert len(engine.statements) == 1
+    assert "b.access_scope='PERSONAL'" in engine.statements[0]
+    assert "b.owner_user_id=:user_id" in engine.statements[0]
+    assert "access_grant.status='ACTIVE'" in engine.statements[0]
+    assert "access_domain.active=1" in engine.statements[0]
+    assert "job_requester.status='ACTIVE'" in engine.statements[0]
+
+
+def test_domain_member_job_creation_locks_current_authorization() -> None:
+    principal = _principal(7)
+    request = CreateJobRequest(
+        import_batch_id=17,
+        cleaner_release_id=2,
+        job_type=JobType.REPROCESS,
+        trigger_type=TriggerType.MANUAL,
+        requested_by=principal.login_name,
+        requested_by_user_id=principal.user_id,
+        reason="domain analysis",
+    )
+    connection = _AtomicInitialImportConnection(active_domain_grant=True)
+    service = SqlJobService(_AtomicEngine(connection))  # type: ignore[arg-type]
+
+    job = service.create_for_principal(request, principal)
+
+    assert job.job_id == 91
+    authorization_sql = connection.statements[0][0]
+    assert "job_requester.status='ACTIVE'" in authorization_sql
+    assert "access_grant WITH (UPDLOCK,HOLDLOCK)" in authorization_sql
+    assert "access_domain WITH (UPDLOCK,HOLDLOCK)" in authorization_sql
+    assert "access_grant.expires_at_utc>SYSUTCDATETIME()" in authorization_sql
+
+
+def test_domain_member_job_creation_rejects_revoked_authorization() -> None:
+    principal = _principal(7)
+    request = CreateJobRequest(
+        import_batch_id=17,
+        cleaner_release_id=2,
+        job_type=JobType.REPROCESS,
+        trigger_type=TriggerType.MANUAL,
+        requested_by=principal.login_name,
+        requested_by_user_id=principal.user_id,
+        reason="revoked domain analysis",
+    )
+    connection = _AtomicInitialImportConnection(active_domain_grant=False)
+    service = SqlJobService(_AtomicEngine(connection))  # type: ignore[arg-type]
+
+    with pytest.raises(DomainError) as error:
+        service.create_for_principal(request, principal)
+
+    assert error.value.code == "JOB_INPUT_NOT_FOUND"
+    assert all("INSERT ingestion.processing_job" not in sql for sql, _ in connection.statements)
 
 
 def _staged_intent_row() -> dict[str, Any]:
@@ -521,8 +788,21 @@ class _AtomicFinalizeConnection:
                 )
             }
             return _SqlResult(rows=[simple_intent])
-        if sql.startswith("SELECT status,owner_user_id"):
-            return _SqlResult(rows=[{"status": "PROCESSING", "owner_user_id": 1}])
+        if sql.startswith("SELECT b.status,b.owner_user_id,b.access_scope"):
+            return _SqlResult(
+                rows=[
+                    {
+                        "status": "PROCESSING",
+                        "owner_user_id": 1,
+                        "access_scope": "PERSONAL",
+                        "data_domain_id": None,
+                        "source_definition_id": None,
+                        "dataset_access_scope": "PERSONAL",
+                        "dataset_data_domain_id": None,
+                        "dataset_source_definition_id": None,
+                    }
+                ]
+            )
         if sql.startswith("SELECT (SELECT COUNT(*)"):
             return _SqlResult(rows=[self.links])
         if sql.startswith("SELECT dataset_version_id FROM dataset.dataset_version"):
@@ -711,7 +991,8 @@ def test_finalize_initial_import_publishes_complete_lineage_atomically() -> None
         for sql in statements
     )
     assert any(
-        "FROM ingestion.import_batch WITH (UPDLOCK,HOLDLOCK)" in sql
+        "FROM ingestion.import_batch b WITH (UPDLOCK,HOLDLOCK)" in sql
+        and "JOIN dataset.dataset d ON d.dataset_id=:dataset" in sql
         for sql in statements
     )
     lineage_sql, lineage_parameters = next(

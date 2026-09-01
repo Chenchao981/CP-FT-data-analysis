@@ -41,12 +41,32 @@ class SqlStageDataService:
         factory_code: str,
         files: Sequence[StoredUpload],
         remark: str | None,
+        *,
+        data_domain_id: int | None = None,
     ) -> int:
         stage_label = test_stage.upper()
         catalog_metadata = [
             item.source_metadata for item in files if item.source_metadata is not None
         ]
         source_channel = "SOURCE_CATALOG" if catalog_metadata else "WEB"
+        if catalog_metadata and len(catalog_metadata) != len(files):
+            raise DomainError(
+                "FORMAL_SOURCE_BINDING_INVALID",
+                "受控数据源快照的归属信息不完整",
+                409,
+            )
+        if catalog_metadata and data_domain_id is None:
+            raise DomainError(
+                "FORMAL_SOURCE_BINDING_REQUIRED",
+                "受控数据源正式入库必须绑定数据域",
+                409,
+            )
+        if not catalog_metadata and data_domain_id is not None:
+            raise DomainError(
+                "PERSONAL_UPLOAD_DOMAIN_FORBIDDEN",
+                "个人上传不能指定数据域",
+                409,
+            )
         batch_metadata: dict[str, object] = {"uploader_user_id": principal.user_id}
         if catalog_metadata:
             first = catalog_metadata[0]
@@ -54,6 +74,7 @@ class SqlStageDataService:
                 key: first[key]
                 for key in (
                     "source_root_code",
+                    "data_domain_code",
                     "source_relative_path",
                     "source_manifest_mode",
                     "source_manifest_sha256",
@@ -68,22 +89,79 @@ class SqlStageDataService:
             else f"{stage_label}上传（{len(files)}个文件）"
         )
         with self._engine.begin() as connection:
+            owner_user_id = principal.user_id
+            access_scope = "PERSONAL"
+            trusted_data_domain_id: int | None = None
+            if catalog_metadata:
+                metadata_domain_codes = {
+                    str(item.get("data_domain_code") or "").strip().upper()
+                    for item in catalog_metadata
+                }
+                if len(metadata_domain_codes) != 1 or "" in metadata_domain_codes:
+                    raise DomainError(
+                        "FORMAL_SOURCE_BINDING_INVALID",
+                        "受控数据源快照的数据域归属不一致",
+                        409,
+                    )
+                binding = (
+                    connection.execute(
+                        text(
+                            "SELECT d.data_domain_id,d.domain_code,system_user.user_id "
+                            "AS service_user_id FROM iam.data_domain_grant g "
+                            "WITH (UPDLOCK,HOLDLOCK) JOIN iam.data_domain d WITH (HOLDLOCK) "
+                            "ON d.data_domain_id=g.data_domain_id CROSS JOIN iam.app_user "
+                            "system_user WHERE d.data_domain_id=:data_domain_id "
+                            "AND d.active=1 AND d.domain_code<>N'MIGRATION_HOLD' "
+                            "AND d.test_stage=:stage AND (d.factory_code IS NULL OR "
+                            "d.factory_code=:factory) AND g.user_id=:actor_user_id "
+                            "AND g.status='ACTIVE' AND (g.expires_at_utc IS NULL OR "
+                            "g.expires_at_utc>SYSUTCDATETIME()) AND "
+                            "system_user.login_name=N'SYSTEM_INGESTION' AND "
+                            "system_user.identity_provider='OIDC' AND "
+                            "system_user.external_subject=N'internal:tms:system-ingestion' "
+                            "AND system_user.status='DISABLED' AND NOT EXISTS("
+                            "SELECT 1 FROM iam.user_role system_role "
+                            "WHERE system_role.user_id=system_user.user_id)"
+                        ),
+                        {
+                            "data_domain_id": int(data_domain_id or 0),
+                            "actor_user_id": principal.user_id,
+                            "stage": stage_label,
+                            "factory": factory_code.strip().upper(),
+                        },
+                    )
+                    .mappings()
+                    .one_or_none()
+                )
+                if binding is None or str(binding["domain_code"]).strip().upper() not in (
+                    metadata_domain_codes
+                ):
+                    raise DomainError(
+                        "SOURCE_ROOT_NOT_FOUND",
+                        "数据源不存在或当前账户无权访问",
+                        404,
+                    )
+                owner_user_id = int(binding["service_user_id"])
+                access_scope = "DOMAIN"
+                trusted_data_domain_id = int(binding["data_domain_id"])
             batch_id = int(
                 connection.execute(
                     text(
-                        "INSERT ingestion.import_batch(source_channel,uploaded_by,status,metadata_json,owner_user_id,business_domain,test_stage,factory_code,batch_name,remark) "
-                        "OUTPUT INSERTED.import_batch_id VALUES(:source_channel,:login,'RECEIVED',:metadata,:owner,:domain,:stage,:factory,:name,:remark)"
+                        "INSERT ingestion.import_batch(source_channel,uploaded_by,status,metadata_json,owner_user_id,business_domain,test_stage,factory_code,batch_name,remark,access_scope,data_domain_id,source_definition_id) "
+                        "OUTPUT INSERTED.import_batch_id VALUES(:source_channel,:login,'RECEIVED',:metadata,:owner,:domain,:stage,:factory,:name,:remark,:access_scope,:data_domain_id,NULL)"
                     ),
                     {
                         "login": principal.login_name,
                         "source_channel": source_channel,
-                        "owner": principal.user_id,
+                        "owner": owner_user_id,
                         "domain": business_domain,
                         "stage": stage_label,
                         "factory": factory_code,
                         "name": batch_name,
                         "remark": remark,
                         "metadata": json.dumps(batch_metadata, ensure_ascii=False),
+                        "access_scope": access_scope,
+                        "data_domain_id": trusted_data_domain_id,
                     },
                 ).scalar_one()
             )

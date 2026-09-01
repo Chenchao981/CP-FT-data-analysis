@@ -23,6 +23,11 @@ def test_quick_capacity_estimates_spool_reservation() -> None:
     assert policy.reservation_for(1_001) == 511
 
 
+def test_local_result_capacity_uses_release_output_limit_not_raw_source_size() -> None:
+    policy = _policy(Path.cwd())
+    assert policy.reservation_for_local_result(1_001) == 1_011
+
+
 def test_quick_capacity_rejects_user_and_global_overage(tmp_path: Path) -> None:
     policy = _policy(tmp_path)
     with pytest.raises(DomainError) as user_error:

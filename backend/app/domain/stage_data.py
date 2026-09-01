@@ -114,6 +114,8 @@ class StageDataService(Protocol):
         factory_code: str,
         files: Sequence[StoredUpload],
         remark: str | None,
+        *,
+        data_domain_id: int | None = None,
     ) -> int: ...
 
     def mark_processing(self, batch_id: int, principal: Principal) -> int: ...

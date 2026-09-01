@@ -7,6 +7,12 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthProvider, useAuth } from "./AuthContext";
 import { getMe, login, logout, saveToken } from "../../api/auth";
+import {
+  saveLocalAgentRunReference,
+  saveLocalAgentToken,
+  storedLocalAgentRunReference,
+  storedLocalAgentToken,
+} from "../../api/localAgent";
 
 vi.mock("../../api/auth", () => ({
   clearToken: vi.fn(),
@@ -56,6 +62,8 @@ function renderAuth(queryClient = new QueryClient({ defaultOptions: { queries: {
 describe("AuthProvider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    sessionStorage.clear();
+    localStorage.clear();
     vi.mocked(logout).mockResolvedValue(undefined);
     vi.mocked(login).mockResolvedValue({
       access_token: "new-token",
@@ -110,6 +118,25 @@ describe("AuthProvider", () => {
     expect(logout).toHaveBeenCalledOnce();
   });
 
+  it("does not let user B recover user A's Local Agent run after A logs out", async () => {
+    vi.mocked(getMe).mockResolvedValue(developmentUser);
+    saveLocalAgentToken("user-a-agent-token");
+    saveLocalAgentRunReference(
+      "123e4567-e89b-42d3-a456-426614174000",
+      91,
+    );
+    renderAuth();
+    await screen.findByText("development-admin");
+
+    fireEvent.click(screen.getByRole("button", { name: "sign out" }));
+    await screen.findByText("anonymous");
+    fireEvent.click(screen.getByRole("button", { name: "switch identity" }));
+    await screen.findByText("production-reader");
+
+    expect(storedLocalAgentToken()).toBeNull();
+    expect(storedLocalAgentRunReference()).toBeNull();
+  });
+
   it("cancels and clears cached data when authentication expires", async () => {
     vi.mocked(getMe).mockResolvedValue(developmentUser);
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -118,6 +145,10 @@ describe("AuthProvider", () => {
     const clear = vi.spyOn(queryClient, "clear");
     renderAuth(queryClient);
     await screen.findByText("development-admin");
+    saveLocalAgentToken("expired-user-agent-token");
+    saveLocalAgentRunReference(
+      "123e4567-e89b-42d3-a456-426614174000",
+    );
 
     window.dispatchEvent(new Event("tms-auth-expired"));
 
@@ -125,6 +156,8 @@ describe("AuthProvider", () => {
     await waitFor(() => expect(queryClient.getQueryData(["analytics", "engineering"])).toBeUndefined());
     expect(cancelQueries).toHaveBeenCalledOnce();
     expect(clear).toHaveBeenCalledOnce();
+    expect(storedLocalAgentToken()).toBeNull();
+    expect(storedLocalAgentRunReference()).toBeNull();
   });
 
 });

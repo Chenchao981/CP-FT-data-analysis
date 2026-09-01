@@ -84,7 +84,7 @@ class QualityManagementSummary:
     observed_at_utc: str
     from_utc: str
     to_utc: str
-    filters: dict[str, str | None]
+    filters: dict[str, str | int | None]
     methodology: dict[str, str]
     kpis: QualityKpis
     trends: tuple[QualityTrendPoint, ...]
@@ -100,6 +100,8 @@ class ManagementService(Protocol):
         principal: Principal,
         from_utc: datetime,
         to_utc: datetime,
+        access_scope: str,
+        data_domain_id: int | None = None,
         business_domain: str | None = None,
         test_stage: str | None = None,
         factory_code: str | None = None,

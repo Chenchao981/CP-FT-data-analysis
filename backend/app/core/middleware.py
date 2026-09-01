@@ -1,14 +1,121 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 logger = logging.getLogger("tms.request")
+_LOCAL_RESULT_PATH = "/api/v1/quick-analysis/local-results"
+_DEFAULT_LOCAL_RESULT_HTTP_MAX_BYTES = 70 * 1024 * 1024
+
+
+class _RequestBodyTooLarge(Exception):
+    pass
+
+
+class LocalResultBodyLimitMiddleware:
+    """Bound Local result multipart bytes before Starlette spools UploadFile."""
+
+    def __init__(self, app: ASGIApp, max_bytes: int | None = None) -> None:
+        self.app = app
+        configured = os.getenv("TMS_LOCAL_RESULT_HTTP_MAX_BYTES", "").strip()
+        try:
+            self.max_bytes = (
+                int(configured)
+                if max_bytes is None and configured
+                else (
+                    max_bytes
+                    if max_bytes is not None
+                    else _DEFAULT_LOCAL_RESULT_HTTP_MAX_BYTES
+                )
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                "TMS_LOCAL_RESULT_HTTP_MAX_BYTES must be an integer"
+            ) from exc
+        if self.max_bytes < 1024:
+            raise RuntimeError("TMS_LOCAL_RESULT_HTTP_MAX_BYTES must be at least 1024")
+
+    async def __call__(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
+        if scope["type"] != "http" or not (
+            scope.get("method") == "POST" and scope.get("path") == _LOCAL_RESULT_PATH
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers", ()))
+        content_length = headers.get(b"content-length")
+        if content_length is not None:
+            try:
+                declared_bytes = int(content_length)
+            except ValueError:
+                await self._reject(scope, receive, send, "请求体长度无效", 400)
+                return
+            if declared_bytes < 0:
+                await self._reject(scope, receive, send, "请求体长度无效", 400)
+                return
+            if declared_bytes > self.max_bytes:
+                await self._reject(scope, receive, send, "本机结果上传超过请求上限", 413)
+                return
+
+        received_bytes = 0
+        response_started = False
+
+        async def limited_receive() -> Message:
+            nonlocal received_bytes
+            message = await receive()
+            if message["type"] == "http.request":
+                received_bytes += len(message.get("body", b""))
+                if received_bytes > self.max_bytes:
+                    raise _RequestBodyTooLarge
+            return message
+
+        async def tracked_send(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
+
+        try:
+            await self.app(scope, limited_receive, tracked_send)
+        except _RequestBodyTooLarge:
+            if response_started:
+                raise
+            await self._reject(scope, receive, send, "本机结果上传超过请求上限", 413)
+
+    async def _reject(
+        self,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+        message: str,
+        status_code: int,
+    ) -> None:
+        response = JSONResponse(
+            status_code=status_code,
+            content={
+                "error": {
+                    "code": "LOCAL_RESULT_HTTP_BODY_TOO_LARGE"
+                    if status_code == 413
+                    else "LOCAL_RESULT_CONTENT_LENGTH_INVALID",
+                    "message": message,
+                    "details": [{"max_bytes": self.max_bytes}],
+                    "request_id": None,
+                }
+            },
+        )
+        await response(scope, receive, send)
 
 
 def _analytics_group(path: str) -> str | None:

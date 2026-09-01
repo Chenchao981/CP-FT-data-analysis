@@ -114,3 +114,67 @@ class SqlCleanerRegistry:
                 409,
             )
         return _to_release(row)
+
+    def latest_released_for_contract(
+        self,
+        *,
+        test_stage: str,
+        factory_code: str,
+        format_code: str,
+        cleaner_code: str,
+        adapter_code: str,
+        input_contract_version: str,
+        output_contract_version: str,
+    ) -> CleanerRelease:
+        values = {
+            "stage": test_stage.strip().upper(),
+            "factory": factory_code.strip().upper(),
+            "format_code": format_code.strip().upper(),
+            "cleaner_code": cleaner_code.strip().upper(),
+            "adapter_code": adapter_code.strip().upper(),
+            "input_contract": input_contract_version.strip().upper(),
+            "output_contract": output_contract_version.strip().upper(),
+        }
+        if any(not value for value in values.values()):
+            raise ValueError("exact Cleaner contract fields must not be blank")
+        with self._engine.connect() as connection:
+            row = (
+                connection.execute(
+                    text(
+                        f"SELECT TOP (1) {RELEASE_COLUMNS} "
+                        "FROM ingestion.cleaner_release cr "
+                        "JOIN ingestion.format_profile fp "
+                        "ON fp.format_profile_id=cr.format_profile_id "
+                        "WHERE cr.status='RELEASED' AND fp.status='RELEASED' "
+                        "AND fp.test_stage=:stage AND fp.factory_code=:factory "
+                        "AND fp.format_code=:format_code "
+                        "AND cr.cleaner_code=:cleaner_code "
+                        "AND cr.adapter_code=:adapter_code "
+                        "AND cr.input_contract_version=:input_contract "
+                        "AND cr.output_contract_version=:output_contract "
+                        "ORDER BY cr.approved_at_utc DESC,cr.created_at_utc DESC,"
+                        "cr.cleaner_release_id DESC"
+                    ),
+                    values,
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            raise DomainError(
+                "CLEANER_RELEASE_NOT_AVAILABLE",
+                "没有符合全部批准字段的已发布 Cleaner 合同",
+                409,
+                [
+                    {
+                        "test_stage": values["stage"],
+                        "factory_code": values["factory"],
+                        "format_code": values["format_code"],
+                        "cleaner_code": values["cleaner_code"],
+                        "adapter_code": values["adapter_code"],
+                        "input_contract_version": values["input_contract"],
+                        "output_contract_version": values["output_contract"],
+                    }
+                ],
+            )
+        return _to_release(row)

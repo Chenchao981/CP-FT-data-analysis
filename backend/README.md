@@ -2,7 +2,7 @@
 
 > 正式数据执行主线为 Route A；一次性PAT使用隔离的Quick Analysis Workspace。两条通道共享SQL队列和Worker，但只有正式导入写入Canonical。
 
-当前仓库唯一 Alembic head 为 `sql2014_0023`。开发库是否已升级必须在线核对数据库、服务器和 Revision；其他环境不能根据仓库文件名推断已升级。
+当前仓库唯一 Alembic head 为 `sql2014_0024`。开发库是否已升级必须在线核对数据库、服务器和 Revision；其他环境不能根据仓库文件名推断已升级。
 
 ## 开发环境
 
@@ -79,7 +79,8 @@ Import-TmsRuntimeConfig -Path (Join-Path $PWD '.env.runtime.ps1')
 - `GET /api/v1/quick-analysis/sessions`
 - `GET /api/v1/quick-analysis/sessions/{analysis_session_id}`
 - `GET /api/v1/quick-analysis/sessions/{analysis_session_id}/download`
-- `GET /api/v1/management/quality-summary`
+- `GET /api/v1/management/quality-summary?access_scope=PERSONAL`
+- `GET /api/v1/management/quality-summary?access_scope=DOMAIN&data_domain_id={id}`
 - `GET /api/v1/master-data/product-crosswalks`
 - `POST /api/v1/master-data/product-crosswalks/{crosswalk_id}/{approve|reject}`
 - `GET /api/v1/operations/consistency`
@@ -97,6 +98,8 @@ Job Service默认使用进程内实现；Route A 联调和部署必须设置 `TM
 正式入库使用 `INITIAL_IMPORT + ATOMIC_V1` staged/finalize 合同。Writer完成准备态事实、Dataset Version、全部来源映射和 finalize intent 后，服务在一个事务中切换 Run/Dataset Current、结果摘要、Batch、Job 和 intent。租约中断可以直接重放 staged intent，不重复运行Cleaner。
 
 Quick Analysis通过`TMS_SOURCE_ROOTS_JSON`配置管理员受控根目录。浏览器和API只使用`source_root_code + relative_path`，不接受任意绝对路径。P0仅支持杰群统一CSV目录PAT；结果写入`TMS_QUICK_WORK_ROOT`并按`TMS_QUICK_RESULT_TTL_HOURS`登记过期时间。
+
+Local Agent 结果上传中断后遗留的`.staging/<uuid>`目录默认24小时后在下一次结果接收时回收，可用`TMS_LOCAL_RESULT_STAGING_TTL_SECONDS`调整为60秒至7天。回收只处理精确32位十六进制UUID目录，发现符号链接、junction或reparse point时不会递归删除。
 
 Quick Analysis容量按“活跃任务预留 + 失败任务未清理预留 + 尚未清理Artifact”计算。默认按源文件总字节数的50%加64 MiB预留临时空间，并同时检查全局容量、单用户容量和工作盘最小剩余空间。部署时可通过`TMS_QUICK_GLOBAL_CAPACITY_BYTES`、`TMS_QUICK_USER_CAPACITY_BYTES`、`TMS_QUICK_MIN_FREE_BYTES`、`TMS_QUICK_RESERVE_RATIO`和`TMS_QUICK_RESERVE_OVERHEAD_BYTES`调整。
 

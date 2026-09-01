@@ -173,6 +173,7 @@ def main() -> None:
                 "FT",
                 "JIEQUN",
                 (".csv",),
+                data_domain_code="JIEQUN_FT_E2E",
             ),
         )
     )
@@ -197,7 +198,11 @@ def main() -> None:
         3600,
         10 * 1024 * 1024 * 1024,
     )
-    service = InMemoryQuickAnalysisService()
+    service = InMemoryQuickAnalysisService(
+        domain_grant_checker=lambda user_id, domain_id: (
+            user_id == DEVELOPMENT_PRINCIPAL.user_id and domain_id == 1
+        )
+    )
     session = service.create(
         DEVELOPMENT_PRINCIPAL,
         NewQuickAnalysisSession(
@@ -214,6 +219,9 @@ def main() -> None:
             "RESULT_ONLY",
             release.cleaner_release_id,
             datetime.now(UTC) + timedelta(days=7),
+            "DOMAIN",
+            1,
+            "JIEQUN_FT_E2E",
         ),
     )
     job_id = int(datetime.now(UTC).timestamp())

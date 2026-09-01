@@ -31,6 +31,8 @@ from app.infrastructure.sql_visibility import (
     can_manage_sql,
     current_dataset_read_scope_sql,
     formal_result_read_scope_sql,
+    quick_read_scope_sql,
+    quick_write_scope_sql,
     visibility_parameters,
 )
 
@@ -750,10 +752,10 @@ SELECT d.dataset_id,dv.dataset_version_id,dv.version_no,
        COALESCE(pr.finished_at_utc,dv.published_at_utc) AS processed_at_utc,
        owner_user.login_name AS owner_login,owner_user.display_name AS owner_name,
        cr.cleaner_version,
-       CASE WHEN :is_admin=1 OR d.owner_user_id=:user_id THEN 1 ELSE 0 END AS can_edit_product,
-       CASE WHEN :is_admin=1 OR d.owner_user_id=:user_id THEN 1 ELSE 0 END AS can_export,
-       CASE WHEN :is_admin=1 OR d.owner_user_id=:user_id THEN 1 ELSE 0 END AS can_reprocess,
-       CASE WHEN :is_admin=1 OR d.owner_user_id=:user_id THEN 1 ELSE 0 END AS can_archive
+       CASE WHEN d.access_scope='PERSONAL' AND d.owner_user_id=:user_id THEN 1 ELSE 0 END AS can_edit_product,
+       CASE WHEN d.access_scope='PERSONAL' AND d.owner_user_id=:user_id THEN 1 ELSE 0 END AS can_export,
+       CASE WHEN d.access_scope='PERSONAL' AND d.owner_user_id=:user_id THEN 1 ELSE 0 END AS can_reprocess,
+       CASE WHEN d.access_scope='PERSONAL' AND d.owner_user_id=:user_id THEN 1 ELSE 0 END AS can_archive
 """
 
 _CURRENT_DATASET_FROM = """
@@ -811,7 +813,8 @@ _CURRENT_DATASET_FROM = """
  ) summary_row
 """
 
-_JOB_DETAILS_SQL = """
+_JOB_DETAILS_SQL = (
+    """
 SELECT j.job_id,j.source_file_id,j.import_batch_id,j.analysis_session_id,
        j.cleaner_release_id,j.job_type,lt.action_type AS lifecycle_action_type,
        j.trigger_type,j.requested_by,j.reason,
@@ -826,9 +829,11 @@ SELECT j.job_id,j.source_file_id,j.import_batch_id,j.analysis_session_id,
          (SELECT COUNT_BIG(*) FROM ingestion.import_batch_file ibf
          WHERE ibf.import_batch_id=j.import_batch_id)
          WHEN j.source_file_id IS NOT NULL THEN 1 ELSE 0 END AS source_file_count,
-       CASE WHEN :is_admin=1 OR b.owner_user_id=:user_id
-              OR ws.owner_user_id=:user_id
-              OR (b.import_batch_id IS NULL AND ws.analysis_session_id IS NULL
+        CASE WHEN (b.access_scope='PERSONAL' AND b.owner_user_id=:user_id)
+                OR """
+    + quick_write_scope_sql(session_alias="ws")
+    + """
+               OR (b.import_batch_id IS NULL AND ws.analysis_session_id IS NULL
                   AND j.requested_by_user_id=:user_id)
             THEN 1 ELSE 0 END AS can_manage,
        cr.cleaner_code,cr.cleaner_version,cr.code_checksum,
@@ -842,14 +847,21 @@ LEFT JOIN ingestion.cleaner_release cr
   ON cr.cleaner_release_id=j.cleaner_release_id
 LEFT JOIN ingestion.lifecycle_job_target lt ON lt.job_id=j.job_id
 WHERE j.job_id=:job_id AND (
-    :is_admin=1 OR b.owner_user_id=:user_id OR ws.owner_user_id=:user_id OR
+    """
+    + quick_read_scope_sql(session_alias="ws")
+    + """ OR
     (b.import_batch_id IS NULL AND ws.analysis_session_id IS NULL
      AND j.requested_by_user_id=:user_id) OR
-    (j.import_batch_id IS NOT NULL AND b.business_domain='PRODUCTION')
+    (j.import_batch_id IS NOT NULL AND
+     """
+    + batch_read_scope_sql(batch_alias="b")
+    + """)
 )
 """
+)
 
-_JOB_LINKS_SQL = """
+_JOB_LINKS_SQL = (
+    """
 SELECT j.job_id,j.import_batch_id,j.parent_job_id,j.job_type,
        lt.action_type AS lifecycle_action_type,j.status,
        j.requested_at_utc,j.started_at_utc,j.finished_at_utc,j.error_code,
@@ -860,12 +872,18 @@ LEFT JOIN workspace.analysis_session ws
   ON ws.analysis_session_id=j.analysis_session_id
 LEFT JOIN ingestion.lifecycle_job_target lt ON lt.job_id=j.job_id
 WHERE (j.job_id=:parent_job_id OR j.parent_job_id=:job_id)
-  AND (:is_admin=1 OR b.owner_user_id=:user_id OR ws.owner_user_id=:user_id OR
+  AND ("""
+    + quick_read_scope_sql(session_alias="ws")
+    + """ OR
       (b.import_batch_id IS NULL AND ws.analysis_session_id IS NULL
        AND j.requested_by_user_id=:user_id) OR
-      (j.import_batch_id IS NOT NULL AND b.business_domain='PRODUCTION'))
+      (j.import_batch_id IS NOT NULL AND
+       """
+    + batch_read_scope_sql(batch_alias="b")
+    + """))
 ORDER BY j.job_id
 """
+)
 
 _JOB_PUBLISH_CHAIN_SQL = """
 SELECT TOP (1) i.status AS intent_status,pr.processing_run_id,

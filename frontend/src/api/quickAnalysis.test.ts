@@ -49,9 +49,9 @@ describe("quick analysis api", () => {
     expect(fetchMock.mock.calls[0][0]).toBe(
       "/api/v1/quick-analysis/source-roots/JIEQUN_SHARED/manifest-preview?relative_path=%E4%BA%A7%E5%93%81+A%2F%E6%89%B9%E6%AC%A1+1",
     );
-    await listQuickAnalysisSessions({ page: 2, page_size: 50, status: "FAILED" });
+    await listQuickAnalysisSessions({ page: 2, page_size: 50, status: "FAILED", access_scope: "PERSONAL" });
     expect(fetchMock.mock.calls[1][0]).toBe(
-      "/api/v1/quick-analysis/sessions?page=2&page_size=50&status=FAILED",
+      "/api/v1/quick-analysis/sessions?page=2&page_size=50&status=FAILED&access_scope=PERSONAL",
     );
   });
 

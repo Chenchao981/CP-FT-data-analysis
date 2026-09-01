@@ -24,7 +24,7 @@
 - Release 根必须与 manifest 精确一致；RuntimeHome、Runtime Config 和 Python 必须成组从 Release 根外以绝对路径注入，不打包 conda、秘密或环境配置。
 - API默认只监听`127.0.0.1:8000`。向局域网开放前，应另行审批监听地址、防火墙、反向代理和认证策略。
 - QuickCleanup 和 FormalCleanup 均默认部署为`DryRun`，只预览到期对象。两者必须分别审核并明确批准后才改为`Delete`。
-- 当前唯一 Schema head 为 `sql2014_0023`；部署脚本动态核对发布包 head，不能硬编码或绕过不一致。
+- 当前唯一 Schema head 为 `sql2014_0024`；部署脚本动态核对发布包 head，不能硬编码或绕过不一致。
 - 生产配置不得包含 JWT、Health Token、服务账号密码或带密码数据库 URL；秘密由批准的 Windows bootstrap 注入进程环境，计划任务密码只通过 `Get-Credential` 交给 Task Scheduler。
 
 ## 3. 部署前检查
@@ -49,7 +49,7 @@ $pythonPath = 'D:\NCE-TMS-Python\python.exe'
 2. Release manifest、全部运行入口和动态 Alembic head 均存在且精确匹配。
 3. 服务账号可连接目标SQL Server，并能读取所有已注册Source Root。
 4. 工作盘容量、Quick配额、TTL和每日执行时间已经审批。
-5. 生产数据库已完成 pre-check、`COPY_ONLY,CHECKSUM` 备份和 `RESTORE VERIFYONLY`，并迁移至 `sql2014_0023`；正式变更前还必须在独立空测试库执行 0001→0022。
+5. 生产数据库已完成 pre-check、`COPY_ONLY,CHECKSUM` 备份和 `RESTORE VERIFYONLY`，并迁移至 `sql2014_0024`；正式变更前还必须在独立空测试库执行 0001→0024。
 6. 以真实服务账号运行 preflight：Source 为 `READ_ONLY`，Upload/Work/Quick/Log 为 `READ_WRITE`；管理员 `-SkipAclCheck` 不能代替这一步。
 
 ## 4. 首次安装
@@ -131,7 +131,7 @@ Formal Cleanup 先按 A5 Artifact TTL 合同处理已登记临时产物，再扫
 2. 以目标服务账号完成生产 preflight；
 3. 停止流量和 Worker，确认没有活跃 Job/STAGED intent；
 4. 执行数据库 pre-check、COPY_ONLY/CHECKSUM 备份和 VERIFYONLY；
-5. 在独立空测试库验证 0001→0022，再对目标库 Migration 和 post-check；
+5. 在独立空测试库验证 0001→0024，再对目标库 Migration 和 post-check；
 6. 注册四个计划任务，核对 API ready、Worker ready file 和 Worker registry 的 Database/Server/Schema/Worker ID；
 7. 任一 post-check 或探针失败即保持流量关闭，保留备份和证据，由 DBA 在独立恢复库验证，不直接覆盖生产库。
 

@@ -5,12 +5,13 @@ from datetime import timedelta
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from app.api.dependencies import current_principal, require_permission
+from app.api.dependencies import require_permission
 from app.core.errors import DomainError
 from app.domain.auth import Principal
 from app.domain.worker_operations import WorkerOperationsService
 
 router = APIRouter(prefix="/operations/workers")
+require_worker_control = require_permission("SYSTEM_OPERATE")
 
 
 def service(request: Request) -> WorkerOperationsService:
@@ -22,18 +23,6 @@ def service(request: Request) -> WorkerOperationsService:
             503,
         )
     return instance
-
-
-def require_worker_control(
-    principal: Principal = Depends(current_principal),  # noqa: B008
-) -> Principal:
-    if "SYSTEM_ADMIN" not in principal.roles:
-        raise DomainError(
-            "PERMISSION_DENIED",
-            "只有系统管理员可以控制 Worker 运行状态",
-            403,
-        )
-    return principal
 
 
 @router.get("")

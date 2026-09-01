@@ -83,6 +83,7 @@ def test_environment_contract_accepts_only_p0_jiequn_csv(monkeypatch, tmp_path: 
                     "test_stage": "FT",
                     "factory_code": "JIEQUN",
                     "allowed_suffixes": ["csv"],
+                    "data_domain_code": "jiequn_ft",
                 }
             ],
             ensure_ascii=False,
@@ -91,9 +92,88 @@ def test_environment_contract_accepts_only_p0_jiequn_csv(monkeypatch, tmp_path: 
     root = SourceCatalog.from_environment().get_root("JIEQUN_SHARED")
     assert root.allowed_suffixes == (".csv",)
     assert root.purpose == "QUICK_ANALYSIS"
+    assert root.data_domain_code == "JIEQUN_FT"
+    assert SourceCatalog.from_environment().list_roots()[0][
+        "data_domain_code"
+    ] == "JIEQUN_FT"
+
+
+def test_environment_contract_rejects_unbound_quick_analysis_root(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv(
+        "TMS_SOURCE_ROOTS_JSON",
+        json.dumps(
+            [
+                {
+                    "code": "JIEQUN_SHARED",
+                    "name": "杰群共享目录",
+                    "path": str(tmp_path),
+                    "test_stage": "FT",
+                    "factory_code": "JIEQUN",
+                    "allowed_suffixes": [".csv"],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="must define a valid data_domain_code"):
+        SourceCatalog.from_environment()
 
 
 def test_environment_contract_supports_scoped_formal_import_roots(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv(
+        "TMS_SOURCE_ROOTS_JSON",
+        json.dumps(
+            [
+                {
+                    "code": "RIYUEXIN_PRODUCTION",
+                    "name": "日月新量产 FT",
+                    "path": str(tmp_path),
+                    "purpose": "FORMAL_IMPORT",
+                    "business_domains": ["PRODUCTION"],
+                    "test_stage": "FT",
+                    "factory_code": "RIYUEXIN",
+                    "allowed_suffixes": [".xlsx"],
+                    "data_domain_code": "RIYUEXIN_FT",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+    )
+
+    catalog = SourceCatalog.from_environment()
+    roots = catalog.list_roots(
+        purpose="FORMAL_IMPORT",
+        business_domain="PRODUCTION",
+        test_stage="FT",
+        factory_code="RIYUEXIN",
+    )
+    assert [item["code"] for item in roots] == ["RIYUEXIN_PRODUCTION"]
+    assert roots[0]["data_domain_code"] == "RIYUEXIN_FT"
+    assert catalog.list_roots(purpose="QUICK_ANALYSIS") == ()
+    catalog.require_scope(
+        "RIYUEXIN_PRODUCTION",
+        purpose="FORMAL_IMPORT",
+        business_domain="PRODUCTION",
+        test_stage="FT",
+        factory_code="RIYUEXIN",
+    )
+    with pytest.raises(DomainError) as captured:
+        catalog.require_scope(
+            "RIYUEXIN_PRODUCTION",
+            purpose="FORMAL_IMPORT",
+            business_domain="ENGINEERING",
+            test_stage="FT",
+            factory_code="RIYUEXIN",
+        )
+    assert captured.value.code == "SOURCE_ROOT_SCOPE_MISMATCH"
+
+
+def test_environment_contract_rejects_unbound_formal_import_root(
     monkeypatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv(
@@ -115,31 +195,26 @@ def test_environment_contract_supports_scoped_formal_import_roots(
         ),
     )
 
-    catalog = SourceCatalog.from_environment()
-    roots = catalog.list_roots(
-        purpose="FORMAL_IMPORT",
-        business_domain="PRODUCTION",
-        test_stage="FT",
-        factory_code="RIYUEXIN",
-    )
-    assert [item["code"] for item in roots] == ["RIYUEXIN_PRODUCTION"]
-    assert catalog.list_roots(purpose="QUICK_ANALYSIS") == ()
-    catalog.require_scope(
-        "RIYUEXIN_PRODUCTION",
-        purpose="FORMAL_IMPORT",
-        business_domain="PRODUCTION",
-        test_stage="FT",
-        factory_code="RIYUEXIN",
-    )
-    with pytest.raises(DomainError) as captured:
-        catalog.require_scope(
-            "RIYUEXIN_PRODUCTION",
-            purpose="FORMAL_IMPORT",
-            business_domain="ENGINEERING",
-            test_stage="FT",
-            factory_code="RIYUEXIN",
+    with pytest.raises(RuntimeError, match="must define a valid data_domain_code"):
+        SourceCatalog.from_environment()
+
+
+def test_programmatic_formal_root_requires_data_domain_binding(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="must define a valid data_domain_code"):
+        SourceCatalog(
+            (
+                SourceRoot(
+                    "RIYUEXIN_PRODUCTION",
+                    "Riyuexin production source",
+                    tmp_path,
+                    "FT",
+                    "RIYUEXIN",
+                    (".xlsx",),
+                    "FORMAL_IMPORT",
+                    ("PRODUCTION",),
+                ),
+            )
         )
-    assert captured.value.code == "SOURCE_ROOT_SCOPE_MISMATCH"
 
 
 @pytest.mark.parametrize("configured_path", ["", ".", "relative\\source"])
@@ -183,6 +258,7 @@ def test_non_recursive_manifest_ignores_nested_ft_files(tmp_path: Path) -> None:
                 (".xlsx",),
                 "FORMAL_IMPORT",
                 ("PRODUCTION",),
+                "RIYUEXIN_FT",
             ),
         )
     )

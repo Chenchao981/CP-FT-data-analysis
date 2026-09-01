@@ -39,6 +39,7 @@ M4_POWERSHELL_FILES = (
     WINDOWS_SCRIPTS / "run_tms_formal_cleanup.ps1",
     WINDOWS_SCRIPTS / "run_tms_analytics_export_worker.ps1",
     WINDOWS_SCRIPTS / "run_tms_analytics_export_cleanup.ps1",
+    WINDOWS_SCRIPTS / "start_tms_local_agent.ps1",
     WINDOWS_SCRIPTS / "start_tms_runtime.ps1",
     ROOT / "docs" / "examples" / "TMS.production.runtime.example.ps1",
 )
@@ -112,6 +113,7 @@ def _write_production_runtime(tmp_path: Path, *, overlap: bool = False) -> Path:
                 "name": "Approved FT Source",
                 "path": str(directories["source"]),
                 "purpose": "FORMAL_IMPORT",
+                "data_domain_code": "RIYUEXIN_FT",
                 "business_domains": ["ENGINEERING"],
                 "test_stage": "FT",
                 "factory_code": "RIYUEXIN",
@@ -182,7 +184,7 @@ def test_production_preflight_accepts_strong_separated_runtime(tmp_path: Path) -
 
     assert completed.returncode == 0, completed.stderr + completed.stdout
     assert "VALID" in completed.stdout
-    assert "sql2014_0023" in completed.stdout
+    assert "sql2014_0024" in completed.stdout
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows production runtime contract")
@@ -512,7 +514,7 @@ def test_release_is_reproducible_inspected_and_launcher_smoked(tmp_path: Path) -
         == hashlib.sha256(second.read_bytes()).digest()
     )
     assert first_manifest == second_manifest
-    assert first_manifest["schema_revision"] == "sql2014_0023"
+    assert first_manifest["schema_revision"] == "sql2014_0024"
     inspected = inspect_release_archive(first)
     assert inspected == first_manifest
     with zipfile.ZipFile(first) as archive:
@@ -522,6 +524,23 @@ def test_release_is_reproducible_inspected_and_launcher_smoked(tmp_path: Path) -
     assert not any(".test." in name.casefold() for name in names)
     assert not any(".spec." in name.casefold() for name in names)
     assert not any(name in release_builder.WINDOWS_LOCAL_ACCEPTANCE_FILES for name in names)
+    assert {
+        "local_agent/README.md",
+        "local_agent/__init__.py",
+        "local_agent/__main__.py",
+        "local_agent/app.py",
+        "local_agent/config.example.json",
+        "local_agent/config.py",
+        "local_agent/errors.py",
+        "local_agent/manifest.py",
+        "local_agent/models.py",
+        "local_agent/runner.py",
+        "local_agent/service.py",
+        "scripts/windows/start_tms_local_agent.ps1",
+    }.issubset(names)
+    assert not any(name.startswith("local_agent/tests/") for name in names)
+    assert not any("/__pycache__/" in name for name in names)
+    assert "local_agent/config.json" not in names
     assert {
         "scripts/windows/get_tms_scheduled_task_status.ps1",
         "scripts/windows/install_tms_scheduled_tasks.ps1",
@@ -547,6 +566,8 @@ def test_release_discovery_excludes_untracked_scratch_and_frontend_tests(
     root = _minimal_release_source(tmp_path)
     production = root / "frontend" / "src" / "feature.ts"
     production.write_text("export const production = true;\n", encoding="utf-8")
+    local_agent_module = root / "local_agent" / "service.py"
+    local_agent_module.write_text("AGENT = True\n", encoding="utf-8")
     excluded = (
         root / "backend" / "app" / "scratch.py",
         root / "frontend" / "src" / "scratch.ts",
@@ -554,6 +575,15 @@ def test_release_discovery_excludes_untracked_scratch_and_frontend_tests(
         root / "frontend" / "src" / "feature.spec.tsx",
         root / "frontend" / "src" / "__tests__" / "fixture.ts",
         root / "frontend" / "src" / "fixtures" / "mock.ts",
+        root / "local_agent" / "tests" / "test_app.py",
+        root / "local_agent" / "__pycache__" / "cached.py",
+        root / "local_agent" / "config.json",
+        root / "local_agent" / "pairing-token.txt",
+        root / "local_agent" / "work" / "runtime.py",
+        root / "local_agent" / "work" / "raw.csv",
+        root / "local_agent" / "outputs" / "generated.py",
+        root / "local_agent" / "outputs" / "PAT_result.xlsx",
+        root / "local_agent" / "logs" / "agent.log",
     )
     for path in excluded:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -567,6 +597,9 @@ def test_release_discovery_excludes_untracked_scratch_and_frontend_tests(
     }
 
     assert "frontend/src/feature.ts" in names
+    assert "local_agent/service.py" in names
+    assert "local_agent/README.md" in names
+    assert "local_agent/config.example.json" in names
     assert not {
         path.relative_to(root).as_posix() for path in excluded
     }.intersection(names)
@@ -601,20 +634,20 @@ def test_release_runtime_smoke_accepts_only_exact_dev_ready_target() -> None:
         {
             "status": "ready",
             "database": "TMS_G0_DEV",
-            "schema_revision": "sql2014_0023",
+            "schema_revision": "sql2014_0024",
         }
     ) == {
         "status": "ready",
         "database": "TMS_G0_DEV",
-        "schema_revision": "sql2014_0023",
+        "schema_revision": "sql2014_0024",
     }
     for payload in (
         {
             "status": "starting",
             "database": "TMS_G0_DEV",
-            "schema_revision": "sql2014_0023",
+            "schema_revision": "sql2014_0024",
         },
-        {"status": "ready", "database": "NCE_TMS", "schema_revision": "sql2014_0023"},
+        {"status": "ready", "database": "NCE_TMS", "schema_revision": "sql2014_0024"},
         {
             "status": "ready",
             "database": "TMS_G0_DEV",

@@ -82,3 +82,25 @@ def test_bootstrap_defines_dianji_as_an_independent_powertech_release() -> None:
     assert dianji.input_contract == "DIANJI_POWERTECH_DIRECTORY_V1"
     assert dianji.output_contract == "DIANJI_FT_SCATTER_V1"
     assert dianji.cleaner_version == "v2.19.0"
+
+
+def test_bootstrap_pins_quick_pat_execution_limits() -> None:
+    jiequn = next(
+        item
+        for item in _definitions()
+        if item.cleaner_code == "JIEQUN_FT_QUICK_PAT_EXISTING"
+    )
+
+    assert jiequn.timeout_seconds == 7200
+    assert jiequn.max_output_bytes == 64 * 1024 * 1024
+
+    script = (
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "g0"
+        / "bootstrap_existing_cleaner_releases.py"
+    ).read_text(encoding="utf-8-sig")
+    assert '"timeout_seconds": values["timeout_seconds"]' in script
+    assert '"max_output_bytes": values["max_output_bytes"]' in script
+    assert "Published Cleaner Release is immutable" in script
+    assert "UPDATE ingestion.cleaner_release SET" not in script

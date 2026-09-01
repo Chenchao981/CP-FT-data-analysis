@@ -75,6 +75,19 @@ class ManagedJobPathPolicy:
             raise UnsafeFormalArtifactPath("job root must be an exact managed child")
         return candidate
 
+    def attempt_root(self, job_id: int, attempt_count: int) -> Path:
+        if attempt_count < 1:
+            raise UnsafeFormalArtifactPath("formal artifact attempt must be positive")
+        job_root = self.job_root(job_id)
+        candidate = job_root / f"attempt-{attempt_count}"
+        self._require_contained(job_root, candidate)
+        if candidate.parent != job_root or not self._ATTEMPT.fullmatch(candidate.name):
+            raise UnsafeFormalArtifactPath(
+                "attempt root must be an exact managed Job child"
+            )
+        self._reject_links_in_existing_path(job_root, candidate)
+        return candidate
+
     def require_artifact(
         self,
         job_id: int,
@@ -200,6 +213,96 @@ class FormalArtifactFileCleaner:
             discovered_count,
             discovered_bytes,
             not dry_run,
+        )
+
+    def cleanup_attempt(
+        self,
+        job_id: int,
+        attempt_count: int,
+        artifact_paths: tuple[str, ...],
+        *,
+        dry_run: bool = False,
+    ) -> FormalCleanupFileOutcome:
+        """Remove only one fenced attempt, preserving any newer attempt."""
+
+        job_root = self._policy.job_root(job_id)
+        attempt_root = self._policy.attempt_root(job_id, attempt_count)
+        for artifact_path in artifact_paths:
+            path = self._policy.require_artifact(
+                job_id,
+                artifact_path,
+                must_exist=False,
+            )
+            try:
+                relative = path.relative_to(attempt_root)
+            except ValueError as exc:
+                raise UnsafeFormalArtifactPath(
+                    "artifact does not belong to the fenced attempt"
+                ) from exc
+            if not relative.parts:
+                raise UnsafeFormalArtifactPath(
+                    "artifact path must be below the fenced attempt root"
+                )
+        if not attempt_root.exists():
+            removed_job_root = False
+            if not dry_run and job_root.exists():
+                if not job_root.is_dir() or self._policy._is_link_or_reparse(
+                    job_root
+                ):
+                    raise UnsafeFormalArtifactPath(
+                        "managed Job root is not a safe directory"
+                    )
+                try:
+                    job_root.rmdir()
+                    removed_job_root = True
+                except OSError:
+                    if not job_root.is_dir() or not any(job_root.iterdir()):
+                        raise
+            return FormalCleanupFileOutcome(
+                "MISSING", 0, 0, removed_job_root
+            )
+        if not attempt_root.is_dir() or self._policy._is_link_or_reparse(
+            attempt_root
+        ):
+            raise UnsafeFormalArtifactPath(
+                "managed attempt root is not a safe directory"
+            )
+
+        discovered_count = 0
+        discovered_bytes = 0
+        for directory, directory_names, file_names in os.walk(
+            attempt_root, followlinks=False
+        ):
+            directory_path = Path(directory)
+            if self._policy._is_link_or_reparse(directory_path):
+                raise UnsafeFormalArtifactPath(
+                    "managed attempt directory contains a link or reparse point"
+                )
+            for name in (*directory_names, *file_names):
+                entry = directory_path / name
+                if self._policy._is_link_or_reparse(entry):
+                    raise UnsafeFormalArtifactPath(
+                        "managed attempt directory contains a link or reparse point"
+                    )
+            for name in file_names:
+                entry = directory_path / name
+                discovered_count += 1
+                discovered_bytes += os.lstat(entry).st_size
+
+        removed_job_root = False
+        if not dry_run:
+            shutil.rmtree(attempt_root)
+            try:
+                job_root.rmdir()
+                removed_job_root = True
+            except OSError:
+                if not job_root.is_dir() or not any(job_root.iterdir()):
+                    raise
+        return FormalCleanupFileOutcome(
+            "PRESENT" if dry_run else "DELETED",
+            discovered_count,
+            discovered_bytes,
+            removed_job_root,
         )
 
 

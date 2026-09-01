@@ -283,7 +283,7 @@ function Get-TmsManagedRootsFromEnvironment {
     }
     $allowedProperties = @(
         'code', 'name', 'path', 'purpose', 'business_domains',
-        'test_stage', 'factory_code', 'allowed_suffixes'
+        'test_stage', 'factory_code', 'allowed_suffixes', 'data_domain_code'
     )
     $sourceCodes = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($source in $catalog) {
@@ -302,6 +302,11 @@ function Get-TmsManagedRootsFromEnvironment {
         $purpose = ([string]$source.purpose).ToUpperInvariant()
         $stage = ([string]$source.test_stage).ToUpperInvariant()
         $factory = ([string]$source.factory_code).ToUpperInvariant()
+        $dataDomainCode = ''
+        $dataDomainProperty = $source.PSObject.Properties['data_domain_code']
+        if ($null -ne $dataDomainProperty) {
+            $dataDomainCode = ([string]$dataDomainProperty.Value).ToUpperInvariant()
+        }
         if (
             [string]::IsNullOrWhiteSpace($name) -or
             $name -match '(?i)(__|<|>|replace|placeholder)' -or
@@ -326,8 +331,16 @@ function Get-TmsManagedRootsFromEnvironment {
             ) {
                 throw "Formal Source root $code has invalid business_domains."
             }
-        } elseif ($domains.Count -gt 0) {
-            throw "Quick Analysis Source root $code must not define business_domains."
+            if ($dataDomainCode -notmatch '^[A-Z0-9][A-Z0-9_-]{1,127}$') {
+                throw "Formal Source root $code must define a valid data_domain_code."
+            }
+        } else {
+            if ($domains.Count -gt 0) {
+                throw "Quick Analysis Source root $code must not define business_domains."
+            }
+            if ($dataDomainCode -notmatch '^[A-Z0-9][A-Z0-9_-]{1,127}$') {
+                throw "Quick Analysis Source root $code must define a valid data_domain_code."
+            }
         }
         $resolved = Resolve-TmsManagedDirectory -Name "Source root $code" -Path ([string]$source.path)
         Assert-TmsNoReparsePath -Name "Source root $code" -Path $resolved

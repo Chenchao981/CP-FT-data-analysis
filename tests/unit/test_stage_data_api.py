@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from app.core.errors import DomainError
 from app.domain.cleaner_registry import CleanerRelease
+from app.domain.data_domains import DataDomainRecord
 from app.domain.jobs import InMemoryJobService
 from app.domain.stage_data import (
     BatchFileInfo,
@@ -29,12 +30,22 @@ class StubStageService:
         self.stored_path = Path("unused")
         self.queued: list[int] = []
         self.registered_files = ()
+        self.registered_data_domain_id = None
 
     def register_upload(
-        self, principal, business_domain, test_stage, factory_code, files, remark
+        self,
+        principal,
+        business_domain,
+        test_stage,
+        factory_code,
+        files,
+        remark,
+        *,
+        data_domain_id=None,
     ):
         self.principal = principal
         self.registered_files = files
+        self.registered_data_domain_id = data_domain_id
         self.calls.append((business_domain, test_stage))
         assert business_domain in {"ENGINEERING", "PRODUCTION"}
         assert test_stage in {"CP", "FT"}
@@ -227,13 +238,43 @@ def _stub_ft_cleaner(monkeypatch, tmp_path: Path) -> None:
 
 
 def _client(
-    service: StubStageService, catalog: SourceCatalog | None = None
+    service: StubStageService,
+    catalog: SourceCatalog | None = None,
+    *,
+    granted_domain_codes: frozenset[str] | None = None,
 ) -> TestClient:
     app = create_app()
     app.state.stage_data_service = service
     app.state.cleaner_registry = StubCleanerRegistry()
     if catalog is not None:
         app.state.source_catalog = catalog
+    formal_roots = (
+        catalog.list_roots(purpose="FORMAL_IMPORT") if catalog is not None else ()
+    )
+    allowed_codes = (
+        frozenset(str(item["data_domain_code"]) for item in formal_roots)
+        if granted_domain_codes is None
+        else granted_domain_codes
+    )
+    records = tuple(
+        DataDomainRecord(
+            data_domain_id=index,
+            domain_code=str(item["data_domain_code"]),
+            domain_name=str(item["name"]),
+            test_stage=str(item["test_stage"]),
+            factory_code=str(item["factory_code"]),
+            active=True,
+        )
+        for index, item in enumerate(formal_roots, start=101)
+        if str(item["data_domain_code"]) in allowed_codes
+    )
+
+    class StubDataDomainService:
+        def list_for_principal(self, principal):
+            del principal
+            return records
+
+    app.state.data_domain_service = StubDataDomainService()
     return TestClient(app)
 
 
@@ -329,7 +370,10 @@ def test_upload_registration_failure_removes_only_the_fresh_snapshot(
             factory_code,
             files,
             remark,
+            *,
+            data_domain_id=None,
         ):
+            del data_domain_id
             self.registered_files = files
             raise DomainError(
                 "SOURCE_REGISTER_CONFLICT",
@@ -520,6 +564,7 @@ def test_cp_upload_snapshots_an_authorized_catalog_directory(
                 (".xls",),
                 "FORMAL_IMPORT",
                 ("ENGINEERING",),
+                "JETECH_CP",
             ),
         )
     )
@@ -561,6 +606,7 @@ def test_cp_upload_snapshots_an_authorized_catalog_directory(
 
     assert response.status_code == 201
     assert response.json()["input_mode"] == "SOURCE_CATALOG"
+    assert service.registered_data_domain_id == 101
     assert service.calls == [("ENGINEERING", "CP")]
     assert [item.original_name for item in service.registered_files] == [
         "C146808-01.xls",
@@ -575,6 +621,7 @@ def test_cp_upload_snapshots_an_authorized_catalog_directory(
     }
     assert all(
         item.source_metadata["source_root_code"] == "JETECH_ENGINEERING"
+        and item.source_metadata["data_domain_code"] == "JETECH_CP"
         and item.source_metadata["snapshot_selected_directory_name"] == "C146808.02"
         and item.source_metadata["snapshot_copy"] is True
         for item in service.registered_files
@@ -605,6 +652,7 @@ def test_ft_catalog_snapshot_accepts_only_direct_dc_files(
                 (".xlsx",),
                 "FORMAL_IMPORT",
                 ("PRODUCTION",),
+                "RIYUEXIN_FT",
             ),
         )
     )
@@ -659,6 +707,7 @@ def test_formal_source_catalog_hides_physical_paths_and_enforces_scope(
                 (".xlsx",),
                 "FORMAL_IMPORT",
                 ("PRODUCTION",),
+                "RIYUEXIN_FT",
             ),
         )
     )
@@ -682,8 +731,67 @@ def test_formal_source_catalog_hides_physical_paths_and_enforces_scope(
         "/api/v1/engineering/ft/source-roots/RIYUEXIN_PRODUCTION/directories",
         params={"factory_code": "riyuexin", "relative_path": "."},
     )
-    assert forbidden.status_code == 403
-    assert forbidden.json()["error"]["code"] == "SOURCE_ROOT_SCOPE_MISMATCH"
+    assert forbidden.status_code == 404
+    assert forbidden.json()["error"]["code"] == "SOURCE_ROOT_NOT_FOUND"
+
+
+def test_formal_source_catalog_requires_active_domain_grant_for_all_entrypoints(
+    monkeypatch, tmp_path: Path
+) -> None:
+    _stub_cp_cleaner(monkeypatch, tmp_path)
+    source = tmp_path / "formal" / "lot-a"
+    source.mkdir(parents=True)
+    (source / "sample.xls").write_bytes(b"sample")
+    catalog = SourceCatalog(
+        (
+            SourceRoot(
+                "JETECH_SECRET",
+                "Jetech secret source",
+                source.parent,
+                "CP",
+                "JETECH",
+                (".xls",),
+                "FORMAL_IMPORT",
+                ("ENGINEERING",),
+                "JETECH_CP",
+            ),
+        )
+    )
+    service = StubStageService()
+    client = _client(service, catalog, granted_domain_codes=frozenset())
+
+    roots = client.get(
+        "/api/v1/engineering/cp/source-roots",
+        params={"factory_code": "jetech"},
+    )
+    assert roots.status_code == 200
+    assert roots.json() == []
+
+    direct_requests = (
+        client.get(
+            "/api/v1/engineering/cp/source-roots/JETECH_SECRET/directories",
+            params={"factory_code": "jetech", "relative_path": "lot-a"},
+        ),
+        client.get(
+            "/api/v1/engineering/cp/source-roots/JETECH_SECRET/manifest-preview",
+            params={"factory_code": "jetech", "relative_path": "lot-a"},
+        ),
+        client.post(
+            "/api/v1/engineering/cp/uploads",
+            data={
+                "factory_code": "jetech",
+                "source_root_code": "JETECH_SECRET",
+                "source_relative_path": "lot-a",
+                "source_manifest_mode": "PATH_SIZE_MTIME_V1",
+                "source_manifest_sha256": "0" * 64,
+            },
+        ),
+    )
+    for response in direct_requests:
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "SOURCE_ROOT_NOT_FOUND"
+        assert "JETECH_SECRET" not in response.text
+    assert service.registered_files == ()
 
 
 def test_formal_catalog_enforces_file_count_quota(monkeypatch, tmp_path: Path) -> None:
@@ -704,6 +812,7 @@ def test_formal_catalog_enforces_file_count_quota(monkeypatch, tmp_path: Path) -
                 (".xls",),
                 "FORMAL_IMPORT",
                 ("ENGINEERING",),
+                "JETECH_CP",
             ),
         )
     )
@@ -735,6 +844,7 @@ def test_catalog_upload_requires_preview_confirmation_before_copy(
                 (".xls",),
                 "FORMAL_IMPORT",
                 ("ENGINEERING",),
+                "JETECH_CP",
             ),
         )
     )
@@ -774,6 +884,7 @@ def test_catalog_upload_rejects_changed_manifest_before_copy_or_registration(
                 (".xls",),
                 "FORMAL_IMPORT",
                 ("ENGINEERING",),
+                "JETECH_CP",
             ),
         )
     )

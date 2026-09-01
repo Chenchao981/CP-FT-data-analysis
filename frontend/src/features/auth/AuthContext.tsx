@@ -2,6 +2,7 @@ import { App as AntApp } from "antd";
 import { useQueryClient } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { clearToken, CurrentUser, getMe, login as loginApi, logout as logoutApi, type PermissionCode, saveToken } from "../../api/auth";
+import { clearLocalAgentBrowserState } from "../../api/localAgent";
 
 type AuthContextValue = { user: CurrentUser | null; loading: boolean; login: (loginName: string, password: string) => Promise<void>; logout: () => Promise<void>; can: (permission: PermissionCode) => boolean };
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -14,6 +15,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [queryClient]);
   const reset = useCallback(async () => {
     clearToken();
+    clearLocalAgentBrowserState();
     setUser(null);
     setLoading(false);
     await clearQueryState();

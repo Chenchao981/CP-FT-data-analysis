@@ -28,6 +28,9 @@ $env:TMS_EXPECTED_DATABASE = '__PRODUCTION_DATABASE__'
 $env:TMS_EXPECTED_DATABASE_SERVER = '__SQL_SERVER__'
 $env:TMS_EXPECTED_SCHEMA_REVISION = '__RELEASE_SCHEMA_HEAD__'
 
+# Every managed Source root must include a concrete data_domain_code that
+# already exists in iam.data_domain. API access also requires the current user
+# to hold an active, unexpired grant for that domain.
 $env:TMS_SOURCE_ROOTS_JSON = @'
 [
   {
@@ -35,6 +38,7 @@ $env:TMS_SOURCE_ROOTS_JSON = @'
     "name": "__SOURCE_NAME__",
     "path": "D:\\TMS\\source\\__SOURCE_CODE__",
     "purpose": "FORMAL_IMPORT",
+    "data_domain_code": "__DATA_DOMAIN_CODE__",
     "business_domains": ["ENGINEERING", "PRODUCTION"],
     "test_stage": "FT",
     "factory_code": "__FACTORY_CODE__",

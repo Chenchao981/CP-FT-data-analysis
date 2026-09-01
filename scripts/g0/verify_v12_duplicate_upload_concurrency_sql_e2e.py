@@ -27,7 +27,7 @@ from app.infrastructure.database import check_database, get_engine
 from app.infrastructure.sql_stage_data_service import SqlStageDataService
 
 EXPECTED_DATABASE = "TMS_G0_DEV"
-EXPECTED_SCHEMA_REVISION = "sql2014_0023"
+EXPECTED_SCHEMA_REVISION = "sql2014_0024"
 _SOURCE_SELECT_MARKERS = (
     "SELECT source_file_id FROM ingestion.source_file",
     "WITH (UPDLOCK,HOLDLOCK)",
@@ -112,7 +112,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Verify concurrent same-SHA upload registration in "
-            "TMS_G0_DEV/sql2014_0023, then precisely delete the random fixture"
+            "TMS_G0_DEV/sql2014_0024, then precisely delete the random fixture"
         )
     )
     parser.add_argument(
@@ -539,7 +539,7 @@ def main() -> None:
     )
     print("v12_source_select_barrier=PASS connections=2 threads=2 source_select_hits=2")
     print(
-        "v12_concurrency_cleanup=PASS database=TMS_G0_DEV schema=sql2014_0023 "
+        "v12_concurrency_cleanup=PASS database=TMS_G0_DEV schema=sql2014_0024 "
         "counts_restored=true fixture_rows=0 filesystem_snapshots_created=0"
     )
 

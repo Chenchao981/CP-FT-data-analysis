@@ -40,6 +40,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--domain", default="engineering", choices=("engineering", "production")
     )
+    parser.add_argument(
+        "--data-domain-code",
+        required=True,
+        help="Active iam.data_domain code granted to the verification user",
+    )
     return parser.parse_args()
 
 
@@ -56,17 +61,32 @@ def main() -> None:
             f"FT directory has no direct {suffixes} files: {source}"
         )
 
+    data_domain_code = args.data_domain_code.strip().upper()
+    factory_code = args.factory.upper()
     engine = get_engine()
     with engine.connect() as connection:
         user_id = connection.execute(
             text(
-                "SELECT TOP(1) u.user_id FROM iam.app_user u "
-                "JOIN iam.user_role ur ON ur.user_id=u.user_id "
-                "JOIN iam.role r ON r.role_id=ur.role_id "
-                "WHERE u.status='ACTIVE' AND r.role_code='SYSTEM_ADMIN' "
+                "SELECT TOP(1) u.user_id FROM iam.data_domain d "
+                "JOIN iam.data_domain_grant g ON g.data_domain_id=d.data_domain_id "
+                "JOIN iam.app_user u ON u.user_id=g.user_id "
+                "WHERE d.domain_code=:data_domain_code AND d.active=1 "
+                "AND d.test_stage='FT' AND (d.factory_code IS NULL OR "
+                "d.factory_code=:factory_code) AND g.status='ACTIVE' "
+                "AND (g.expires_at_utc IS NULL OR "
+                "g.expires_at_utc>SYSUTCDATETIME()) AND u.status='ACTIVE' "
                 "ORDER BY u.user_id"
-            )
-        ).scalar_one()
+            ),
+            {
+                "data_domain_code": data_domain_code,
+                "factory_code": factory_code,
+            },
+        ).scalar_one_or_none()
+    if user_id is None:
+        raise RuntimeError(
+            f"no active user grant for FT data domain {data_domain_code} / "
+            f"{factory_code}"
+        )
     principal = SqlAuthService(engine).principal_for_user(int(user_id))
     app = create_app()
     app.state.source_catalog = SourceCatalog(
@@ -76,10 +96,11 @@ def main() -> None:
                 "G0 FT verification source",
                 source,
                 "FT",
-                args.factory.upper(),
+                factory_code,
                 suffixes,
                 "FORMAL_IMPORT",
                 (args.domain.upper(),),
+                data_domain_code,
             ),
         )
     )

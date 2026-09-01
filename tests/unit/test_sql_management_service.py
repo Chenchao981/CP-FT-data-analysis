@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from unittest.mock import MagicMock
 
 import pytest
+from app.core.errors import DomainError
+from app.domain.auth import Principal
 from app.infrastructure.sql_management_service import (
     _CURRENT_SCOPE_CTE,
     _QUALITY_FACT_SQL,
     _RECENT_DATASET_SQL,
     _TREND_SQL,
+    SqlManagementService,
     _filter_sql,
     _rate,
     _summarize_quality_facts,
@@ -44,6 +48,30 @@ def test_management_rates_preserve_unknown_denominators() -> None:
     assert _rate(80, 90) == pytest.approx(80 / 90)
     assert _rate(10, 100) == 0.1
     assert _rate(0, 0) is None
+
+
+def test_domain_summary_fails_closed_before_facts_without_active_grant() -> None:
+    connection = MagicMock()
+    connection.execute.return_value.scalar_one.return_value = 0
+    engine = MagicMock()
+    engine.connect.return_value.__enter__.return_value = connection
+    service = SqlManagementService(engine)
+    principal = Principal(7, "reader", "Reader", ("BUSINESS_USER",), frozenset({"MANAGEMENT_READ"}))
+
+    with pytest.raises(DomainError) as caught:
+        service.quality_summary(
+            principal=principal,
+            from_utc=datetime(2026, 8, 1, tzinfo=UTC),
+            to_utc=datetime(2026, 9, 1, tzinfo=UTC),
+            access_scope="DOMAIN",
+            data_domain_id=11,
+        )
+
+    assert caught.value.code == "QUALITY_DATA_DOMAIN_ACCESS_DENIED"
+    checked_sql = str(connection.execute.call_args.args[0])
+    assert "d.active=1" in checked_sql
+    assert "g.status='ACTIVE'" in checked_sql
+    assert "g.expires_at_utc>SYSUTCDATETIME()" in checked_sql
 
 
 def test_management_trend_does_not_add_unknown_to_yield() -> None:

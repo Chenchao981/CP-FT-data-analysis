@@ -111,6 +111,7 @@ def prepare_atomic_stage(
         connection.execute(
             text(
                 "SELECT b.import_batch_id,b.owner_user_id,b.business_domain,b.test_stage,b.factory_code,"
+                "b.access_scope,b.data_domain_id,b.source_definition_id,"
                 "b.status AS batch_status,j.import_batch_id AS job_import_batch_id,"
                 "j.status AS job_status,j.cleaner_release_id,j.finalize_protocol,j.lease_token,"
                 "j.lease_expires_at_utc,j.attempt_count,cr.output_contract_version,"

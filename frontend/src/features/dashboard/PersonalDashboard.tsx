@@ -1,18 +1,28 @@
 import {
   ArrowRightOutlined,
-  CheckCircleOutlined,
   CloudServerOutlined,
   DatabaseOutlined,
   ExperimentOutlined,
   RadarChartOutlined,
   SafetyCertificateOutlined,
   ThunderboltOutlined,
+  UserOutlined,
 } from "@ant-design/icons";
-import { Button, Card, Col, Progress, Row, Space, Tag, Typography } from "antd";
+import { useQuery } from "@tanstack/react-query";
+import { Alert, Button, Card, Col, Empty, Row, Select, Space, Spin, Statistic, Table, Tabs, Tag, Typography } from "antd";
+import type { ColumnsType } from "antd/es/table";
 import type { EChartsOption } from "echarts";
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 
+import { listMyDataDomains, type DataDomain } from "../../api/dataDomains";
+import {
+  getQualityManagementSummary,
+  type QualityDatasetDrilldown,
+  type QualityManagementSummary,
+} from "../../api/management";
+import { listQuickAnalysisSessions, type QuickAnalysisSession } from "../../api/quickAnalysis";
 import { EChart } from "../../components/EChart";
+import { formatShanghaiDate, formatUtcDateTime } from "../../utils/dateTime";
 
 export interface PersonalDashboardProps {
   userName: string;
@@ -21,19 +31,71 @@ export interface PersonalDashboardProps {
   canRunQuickAnalysis?: boolean;
 }
 
-const kpis = [
-  { label: "正式数据集", value: "128", delta: "+6 本周", tone: "cyan", icon: <DatabaseOutlined /> },
-  { label: "今日处理单元", value: "248,630", delta: "+12.4%", tone: "blue", icon: <ThunderboltOutlined /> },
-  { label: "已知良率", value: "98.73%", delta: "+0.18 pp", tone: "green", icon: <CheckCircleOutlined /> },
-  { label: "待处理门禁", value: "3", delta: "需关注", tone: "amber", icon: <SafetyCertificateOutlined /> },
-] as const;
+type DashboardScope = "PERSONAL" | "DOMAIN";
 
-const factoryReadiness = [
-  { name: "华虹 CP", value: 96, color: "#45d6b5" },
-  { name: "日月新 FT", value: 92, color: "#48a9ff" },
-  { name: "日月光 FT", value: 88, color: "#8b7cff" },
-  { name: "电基 FT", value: 84, color: "#ffb454" },
-] as const;
+const percent = (value: number | null | undefined) => value == null ? "—" : `${(value * 100).toFixed(2)}%`;
+const count = (value: number | null | undefined) => value == null ? "—" : value.toLocaleString("zh-CN");
+
+function SummaryView({ data, scope }: { data: QualityManagementSummary; scope: DashboardScope }) {
+  const trendOption = useMemo<EChartsOption>(() => ({
+    color: ["#42d7c5", "#5a9cff", "#786cff"],
+    tooltip: { trigger: "axis", backgroundColor: "rgba(8,22,43,.94)", borderColor: "#294865", textStyle: { color: "#eef8ff" } },
+    legend: { data: ["已知良率", "UNKNOWN 占比", "总单元"], textStyle: { color: "#91abc0" }, right: 4 },
+    grid: { left: 58, right: 64, top: 58, bottom: 44 },
+    xAxis: { type: "category", data: data.trends.map((item) => formatShanghaiDate(item.period_start_utc)), axisLine: { lineStyle: { color: "#29445c" } }, axisLabel: { color: "#7894aa", rotate: 25 } },
+    yAxis: [
+      { type: "value", min: 0, max: 100, axisLabel: { color: "#7894aa", formatter: "{value}%" }, splitLine: { lineStyle: { color: "rgba(91,126,151,.16)" } } },
+      { type: "value", min: 0, axisLabel: { color: "#7894aa" }, splitLine: { show: false } },
+    ],
+    series: [
+      { name: "已知良率", type: "line", connectNulls: false, smooth: true, data: data.trends.map((item) => item.yield_rate == null ? null : Number((item.yield_rate * 100).toFixed(4))) },
+      { name: "UNKNOWN 占比", type: "line", connectNulls: false, smooth: true, data: data.trends.map((item) => item.unknown_rate == null ? null : Number((item.unknown_rate * 100).toFixed(4))) },
+      { name: "总单元", type: "bar", yAxisIndex: 1, barMaxWidth: 22, itemStyle: { opacity: 0.28, borderRadius: [5, 5, 0, 0] }, data: data.trends.map((item) => item.total_units) },
+    ],
+  }), [data.trends]);
+
+  const columns: ColumnsType<QualityDatasetDrilldown> = [
+    { title: "Dataset", dataIndex: "dataset_id", width: 120, render: (value, row) => `#${value} / V${row.version_no}` },
+    { title: "产品", dataIndex: "product_name", ellipsis: true },
+    { title: "Lot", dataIndex: "lot_id", ellipsis: true },
+    { title: "CP/FT", dataIndex: "test_stage", width: 80 },
+    { title: "已知良率", dataIndex: "yield_rate", width: 120, render: percent },
+    { title: "发布时间", dataIndex: "published_at_utc", width: 180, render: formatUtcDateTime },
+  ];
+
+  if ((data.kpis.dataset_count ?? 0) === 0) {
+    return <Empty description={scope === "PERSONAL" ? "近30天没有归属于你的当前正式数据" : "近30天该数据域没有可见的当前正式数据"} />;
+  }
+
+  return <div className="dashboard-summary">
+    <Row gutter={[16, 16]} className="dashboard-kpis">
+      <Col xs={24} sm={12} xl={6}><Card className="cockpit-card"><Statistic title="当前正式数据集" value={count(data.kpis.dataset_count)} prefix={<DatabaseOutlined />} /></Card></Col>
+      <Col xs={24} sm={12} xl={6}><Card className="cockpit-card"><Statistic title="单元数" value={count(data.kpis.total_units)} prefix={<ThunderboltOutlined />} /></Card></Col>
+      <Col xs={24} sm={12} xl={6}><Card className="cockpit-card"><Statistic title="已知良率 PASS/(PASS+FAIL)" value={percent(data.kpis.yield_rate)} prefix={<SafetyCertificateOutlined />} /></Card></Col>
+      <Col xs={24} sm={12} xl={6}><Card className="cockpit-card"><Statistic title="UNKNOWN 占比" value={percent(data.kpis.unknown_rate)} prefix={<RadarChartOutlined />} /></Card></Col>
+    </Row>
+    <Row gutter={[16, 16]}>
+      <Col xs={24} xl={15}>
+        <Card className="cockpit-card chart-panel" title="近30天趋势" extra={<Tag>{scope === "PERSONAL" ? "仅本人" : "仅当前数据域"}</Tag>}>
+          <EChart option={trendOption} className="dashboard-trend-chart" ariaLabel={`${scope === "PERSONAL" ? "我的数据" : "数据域"}近30天已知良率与单元趋势`} />
+        </Card>
+      </Col>
+      <Col xs={24} xl={9}>
+        <Card className="cockpit-card" title="统计口径">
+          <Space direction="vertical" size="middle">
+            <Typography.Text>产品 {count(data.kpis.product_count)} 个，Lot {count(data.kpis.lot_count)} 个</Typography.Text>
+            <Typography.Text>PASS {count(data.kpis.pass_units)} / FAIL {count(data.kpis.fail_units)} / UNKNOWN {count(data.kpis.unknown_units)}</Typography.Text>
+            <Typography.Text>失败 Job：{count(data.kpis.failed_job_count)}</Typography.Text>
+            <Typography.Text type="secondary">只统计已发布且当前生效的正式数据；未知 PASS/FAIL 不补零。</Typography.Text>
+          </Space>
+        </Card>
+      </Col>
+    </Row>
+    <Card className="cockpit-card" title="最近正式数据集">
+      <Table rowKey={(row) => `${row.dataset_id}-${row.version_no}`} columns={columns} dataSource={data.recent_datasets} pagination={false} size="small" scroll={{ x: 850 }} />
+    </Card>
+  </div>;
+}
 
 export function PersonalDashboard({
   userName,
@@ -41,84 +103,110 @@ export function PersonalDashboard({
   canOpenQuality = false,
   canRunQuickAnalysis = false,
 }: PersonalDashboardProps) {
-  const trendOption = useMemo<EChartsOption>(() => ({
-    color: ["#42d7c5", "#5a9cff", "#786cff"],
-    tooltip: { trigger: "axis", backgroundColor: "rgba(8,22,43,.94)", borderColor: "#294865", textStyle: { color: "#eef8ff" } },
-    legend: { data: ["CP 已知良率", "FT 已知良率", "处理单元"], textStyle: { color: "#91abc0" }, right: 4 },
-    grid: { left: 48, right: 54, top: 58, bottom: 36 },
-    xAxis: { type: "category", data: ["08/26", "08/27", "08/28", "08/29", "08/30", "08/31", "09/01"], axisLine: { lineStyle: { color: "#29445c" } }, axisLabel: { color: "#7894aa" } },
-    yAxis: [
-      { type: "value", min: 96, max: 100, axisLabel: { color: "#7894aa", formatter: "{value}%" }, splitLine: { lineStyle: { color: "rgba(91,126,151,.16)" } } },
-      { type: "value", axisLabel: { color: "#7894aa", formatter: (value: number) => `${Math.round(value / 1000)}k` }, splitLine: { show: false } },
-    ],
-    series: [
-      { name: "CP 已知良率", type: "line", smooth: true, symbolSize: 7, areaStyle: { opacity: 0.08 }, data: [98.1, 98.35, 98.22, 98.62, 98.55, 98.84, 98.91] },
-      { name: "FT 已知良率", type: "line", smooth: true, symbolSize: 7, areaStyle: { opacity: 0.06 }, data: [97.82, 97.94, 98.02, 98.1, 98.36, 98.41, 98.57] },
-      { name: "处理单元", type: "bar", yAxisIndex: 1, barMaxWidth: 22, itemStyle: { opacity: 0.28, borderRadius: [5, 5, 0, 0] }, data: [168200, 192600, 183900, 221400, 207800, 236100, 248630] },
-    ],
-  }), []);
+  const [scope, setScope] = useState<DashboardScope>("PERSONAL");
+  const [dataDomainId, setDataDomainId] = useState<number>();
+  const range = useMemo(() => {
+    const to = new Date();
+    const from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
+    return { from_utc: from.toISOString(), to_utc: to.toISOString() };
+  }, []);
+  const domains = useQuery({ queryKey: ["data-domains", "mine"], queryFn: listMyDataDomains });
+  useEffect(() => {
+    if (dataDomainId == null && domains.data?.length) setDataDomainId(domains.data[0].data_domain_id);
+  }, [dataDomainId, domains.data]);
+  const selectedDomain = domains.data?.find((item) => item.data_domain_id === dataDomainId);
+  const summary = useQuery({
+    queryKey: ["dashboard", "quality-summary", scope, dataDomainId ?? null, range],
+    queryFn: () => getQualityManagementSummary({
+      ...range,
+      access_scope: scope,
+      data_domain_id: scope === "DOMAIN" ? dataDomainId : undefined,
+      recent_limit: 8,
+    }),
+    enabled: scope === "PERSONAL" || dataDomainId != null,
+    retry: false,
+  });
+  const personalQuick = useQuery({
+    queryKey: ["dashboard", "quick-analysis", "PERSONAL"],
+    queryFn: () => listQuickAnalysisSessions({
+      page: 1,
+      page_size: 5,
+      access_scope: "PERSONAL",
+    }),
+    enabled: canRunQuickAnalysis,
+    retry: false,
+  });
+  const personalQuickItems = (personalQuick.data?.items ?? []).filter(
+    (item) => item.access_scope === "PERSONAL",
+  );
+  const quickColumns: ColumnsType<QuickAnalysisSession> = [
+    { title: "会话", dataIndex: "analysis_session_id", width: 90 },
+    { title: "来源", dataIndex: "source_root_code", width: 130, render: (value) => value === "LOCAL_AGENT" ? "本机目录" : value },
+    { title: "范围", dataIndex: "access_scope", width: 90, render: () => <Tag color="cyan">仅本人</Tag> },
+    { title: "状态", dataIndex: "status", width: 100 },
+    { title: "参数", dataIndex: "parameter_count", width: 80, render: count },
+    { title: "创建时间", dataIndex: "created_at_utc", width: 180, render: formatUtcDateTime },
+  ];
+
+  const scopeContent = scope === "DOMAIN" && domains.isPending
+    ? <div className="page-loading"><Spin /></div>
+    : scope === "DOMAIN" && domains.isError
+      ? <Alert type="error" showIcon message="无法读取你的数据域" description={domains.error instanceof Error ? domains.error.message : "请稍后重试"} />
+      : scope === "DOMAIN" && domains.data?.length === 0
+        ? <Empty description="你当前没有有效的数据域授权" />
+        : summary.isPending
+          ? <div className="page-loading"><Spin /></div>
+          : summary.isError
+            ? <Alert type="error" showIcon message="统计数据暂时不可用" description={summary.error instanceof Error ? summary.error.message : "请稍后重试"} />
+            : summary.data ? <SummaryView data={summary.data} scope={scope} /> : null;
 
   return <div className="personal-dashboard workbench">
     <section className="dashboard-hero">
       <div className="dashboard-hero-copy">
-        <Space size={8} wrap><Tag color="cyan">PERSONAL COCKPIT</Tag><Tag className="demo-tag">演示数据 · 未连接生产</Tag></Space>
-        <Typography.Title level={1}>早上好，{userName}</Typography.Title>
-        <p className="dashboard-hero-description">从 CP、FT 到质量治理，把今天最需要关注的变化放在一个视图里。</p>
+        <Space size={8} wrap><Tag color="cyan">TMS DATA COCKPIT</Tag><Tag>实时权限口径</Tag></Space>
+        <Typography.Title level={1}>你好，{userName}</Typography.Title>
+        <p className="dashboard-hero-description">个人数据只属于本人；数据域数据只在有效授权范围内统计，两种口径不混合。</p>
         <Space wrap>
           <Button type="primary" size="large" icon={<RadarChartOutlined />} disabled={!canOpenQuality} onClick={() => onNavigate("/management/quality")}>进入质量总览</Button>
           <Button ghost size="large" onClick={() => onNavigate("/datasets/current")}>查看正式数据 <ArrowRightOutlined /></Button>
         </Space>
       </div>
-      <div className="dashboard-wafer" aria-label="半导体晶圆状态示意图">
-        <div className="wafer-orbit orbit-one" />
-        <div className="wafer-orbit orbit-two" />
-        <div className="wafer-core"><span>98.73%</span><small>KNOWN YIELD</small></div>
-        <div className="wafer-node node-a" /><div className="wafer-node node-b" /><div className="wafer-node node-c" />
+      <div className="dashboard-wafer" aria-label="TMS 数据权限范围">
+        <div className="wafer-orbit orbit-one" /><div className="wafer-orbit orbit-two" />
+        <div className="wafer-core"><span>权限</span><small>DATA SCOPE</small></div>
       </div>
     </section>
 
-    <Row gutter={[16, 16]} className="dashboard-kpis">
-      {kpis.map((item) => <Col xs={24} sm={12} xl={6} key={item.label}>
-        <Card className={`cockpit-card kpi-card kpi-${item.tone}`}>
-          <div className="kpi-icon">{item.icon}</div>
-          <span>{item.label}</span><strong>{item.value}</strong><em>{item.delta}</em>
-        </Card>
-      </Col>)}
-    </Row>
+    <Card className="cockpit-card" title="我可见的正式数据" extra={<Typography.Text type="secondary">近30天 · 按正式发布时间</Typography.Text>}>
+      <Tabs activeKey={scope} onChange={(key) => setScope(key as DashboardScope)} items={[
+        { key: "PERSONAL", label: <span><UserOutlined /> 我的数据</span>, children: <Alert type="info" showIcon message="只统计归属于当前登录人的个人数据；即使启用紧急数据访问，也不会混入他人数据。" /> },
+        { key: "DOMAIN", label: <span><CloudServerOutlined /> 数据域</span>, children: <Space wrap><Select aria-label="选择数据域" loading={domains.isPending} placeholder="选择已授权数据域" value={dataDomainId} onChange={setDataDomainId} style={{ minWidth: 280 }} options={(domains.data ?? []).map((item: DataDomain) => ({ value: item.data_domain_id, label: `${item.domain_name} (${item.test_stage})` }))} />{selectedDomain && <><Tag color="blue">{selectedDomain.test_stage}</Tag>{selectedDomain.factory_code && <Tag>{selectedDomain.factory_code}</Tag>}</>}</Space> },
+      ]} />
+      {scopeContent}
+    </Card>
 
-    <Row gutter={[16, 16]}>
-      <Col xs={24} xl={16}>
-        <Card className="cockpit-card chart-panel" title={<span>制造质量脉冲 <small>近 7 天 Demo</small></span>} extra={<Tag color="processing">分钟级视图构想</Tag>}>
-          <EChart option={trendOption} className="dashboard-trend-chart" ariaLabel="CP FT 良率与处理量演示趋势" />
-        </Card>
-      </Col>
-      <Col xs={24} xl={8}>
-        <Card className="cockpit-card readiness-panel" title="数据链路就绪度" extra={<CloudServerOutlined />}>
-          {factoryReadiness.map((item) => <div className="readiness-row" key={item.name}>
-            <div><span>{item.name}</span><b>{item.value}%</b></div>
-            <Progress percent={item.value} showInfo={false} strokeColor={item.color} trailColor="rgba(125,157,180,.14)" />
-          </div>)}
-          <Typography.Text className="demo-footnote">演示口径：Release、Golden、数据新鲜度和最近任务状态的综合示意。</Typography.Text>
-        </Card>
-      </Col>
-    </Row>
+    {canRunQuickAnalysis && <Card className="cockpit-card" title="我的 Quick" extra={<Button type="link" onClick={() => onNavigate("/quick-analysis")}>查看全部 <ArrowRightOutlined /></Button>}>
+      <Alert type="info" showIcon message="这里只显示本人 PERSONAL 快速分析；数据域 Quick 不混入个人看板。" style={{ marginBottom: 12 }} />
+      {personalQuick.isPending
+        ? <div className="page-loading"><Spin /></div>
+        : personalQuick.isError
+          ? <Alert type="error" showIcon message="我的 Quick 暂时不可用" description={personalQuick.error instanceof Error ? personalQuick.error.message : "请稍后重试"} />
+          : personalQuickItems.length === 0
+            ? <Empty description="暂无个人快速分析结果" />
+            : <Table rowKey="analysis_session_id" columns={quickColumns} dataSource={personalQuickItems} pagination={false} size="small" scroll={{ x: 670 }} />}
+    </Card>}
 
-    <Row gutter={[16, 16]}>
-      <Col xs={24} lg={14}>
-        <Card className="cockpit-card attention-panel" title="我的今日关注" extra={<Tag color="warning">3 项</Tag>}>
-          <div className="attention-item"><span className="attention-index">01</span><div><strong>电基 FT 动态参数 Golden 待补齐</strong><small>需要一组同产品“旧列 + 右侧新增列”的真实样本</small></div><Tag color="gold">待业务协同</Tag></div>
-          <div className="attention-item"><span className="attention-index">02</span><div><strong>前端全量测试存在 7 个超时项</strong><small>功能定向已通过，仍需稳定 CI 与人工联合复测</small></div><Tag color="orange">测试门禁</Tag></div>
-          <div className="attention-item"><span className="attention-index">03</span><div><strong>PASS / FAIL 与 Bin 口径待签字</strong><small>未批准前保持 UNKNOWN，良率不做猜测</small></div><Tag color="red">规则门禁</Tag></div>
-        </Card>
-      </Col>
-      <Col xs={24} lg={10}>
-        <Card className="cockpit-card quick-entry-panel" title="快速进入">
-          <button type="button" onClick={() => onNavigate("/engineering/cp")}><ExperimentOutlined /><span><b>工程 CP</b><small>Wafer 清洗与分析</small></span><ArrowRightOutlined /></button>
-          <button type="button" onClick={() => onNavigate("/production/ft")}><ThunderboltOutlined /><span><b>量产 FT</b><small>Lot 清洗与参数分析</small></span><ArrowRightOutlined /></button>
-          <button type="button" disabled={!canRunQuickAnalysis} onClick={() => onNavigate("/quick-analysis")}><RadarChartOutlined /><span><b>快速分析</b><small>临时 PAT Workspace</small></span><ArrowRightOutlined /></button>
-        </Card>
-      </Col>
-    </Row>
+    <Card className="cockpit-card quick-entry-panel" title="固定业务入口">
+      <Row gutter={[8, 8]}>
+        {[
+          ["/engineering/cp", "工程 CP", "Wafer 清洗与分析", <ExperimentOutlined />],
+          ["/engineering/ft", "工程 FT", "Lot 工程分析", <ThunderboltOutlined />],
+          ["/production/cp", "量产 CP", "量产 Wafer 数据", <ExperimentOutlined />],
+          ["/production/ft", "量产 FT", "量产 Lot 数据", <ThunderboltOutlined />],
+        ].map(([path, title, detail, icon]) => <Col xs={24} md={12} xl={6} key={String(path)}><button type="button" onClick={() => onNavigate(String(path))}>{icon}<span><b>{title}</b><small>{detail}</small></span><ArrowRightOutlined /></button></Col>)}
+        <Col xs={24}><button type="button" disabled={!canRunQuickAnalysis} onClick={() => onNavigate("/quick-analysis")}><RadarChartOutlined /><span><b>快速分析</b><small>本机工具或服务器近数据计算</small></span><ArrowRightOutlined /></button></Col>
+      </Row>
+    </Card>
   </div>;
 }
 

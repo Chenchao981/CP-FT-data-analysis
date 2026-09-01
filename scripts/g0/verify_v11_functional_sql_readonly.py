@@ -29,7 +29,7 @@ from app.infrastructure.sql_m2_query_service import SqlM2QueryService
 from app.infrastructure.sql_management_service import SqlManagementService
 
 EXPECTED_DATABASE = "TMS_G0_DEV"
-EXPECTED_SCHEMA_REVISION = "sql2014_0023"
+EXPECTED_SCHEMA_REVISION = "sql2014_0024"
 DETAIL_PAGE_SIZE = 50
 CATALOG_PAGE_SIZE = 2
 _ALLOWED_RESULTS = frozenset({"PASS", "FAIL", "UNKNOWN", "ABORT"})
@@ -947,13 +947,21 @@ def _quality_counts(
                 "('PASS','FAIL','UNKNOWN','ABORT') OR cur.overall_result IS NULL "
                 "THEN CONVERT(bigint,1) ELSE 0 END) AS other_units "
                 "FROM analytics.v_current_dataset_version cdv "
+                "JOIN dataset.dataset cd ON cd.dataset_id=cdv.dataset_id "
                 "JOIN analytics.v_current_unit_result cur "
                 "ON cur.dataset_version_id=cdv.dataset_version_id "
                 "WHERE cdv.test_stage=:stage "
+                "AND cd.access_scope='PERSONAL' "
+                "AND cd.owner_user_id=:user_id "
                 "AND cdv.published_at_utc>=:from_utc "
                 "AND cdv.published_at_utc<:to_utc"
             ),
-            {"stage": stage, "from_utc": from_utc, "to_utc": to_utc},
+            {
+                "stage": stage,
+                "user_id": DEVELOPMENT_PRINCIPAL.user_id,
+                "from_utc": from_utc,
+                "to_utc": to_utc,
+            },
         )
         .mappings()
         .one()
@@ -973,6 +981,7 @@ def _verify_quality_summary(
         principal=DEVELOPMENT_PRINCIPAL,
         from_utc=from_utc,
         to_utc=to_utc,
+        access_scope="PERSONAL",
         test_stage=stage,
         recent_limit=20,
     )

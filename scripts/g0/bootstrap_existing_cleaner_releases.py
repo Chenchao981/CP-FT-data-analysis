@@ -25,6 +25,8 @@ class ExistingRelease:
     input_contract: str
     output_contract: str
     cleaner_version: str | None = None
+    timeout_seconds: int = 3600
+    max_output_bytes: int = 10 * 1024 * 1024 * 1024
 
 
 def _sha256(path: Path) -> str:
@@ -174,6 +176,8 @@ def _definitions() -> tuple[ExistingRelease, ...]:
             "factories.jiequn.pat_cleaner.generate_raw_pat",
             "JIEQUN_UNIFIED_CSV_DIRECTORY_V1",
             "FT_PAT_RESULT_V1",
+            timeout_seconds=7200,
+            max_output_bytes=64 * 1024 * 1024,
         ),
     )
 
@@ -241,8 +245,8 @@ def main(argv: list[str] | None = None) -> None:
         revision = connection.execute(
             text("SELECT version_num FROM alembic_version")
         ).scalar_one()
-        if revision != "sql2014_0023":
-            raise RuntimeError(f"sql2014_0023 is required, database is {revision}")
+        if revision != "sql2014_0024":
+            raise RuntimeError(f"sql2014_0024 is required, database is {revision}")
         approved_by = connection.execute(
             text(
                 "SELECT TOP (1) u.user_id FROM iam.app_user u "
@@ -312,7 +316,10 @@ def main(argv: list[str] | None = None) -> None:
             release_row = (
                 connection.execute(
                     text(
-                        "SELECT cleaner_release_id,code_checksum FROM ingestion.cleaner_release "
+                        "SELECT cleaner_release_id,code_checksum,status,artifact_uri,"
+                        "runtime_uri,entrypoint,adapter_code,input_contract_version,"
+                        "output_contract_version,execution_config_json,timeout_seconds,"
+                        "max_output_bytes FROM ingestion.cleaner_release "
                         "WHERE cleaner_code=:cleaner_code AND cleaner_version=:version "
                         "AND format_profile_id=:profile_id"
                     ),
@@ -359,6 +366,8 @@ def main(argv: list[str] | None = None) -> None:
                     },
                     ensure_ascii=False,
                 ),
+                "timeout_seconds": definition.timeout_seconds,
+                "max_output_bytes": definition.max_output_bytes,
                 "approved_by": approved_by,
             }
             if release_id is None:
@@ -368,25 +377,53 @@ def main(argv: list[str] | None = None) -> None:
                         "format_profile_id,cleaner_code,cleaner_version,code_checksum,"
                         "artifact_uri,status,approved_by,approved_at_utc,runtime_uri,entrypoint,"
                         "adapter_code,input_contract_version,output_contract_version,"
-                        "execution_config_json) OUTPUT INSERTED.cleaner_release_id VALUES("
+                        "execution_config_json,timeout_seconds,max_output_bytes) "
+                        "OUTPUT INSERTED.cleaner_release_id VALUES("
                         ":profile_id,:cleaner_code,:version,:checksum,:artifact_uri,'RELEASED',"
                         ":approved_by,SYSUTCDATETIME(),:runtime_uri,:entrypoint,:adapter_code,"
-                        ":input_contract,:output_contract,:config)"
+                        ":input_contract,:output_contract,:config,:timeout_seconds,"
+                        ":max_output_bytes)"
                     ),
                     values,
                 ).scalar_one()
             else:
-                updated = connection.execute(
-                    text(
-                        "UPDATE ingestion.cleaner_release SET "
-                        "artifact_uri=:artifact_uri "
-                        "WHERE cleaner_release_id=:release_id AND code_checksum=:checksum"
-                    ),
-                    {**values, "release_id": release_id},
-                )
-                if updated.rowcount != 1:
+                expected_contract = {
+                    "status": "RELEASED",
+                    "artifact_uri": values["artifact_uri"],
+                    "runtime_uri": values["runtime_uri"],
+                    "entrypoint": values["entrypoint"],
+                    "adapter_code": values["adapter_code"],
+                    "input_contract_version": values["input_contract"],
+                    "output_contract_version": values["output_contract"],
+                    "timeout_seconds": values["timeout_seconds"],
+                    "max_output_bytes": values["max_output_bytes"],
+                }
+                mismatches = [
+                    field
+                    for field, expected in expected_contract.items()
+                    if (
+                        int(release_row[field])
+                        if field in {"timeout_seconds", "max_output_bytes"}
+                        else str(release_row[field] or "")
+                    )
+                    != expected
+                ]
+                try:
+                    stored_config = json.loads(
+                        str(release_row["execution_config_json"] or "null")
+                    )
+                    expected_config = json.loads(str(values["config"]))
+                except json.JSONDecodeError:
+                    mismatches.append("execution_config_json")
+                else:
+                    if stored_config != expected_config:
+                        mismatches.append("execution_config_json")
+                if mismatches:
                     raise RuntimeError(
-                        f"Cleaner release changed during snapshot repair: {release_id}"
+                        "Published Cleaner Release is immutable; register a new "
+                        f"version instead (release_id={release_id}, fields="
+                        + ",".join(sorted(set(mismatches)))
+                        + ")"
                     )
             registered.append(
                 {
@@ -396,6 +433,8 @@ def main(argv: list[str] | None = None) -> None:
                     "version": version,
                     "artifact_uri": str(artifact),
                     "output_contract": definition.output_contract,
+                    "timeout_seconds": definition.timeout_seconds,
+                    "max_output_bytes": definition.max_output_bytes,
                 }
             )
     print(json.dumps({"registered": registered}, ensure_ascii=False, indent=2))

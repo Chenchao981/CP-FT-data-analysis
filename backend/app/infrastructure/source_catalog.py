@@ -29,6 +29,7 @@ class SourceRoot:
     allowed_suffixes: tuple[str, ...]
     purpose: str = "QUICK_ANALYSIS"
     business_domains: tuple[str, ...] = ()
+    data_domain_code: str | None = None
 
     def public_dict(self) -> dict[str, object]:
         return {
@@ -39,6 +40,7 @@ class SourceRoot:
             "allowed_suffixes": list(self.allowed_suffixes),
             "purpose": self.purpose,
             "business_domains": list(self.business_domains),
+            "data_domain_code": self.data_domain_code,
             "available": self.path.is_dir(),
         }
 
@@ -104,6 +106,14 @@ class SourceCatalog:
         self._roots = {item.code: item for item in roots}
         if len(self._roots) != len(roots):
             raise ValueError("source root codes must be unique")
+        for item in roots:
+            if item.purpose == "FORMAL_IMPORT" and not _ROOT_CODE.fullmatch(
+                (item.data_domain_code or "").strip().upper()
+            ):
+                raise ValueError(
+                    f"formal source root {item.code} must define a valid "
+                    "data_domain_code"
+                )
         self._max_manifest_files = max_manifest_files
 
     @classmethod
@@ -130,6 +140,7 @@ class SourceCatalog:
                 suffix_values = value["allowed_suffixes"]
                 purpose = str(value.get("purpose", "QUICK_ANALYSIS")).strip().upper()
                 domain_values = value.get("business_domains", [])
+                raw_data_domain_code = value.get("data_domain_code")
             except (KeyError, TypeError, ValueError) as exc:
                 raise RuntimeError(
                     f"source root #{index + 1} is missing a required field"
@@ -166,8 +177,19 @@ class SourceCatalog:
                     raise RuntimeError(
                         "Quick Analysis roots must use FT/JIEQUN and the .csv input contract"
                     )
+                data_domain_code = str(raw_data_domain_code or "").strip().upper()
+                if not _ROOT_CODE.fullmatch(data_domain_code):
+                    raise RuntimeError(
+                        f"Quick Analysis source root {code} must define a valid data_domain_code"
+                    )
                 domains: tuple[str, ...] = ()
             else:
+                data_domain_code = str(raw_data_domain_code or "").strip().upper()
+                if not _ROOT_CODE.fullmatch(data_domain_code):
+                    raise RuntimeError(
+                        f"formal source root {code} must define a valid "
+                        "data_domain_code"
+                    )
                 if stage not in _FORMAL_FACTORIES or factory not in _FORMAL_FACTORIES[stage]:
                     raise RuntimeError(
                         f"formal source root {code} has an unsupported stage/factory scope"
@@ -184,7 +206,17 @@ class SourceCatalog:
                         f"formal source root {code} has an unsupported business domain"
                     )
             roots.append(
-                SourceRoot(code, name, path, stage, factory, suffixes, purpose, domains)
+                SourceRoot(
+                    code,
+                    name,
+                    path,
+                    stage,
+                    factory,
+                    suffixes,
+                    purpose,
+                    domains,
+                    data_domain_code,
+                )
             )
         max_files = int(os.getenv("TMS_QUICK_MAX_SOURCE_FILES", "100000"))
         return cls(tuple(roots), max_manifest_files=max_files)

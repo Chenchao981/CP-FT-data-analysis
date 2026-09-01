@@ -112,19 +112,19 @@ const healthyFleet: WorkerFleetHealth = {
   ],
 };
 
-const authForRoles = (roles: string[]) => ({
+const authForRoles = (roles: string[], permissions = ["AUDIT_READ"]) => ({
   user: {
     user_id: 1,
     login_name: "auditor",
     display_name: "审计员",
     department_code: null,
     roles,
-    permissions: ["AUDIT_READ"],
+    permissions,
   },
   loading: false,
   login: vi.fn(async () => undefined),
   logout: vi.fn(async () => undefined),
-  can: vi.fn(() => true),
+  can: vi.fn((permission: string) => permissions.includes(permission)),
 });
 
 function renderSummary() {
@@ -205,14 +205,25 @@ describe("OperationsConsistency", () => {
     expect(screen.queryByText(/db\.internal|password|C:\\private/)).not.toBeInTheDocument();
   });
 
-  it("shows Worker controls only for the SYSTEM_ADMIN role", async () => {
-    vi.mocked(useAuth).mockReturnValue(authForRoles(["SYSTEM_ADMIN"]));
+  it("shows Worker controls only with SYSTEM_OPERATE, independent of role name", async () => {
+    vi.mocked(useAuth).mockReturnValue(
+      authForRoles(["OPERATOR"], ["AUDIT_READ", "SYSTEM_OPERATE"]),
+    );
 
     renderSummary();
 
     expect(await screen.findByRole("button", { name: /Drain/ })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Resume/ })).toBeInTheDocument();
-    expect(screen.getAllByText("系统管理员操作").length).toBeGreaterThanOrEqual(1);
+    expect(screen.getAllByText("Worker 操作").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("does not show Worker controls for a SYSTEM_ADMIN without SYSTEM_OPERATE", async () => {
+    vi.mocked(useAuth).mockReturnValue(authForRoles(["SYSTEM_ADMIN"]));
+
+    renderSummary();
+
+    await screen.findByText("route-a-01");
+    expect(screen.queryByRole("button", { name: /Drain|Resume/ })).not.toBeInTheDocument();
   });
 
   it("states that no active Worker exists without inferring availability from queued jobs", async () => {

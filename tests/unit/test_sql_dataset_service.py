@@ -13,6 +13,7 @@ import pytest
 from app.core.errors import DomainError
 from app.domain.auth import Principal
 from app.domain.datasets import (
+    CreateDatasetVersionRequest,
     DatasetComparisonRequest,
     DqGateResult,
     PublishDatasetVersionRequest,
@@ -33,7 +34,7 @@ _SYSTEM_ADMIN = Principal(
     "system.admin",
     "System Admin",
     ("SYSTEM_ADMIN",),
-    frozenset({"DATASET_READ"}),
+    frozenset({"DATASET_READ", "DATA_BREAK_GLASS"}),
 )
 
 
@@ -83,6 +84,8 @@ class GateConnection:
         is_current=False,
         owner_user_id=7,
         business_domain="PRODUCTION",
+        access_scope="PERSONAL",
+        domain_granted=False,
     ) -> None:
         self.run_status = run_status
         self.lineage = lineage
@@ -91,20 +94,27 @@ class GateConnection:
         self.is_current = is_current
         self.owner_user_id = owner_user_id
         self.business_domain = business_domain
+        self.access_scope = access_scope
+        self.domain_granted = domain_granted
 
     def execute(self, statement, parameters=None):
         sql = str(statement)
         if "FROM dataset.dataset_version dv" in sql and "d.supplier_id" in sql:
             parameters = parameters or {}
-            if "access_b.business_domain='PRODUCTION'" in sql and not (
-                bool(parameters.get("is_admin"))
-                or parameters.get("user_id") == self.owner_user_id
+            allowed = (
+                bool(parameters.get("has_data_break_glass"))
                 or (
-                    self.business_domain == "PRODUCTION"
+                    self.access_scope == "PERSONAL"
+                    and parameters.get("user_id") == self.owner_user_id
+                )
+                or (
+                    self.access_scope == "DOMAIN"
+                    and self.domain_granted
                     and self.version_status == "PUBLISHED"
                     and self.is_current
                 )
-            ):
+            )
+            if "iam.data_domain_grant" in sql and not allowed:
                 return Result(rows=[])
             return Result(
                 rows=[
@@ -155,6 +165,104 @@ class Engine:
     @contextmanager
     def begin(self):
         yield self.connection
+
+
+class CreateVersionConnection:
+    def __init__(
+        self,
+        *,
+        dataset_owner_user_id: int = 7,
+        batch_owner_user_id: int = 7,
+        dataset_access_scope: str = "PERSONAL",
+        batch_access_scope: str = "PERSONAL",
+        data_domain_id: int | None = None,
+        run_job_batch_id: int = 8,
+        processing_run_status: str = "READY",
+        processing_job_status: str = "SUCCESS",
+        identity_mismatch: bool = False,
+        previous_batch_contexts: list[dict[str, Any]] | None = None,
+    ) -> None:
+        self.dataset_owner_user_id = dataset_owner_user_id
+        self.batch_owner_user_id = batch_owner_user_id
+        self.dataset_access_scope = dataset_access_scope
+        self.batch_access_scope = batch_access_scope
+        self.data_domain_id = data_domain_id
+        self.run_job_batch_id = run_job_batch_id
+        self.processing_run_status = processing_run_status
+        self.processing_job_status = processing_job_status
+        self.identity_mismatch = identity_mismatch
+        self.previous_batch_contexts = previous_batch_contexts or []
+        self.statements: list[tuple[str, object]] = []
+        self.version_inserted = False
+
+    def execute(self, statement, parameters=None):
+        sql = " ".join(str(statement).split())
+        self.statements.append((sql, parameters))
+        if "CROSS JOIN ingestion.import_batch b WITH (UPDLOCK,HOLDLOCK)" in sql:
+            return Result(
+                rows=[
+                    {
+                        "dataset_id": 1,
+                        "dataset_owner_user_id": self.dataset_owner_user_id,
+                        "dataset_access_scope": self.dataset_access_scope,
+                        "dataset_data_domain_id": self.data_domain_id,
+                        "dataset_source_definition_id": None,
+                        "dataset_test_stage": "CP",
+                        "supplier_id": 2,
+                        "product_id": 3,
+                        "import_batch_id": 8,
+                        "batch_owner_user_id": self.batch_owner_user_id,
+                        "batch_access_scope": self.batch_access_scope,
+                        "batch_data_domain_id": self.data_domain_id,
+                        "batch_source_definition_id": None,
+                        "business_domain": "ENGINEERING",
+                        "batch_test_stage": "CP",
+                        "factory_code": "HH",
+                    }
+                ]
+            )
+        if sql.startswith("SELECT DISTINCT b.owner_user_id"):
+            return Result(rows=self.previous_batch_contexts)
+        if "AS identity_mismatch" in sql:
+            run_ids = sorted(
+                int(value)
+                for key, value in (parameters or {}).items()
+                if key.startswith("run_")
+            )
+            return Result(
+                rows=[
+                    {
+                        "processing_run_id": run_id,
+                        "processing_run_status": self.processing_run_status,
+                        "job_import_batch_id": self.run_job_batch_id,
+                        "processing_job_status": self.processing_job_status,
+                        "identity_mismatch": self.identity_mismatch,
+                    }
+                    for run_id in run_ids
+                ]
+            )
+        if sql.startswith("SELECT ISNULL(MAX(version_no),0)+1"):
+            return Result(scalar=1)
+        if sql.startswith("SELECT dataset_version_id FROM dataset.dataset_version"):
+            return Result(scalar=None)
+        if sql.startswith("INSERT dataset.dataset_version("):
+            self.version_inserted = True
+            return Result(
+                rows=[
+                    {
+                        "dataset_version_id": 21,
+                        "dataset_id": 1,
+                        "version_no": 1,
+                        "input_batch_id": 8,
+                        "canonical_model_version": "1.0",
+                        "status": "VALIDATING",
+                        "is_current": False,
+                    }
+                ]
+            )
+        if sql.startswith("INSERT dataset.dataset_version_run("):
+            return Result()
+        raise AssertionError(sql)
 
 
 class PublishConnection:
@@ -235,6 +343,108 @@ class PublishService(SqlDatasetService):
             measurement_count=100,
             reasons=(),
         )
+
+
+def _dataset_owner() -> Principal:
+    return Principal(
+        7,
+        "dataset.owner",
+        "Dataset Owner",
+        ("DATA_ENGINEER",),
+        frozenset({"TASK_CREATE"}),
+    )
+
+
+@pytest.mark.parametrize(
+    "connection",
+    (
+        CreateVersionConnection(batch_owner_user_id=9),
+        CreateVersionConnection(run_job_batch_id=99),
+        CreateVersionConnection(processing_run_status="FAILED"),
+        CreateVersionConnection(processing_job_status="RUNNING"),
+        CreateVersionConnection(
+            dataset_access_scope="DOMAIN",
+            batch_access_scope="DOMAIN",
+            data_domain_id=4,
+        ),
+    ),
+    ids=(
+        "other-owner-batch",
+        "other-batch-run",
+        "failed-processing-run",
+        "unfinished-processing-job",
+        "domain-dataset",
+    ),
+)
+def test_create_version_rejects_cross_scope_sources_without_enumerating_ids(
+    connection: CreateVersionConnection,
+) -> None:
+    service = SqlDatasetService(Engine(connection))  # type: ignore[arg-type]
+
+    with pytest.raises(DomainError) as error:
+        service.create_version(
+            1,
+            CreateDatasetVersionRequest(input_batch_id=8, processing_run_ids=[707]),
+            _dataset_owner(),
+        )
+
+    assert error.value.code == "DATASET_VERSION_SOURCE_NOT_FOUND"
+    assert error.value.status_code == 404
+    assert error.value.details == []
+    assert "707" not in str(error.value)
+    assert "99" not in str(error.value)
+    assert connection.version_inserted is False
+
+
+def test_create_version_rejects_existing_factory_or_business_domain_change() -> None:
+    connection = CreateVersionConnection(
+        previous_batch_contexts=[
+            {
+                "owner_user_id": 7,
+                "access_scope": "PERSONAL",
+                "data_domain_id": None,
+                "source_definition_id": None,
+                "business_domain": "PRODUCTION",
+                "test_stage": "CP",
+                "factory_code": "OTHER",
+            }
+        ]
+    )
+    service = SqlDatasetService(Engine(connection))  # type: ignore[arg-type]
+
+    with pytest.raises(DomainError) as error:
+        service.create_version(
+            1,
+            CreateDatasetVersionRequest(input_batch_id=8, processing_run_ids=[7]),
+            _dataset_owner(),
+        )
+
+    assert error.value.code == "DATASET_VERSION_SOURCE_NOT_FOUND"
+    assert connection.version_inserted is False
+
+
+def test_create_version_allows_matching_personal_owner_batch_and_runs() -> None:
+    connection = CreateVersionConnection()
+    service = SqlDatasetService(Engine(connection))  # type: ignore[arg-type]
+
+    result = service.create_version(
+        1,
+        CreateDatasetVersionRequest(input_batch_id=8, processing_run_ids=[7]),
+        _dataset_owner(),
+    )
+
+    assert result.dataset_version_id == 21
+    assert result.dataset_id == 1
+    assert result.input_batch_id == 8
+    assert result.run_count == 1
+    assert connection.version_inserted is True
+    statements = [sql for sql, _ in connection.statements]
+    assert any(
+        "processing_run pr WITH (UPDLOCK,HOLDLOCK)" in sql
+        and "processing_job pj WITH (HOLDLOCK)" in sql
+        and "AS identity_mismatch" in sql
+        for sql in statements
+    )
 
 
 def test_manual_publish_allows_same_source_to_remain_current_in_another_dataset() -> (
@@ -554,6 +764,8 @@ class SummaryConnection:
         is_current: bool = True,
         owner_user_id: int = 7,
         business_domain: str = "PRODUCTION",
+        access_scope: str = "PERSONAL",
+        domain_granted: bool = False,
     ) -> None:
         self.units = units
         self.passes = passes
@@ -562,20 +774,27 @@ class SummaryConnection:
         self.is_current = is_current
         self.owner_user_id = owner_user_id
         self.business_domain = business_domain
+        self.access_scope = access_scope
+        self.domain_granted = domain_granted
 
     def execute(self, statement, parameters=None):
         sql = str(statement)
         if "COUNT(DISTINCT dvr.processing_run_id)" in sql:
             parameters = parameters or {}
-            if "access_b.business_domain='PRODUCTION'" in sql and not (
-                bool(parameters.get("is_admin"))
-                or parameters.get("user_id") == self.owner_user_id
+            allowed = (
+                bool(parameters.get("has_data_break_glass"))
                 or (
-                    self.business_domain == "PRODUCTION"
+                    self.access_scope == "PERSONAL"
+                    and parameters.get("user_id") == self.owner_user_id
+                )
+                or (
+                    self.access_scope == "DOMAIN"
+                    and self.domain_granted
                     and self.version_status == "PUBLISHED"
                     and self.is_current
                 )
-            ):
+            )
+            if "iam.data_domain_grant" in sql and not allowed:
                 return Result(rows=[])
             return Result(
                 rows=[
@@ -609,6 +828,8 @@ class DatasetAccessConnection:
         owner_user_id: int = 7,
         has_current_version: bool = True,
         business_domain: str = "PRODUCTION",
+        access_scope: str = "DOMAIN",
+        domain_granted: bool = True,
     ) -> None:
         self.statements: list[str] = []
         self.executed: list[tuple[str, dict[str, object]]] = []
@@ -616,6 +837,8 @@ class DatasetAccessConnection:
         self.owner_user_id = owner_user_id
         self.has_current_version = has_current_version
         self.business_domain = business_domain
+        self.access_scope = access_scope
+        self.domain_granted = domain_granted
 
     def execute(self, statement, parameters=None):
         sql = str(statement)
@@ -623,15 +846,17 @@ class DatasetAccessConnection:
         self.statements.append(sql)
         self.executed.append((sql, parameters))
         if "SELECT TOP (1) d.dataset_id" in sql:
-            if bool(parameters.get("is_admin")) or (
-                parameters.get("user_id") == self.owner_user_id
-            ):
+            if bool(parameters.get("has_data_break_glass")):
                 return Result(scalar=1)
-            if (
-                "access_b.business_domain='PRODUCTION'" not in sql
-                or not self.has_current_version
-                or self.business_domain != "PRODUCTION"
-            ):
+            if self.access_scope == "PERSONAL":
+                return Result(
+                    scalar=1
+                    if parameters.get("user_id") == self.owner_user_id
+                    else None
+                )
+            if "iam.data_domain_grant" not in sql:
+                return Result(scalar=None)
+            if not self.domain_granted or not self.has_current_version:
                 return Result(scalar=None)
             requested_version = parameters.get("access_version_no")
             return Result(
@@ -1730,7 +1955,7 @@ def test_dataset_summary_excludes_unknown_units_from_yield_denominator() -> None
     assert result.yield_rate == pytest.approx(0.9)
 
 
-def test_non_owner_production_read_only_allows_the_requested_current_version() -> None:
+def test_domain_grant_read_only_allows_the_requested_current_version() -> None:
     connection = DatasetAccessConnection()
     service = SqlDatasetService(Engine(connection))  # type: ignore[arg-type]
     manager = Principal(
@@ -1749,17 +1974,20 @@ def test_non_owner_production_read_only_allows_the_requested_current_version() -
 
     assert historical_error.value.code == "DATASET_ACCESS_DENIED"
     assert error.value.code == "DATASET_ACCESS_DENIED"
-    assert "access_b.business_domain='PRODUCTION'" in connection.statements[0]
+    assert "d.access_scope='DOMAIN'" in connection.statements[0]
+    assert "iam.data_domain_grant" in connection.statements[0]
     assert "access_dv.version_no=:access_version_no" in connection.statements[0]
     assert "access_dv.status='PUBLISHED'" in connection.statements[0]
     assert "access_dv.is_current=1" in connection.statements[0]
     assert connection.executed[0][1]["access_version_no"] == 3
-    assert "access_b.business_domain='PRODUCTION'" not in connection.statements[2]
+    assert "iam.data_domain_grant" not in connection.statements[2]
 
 
-def test_non_owner_engineering_current_is_denied() -> None:
+def test_non_member_domain_current_is_denied_regardless_of_business_domain() -> None:
     service = SqlDatasetService(  # type: ignore[arg-type]
-        Engine(DatasetAccessConnection(business_domain="ENGINEERING"))
+        Engine(
+            DatasetAccessConnection(business_domain="PRODUCTION", domain_granted=False)
+        )
     )
     viewer = Principal(
         8,
@@ -1776,34 +2004,58 @@ def test_non_owner_engineering_current_is_denied() -> None:
 
 
 @pytest.mark.parametrize(
-    "principal",
+    ("principal", "connection", "allowed"),
     (
-        Principal(
-            7,
-            "dataset.owner",
-            "Dataset Owner",
-            ("DATA_ENGINEER",),
-            frozenset({"DATASET_READ"}),
+        (
+            Principal(
+                7,
+                "dataset.owner",
+                "Dataset Owner",
+                ("DATA_ENGINEER",),
+                frozenset({"DATASET_READ"}),
+            ),
+            DatasetAccessConnection(access_scope="PERSONAL"),
+            True,
         ),
-        Principal(
-            1,
-            "system.admin",
-            "System Admin",
-            ("SYSTEM_ADMIN",),
-            frozenset({"DATASET_READ"}),
+        (
+            Principal(
+                1,
+                "system.admin",
+                "System Admin",
+                ("SYSTEM_ADMIN",),
+                frozenset({"DATASET_READ"}),
+            ),
+            DatasetAccessConnection(access_scope="PERSONAL", domain_granted=False),
+            False,
+        ),
+        (
+            Principal(
+                2,
+                "break.glass",
+                "Break Glass",
+                ("DATA_BREAK_GLASS",),
+                frozenset({"DATASET_READ", "DATA_BREAK_GLASS"}),
+            ),
+            DatasetAccessConnection(access_scope="PERSONAL", domain_granted=False),
+            True,
         ),
     ),
-    ids=("owner", "system-admin"),
+    ids=("owner", "system-admin-no-bypass", "break-glass"),
 )
-def test_owner_and_admin_keep_historical_version_read_access(
-    principal: Principal,
+def test_historical_version_requires_personal_owner_or_break_glass(
+    principal: Principal, connection: DatasetAccessConnection, allowed: bool
 ) -> None:
-    service = SqlDatasetService(Engine(DatasetAccessConnection()))  # type: ignore[arg-type]
+    service = SqlDatasetService(Engine(connection))  # type: ignore[arg-type]
 
-    service.assert_dataset_access(17, principal, "READ", version_no=2)
+    if allowed:
+        service.assert_dataset_access(17, principal, "READ", version_no=2)
+    else:
+        with pytest.raises(DomainError) as error:
+            service.assert_dataset_access(17, principal, "READ", version_no=2)
+        assert error.value.code == "DATASET_ACCESS_DENIED"
 
 
-def test_dataset_list_production_branch_requires_a_current_published_version() -> None:
+def test_dataset_list_domain_branch_requires_a_current_published_version() -> None:
     connection = DatasetAccessConnection()
     manager = Principal(
         8,
@@ -1817,7 +2069,8 @@ def test_dataset_list_production_branch_requires_a_current_published_version() -
 
     assert result[0].dataset_id == 17
     sql = connection.statements[0]
-    assert "access_b.business_domain='PRODUCTION'" in sql
+    assert "d.access_scope='DOMAIN'" in sql
+    assert "iam.data_domain_grant" in sql
     assert "access_dv.status='PUBLISHED'" in sql
     assert "access_dv.is_current=1" in sql
 
@@ -1850,7 +2103,7 @@ def test_gate_core_rechecks_scope_and_preserves_owner_history() -> None:
     assert owner_result.status == "PASS"
 
 
-def test_summary_core_rechecks_scope_and_preserves_admin_history() -> None:
+def test_summary_core_rechecks_scope_and_preserves_break_glass_history() -> None:
     manager = Principal(
         8,
         "manager.viewer",
@@ -1863,7 +2116,7 @@ def test_summary_core_rechecks_scope_and_preserves_admin_history() -> None:
         "system.admin",
         "System Admin",
         ("SYSTEM_ADMIN",),
-        frozenset({"DATASET_READ"}),
+        frozenset({"DATASET_READ", "DATA_BREAK_GLASS"}),
     )
     historical = {
         "version_status": "SUPERSEDED",

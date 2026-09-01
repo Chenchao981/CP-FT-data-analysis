@@ -15,6 +15,7 @@ from app.api.dependencies import require_permission
 from app.api.m2_filters import build_page_filters
 from app.core.errors import DomainError
 from app.domain.auth import Principal
+from app.domain.data_domains import DataDomainRecord
 from app.domain.jobs import CreateJobRequest, JobType, TriggerType
 from app.domain.m2_queries import M2QueryService
 from app.domain.stage_data import FormalSourceManifestPreview, StoredUpload
@@ -108,6 +109,94 @@ def job_service(request: Request):
 
 def source_catalog(request: Request):
     return request.app.state.source_catalog
+
+
+def data_domain_service(request: Request):
+    instance = getattr(request.app.state, "data_domain_service", None)
+    if instance is None:
+        raise DomainError(
+            "DATABASE_NOT_CONFIGURED",
+            "数据源授权服务尚未连接数据库",
+            503,
+        )
+    return instance
+
+
+def _hidden_formal_source_root() -> DomainError:
+    return DomainError(
+        "SOURCE_ROOT_NOT_FOUND",
+        "数据源不存在或当前账户无权访问",
+        404,
+    )
+
+
+def _formal_domain_binding(
+    root: SourceRoot,
+    grants: tuple[DataDomainRecord, ...],
+) -> DataDomainRecord | None:
+    code = (root.data_domain_code or "").strip().upper()
+    for grant in grants:
+        if grant.domain_code.strip().upper() != code:
+            continue
+        if grant.test_stage.strip().upper() != root.test_stage:
+            continue
+        factory = (grant.factory_code or "").strip().upper()
+        if factory and factory != root.factory_code:
+            continue
+        return grant
+    return None
+
+
+def _authorized_formal_roots(
+    request: Request,
+    principal: Principal,
+    *,
+    business_domain: str,
+    test_stage: str,
+    factory_code: str,
+) -> tuple[dict[str, object], ...]:
+    catalog = source_catalog(request)
+    grants = data_domain_service(request).list_for_principal(principal)
+    visible: list[dict[str, object]] = []
+    for public in catalog.list_roots(
+        purpose="FORMAL_IMPORT",
+        business_domain=business_domain,
+        test_stage=test_stage,
+        factory_code=factory_code,
+    ):
+        root = catalog.get_root(str(public["code"]))
+        if _formal_domain_binding(root, grants) is not None:
+            visible.append(public)
+    return tuple(visible)
+
+
+def _require_authorized_formal_root(
+    request: Request,
+    principal: Principal,
+    *,
+    root_code: str,
+    business_domain: str,
+    test_stage: str,
+    factory_code: str,
+) -> tuple[SourceRoot, DataDomainRecord]:
+    catalog = source_catalog(request)
+    grants = data_domain_service(request).list_for_principal(principal)
+    try:
+        root = catalog.require_scope(
+            root_code,
+            purpose="FORMAL_IMPORT",
+            business_domain=business_domain,
+            test_stage=test_stage,
+            factory_code=factory_code,
+        )
+    except DomainError as exc:
+        if exc.code in {"SOURCE_ROOT_NOT_FOUND", "SOURCE_ROOT_SCOPE_MISMATCH"}:
+            raise _hidden_formal_source_root() from None
+        raise
+    binding = _formal_domain_binding(root, grants)
+    if binding is None:
+        raise _hidden_formal_source_root()
+    return root, binding
 
 
 def _queue_initial_import(
@@ -283,6 +372,7 @@ def _cleanup_unregistered_uploads(
 
 def _snapshot_catalog_directory(
     request: Request,
+    principal: Principal,
     *,
     business_domain: str,
     test_stage: str,
@@ -291,9 +381,10 @@ def _snapshot_catalog_directory(
     relative_path: str,
     expected_manifest_mode: str,
     expected_manifest_sha256: str,
-) -> tuple[StoredUpload, ...]:
-    catalog, root, manifest, recursive = _formal_source_manifest(
+) -> tuple[tuple[StoredUpload, ...], int]:
+    catalog, root, manifest, recursive, data_domain_id = _formal_source_manifest(
         request,
+        principal,
         business_domain=business_domain,
         test_stage=test_stage,
         factory=factory,
@@ -357,6 +448,7 @@ def _snapshot_catalog_directory(
             metadata: dict[str, object] = {
                 "purpose": "FORMAL_IMPORT",
                 "source_root_code": root.code,
+                "data_domain_code": root.data_domain_code,
                 "source_relative_path": manifest.selected_relative_path,
                 "source_file_relative_path": entry.relative_path,
                 "source_manifest_mode": manifest.mode,
@@ -390,25 +482,27 @@ def _snapshot_catalog_directory(
     except Exception:
         shutil.rmtree(target, ignore_errors=True)
         raise
-    return tuple(stored)
+    return tuple(stored), data_domain_id
 
 
 def _formal_source_manifest(
     request: Request,
+    principal: Principal,
     *,
     business_domain: str,
     test_stage: str,
     factory: str,
     root_code: str,
     relative_path: str,
-) -> tuple[SourceCatalog, SourceRoot, SourceManifest, bool]:
+) -> tuple[SourceCatalog, SourceRoot, SourceManifest, bool, int]:
     """Build the one authoritative formal-import manifest used by preview and submit."""
 
     catalog = source_catalog(request)
     registry_factory = REGISTRY_FACTORY_CODES[factory]
-    root = catalog.require_scope(
-        root_code,
-        purpose="FORMAL_IMPORT",
+    root, binding = _require_authorized_formal_root(
+        request,
+        principal,
+        root_code=root_code,
         business_domain=business_domain,
         test_stage=test_stage,
         factory_code=registry_factory,
@@ -436,7 +530,7 @@ def _formal_source_manifest(
             f"正式入库源数据大小超过上限 {max_bytes} 字节",
             422,
         )
-    return catalog, root, manifest, recursive
+    return catalog, root, manifest, recursive, binding.data_domain_id
 
 
 @router.get("/{business_domain}/{test_stage}/source-roots")
@@ -445,7 +539,7 @@ def list_formal_source_roots(
     business_domain: str,
     test_stage: str,
     factory_code: str = Query(min_length=1, max_length=128),
-    _principal: Principal = Depends(require_permission("TASK_CREATE")),
+    principal: Principal = Depends(require_permission("TASK_CREATE")),
 ) -> tuple[dict[str, object], ...]:
     domain = _normalize_business_domain(business_domain)
     stage = UPLOAD_TEST_STAGES.get(test_stage.strip().lower())
@@ -456,8 +550,9 @@ def list_formal_source_roots(
             422,
         )
     factory = _normalize_factory(factory_code, stage)
-    return source_catalog(request).list_roots(
-        purpose="FORMAL_IMPORT",
+    return _authorized_formal_roots(
+        request,
+        principal,
         business_domain=domain,
         test_stage=stage,
         factory_code=REGISTRY_FACTORY_CODES[factory],
@@ -472,7 +567,7 @@ def list_formal_source_directories(
     test_stage: str,
     factory_code: str = Query(min_length=1, max_length=128),
     relative_path: str = Query(default=".", max_length=1000),
-    _principal: Principal = Depends(require_permission("TASK_CREATE")),
+    principal: Principal = Depends(require_permission("TASK_CREATE")),
 ) -> dict[str, object]:
     domain = _normalize_business_domain(business_domain)
     stage = UPLOAD_TEST_STAGES.get(test_stage.strip().lower())
@@ -484,14 +579,15 @@ def list_formal_source_directories(
         )
     factory = _normalize_factory(factory_code, stage)
     catalog = source_catalog(request)
-    catalog.require_scope(
-        root_code,
-        purpose="FORMAL_IMPORT",
+    root, _binding = _require_authorized_formal_root(
+        request,
+        principal,
+        root_code=root_code,
         business_domain=domain,
         test_stage=stage,
         factory_code=REGISTRY_FACTORY_CODES[factory],
     )
-    current, parent, directories = catalog.browse(root_code, relative_path)
+    current, parent, directories = catalog.browse(root.code, relative_path)
     return {
         "root_code": root_code.strip().upper(),
         "current_relative_path": current,
@@ -508,7 +604,7 @@ def preview_formal_source_manifest(
     test_stage: str,
     factory_code: str = Query(min_length=1, max_length=128),
     relative_path: str = Query(default=".", max_length=1000),
-    _principal: Principal = Depends(require_permission("TASK_CREATE")),
+    principal: Principal = Depends(require_permission("TASK_CREATE")),
 ) -> dict[str, object]:
     domain = _normalize_business_domain(business_domain)
     stage = UPLOAD_TEST_STAGES.get(test_stage.strip().lower())
@@ -519,8 +615,9 @@ def preview_formal_source_manifest(
             422,
         )
     factory = _normalize_factory(factory_code, stage)
-    _, root, manifest, recursive = _formal_source_manifest(
+    _, root, manifest, recursive, _data_domain_id = _formal_source_manifest(
         request,
+        principal,
         business_domain=domain,
         test_stage=stage,
         factory=factory,
@@ -574,6 +671,7 @@ def upload_stage_data(
         )
     selected_root = (source_root_code or "").strip()
     selected_relative = (source_relative_path or ".").strip() or "."
+    source_data_domain_id: int | None = None
     if selected_root:
         if files:
             raise DomainError(
@@ -587,8 +685,9 @@ def upload_stage_data(
                 "受控数据源提交前必须先预览并确认 Manifest",
                 422,
             )
-        stored = _snapshot_catalog_directory(
+        stored, source_data_domain_id = _snapshot_catalog_directory(
             request,
+            principal,
             business_domain=domain,
             test_stage=stage,
             factory=factory,
@@ -621,6 +720,7 @@ def upload_stage_data(
             factory,
             stored,
             remark.strip() if remark else None,
+            data_domain_id=source_data_domain_id,
         )
     except Exception:
         _cleanup_unregistered_uploads(stored, domain, stage)

@@ -36,7 +36,12 @@ class _AccessConnection:
         parameters = parameters or {}
         self.statements.append(sql)
         if "SELECT b.import_batch_id,b.status" in sql:
-            assert "(:is_admin=1 OR b.owner_user_id=:user_id)" in sql
+            if "OUTER APPLY" in sql:
+                assert "b.access_scope='DOMAIN'" in sql
+                assert "iam.data_domain_grant" in sql
+            else:
+                assert "b.access_scope='PERSONAL'" in sql
+                assert "iam.data_domain_grant" not in sql
             if (
                 not parameters["is_admin"]
                 and parameters["user_id"] != self.owner_user_id

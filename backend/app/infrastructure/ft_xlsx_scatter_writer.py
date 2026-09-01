@@ -1396,13 +1396,17 @@ class FtXlsxScatterWriter:
                 dataset_id = self._scalar(
                     connection,
                     "INSERT dataset.dataset(dataset_code,dataset_name,dataset_type,test_stage,supplier_id,product_id,"
-                    "owner_user_id) OUTPUT INSERTED.dataset_id VALUES(:code,:name,'FT_DETAIL','FT',:supplier,:product,:owner)",
+                    "owner_user_id,access_scope,data_domain_id,source_definition_id) OUTPUT INSERTED.dataset_id "
+                    "VALUES(:code,:name,'FT_DETAIL','FT',:supplier,:product,:owner,:access_scope,:data_domain_id,:source_definition_id)",
                     {
                         "code": dataset_code,
                         "name": f"{context['business_domain']} FT {output.product_name} {'/'.join(output.lots)}",
                         "supplier": supplier_id,
                         "product": product_id,
                         "owner": context["owner_user_id"],
+                        "access_scope": context["access_scope"],
+                        "data_domain_id": context["data_domain_id"],
+                        "source_definition_id": context["source_definition_id"],
                     },
                 )
             version_id, version_no = insert_draft_dataset_version(

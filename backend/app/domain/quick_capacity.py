@@ -64,6 +64,12 @@ class QuickCapacityPolicy:
             raise ValueError("source_total_bytes cannot be negative")
         return math.ceil(source_total_bytes * self.reserve_ratio) + self.reserve_overhead_bytes
 
+    def reservation_for_local_result(self, max_output_bytes: int) -> int:
+        """Reserve only server-side result capacity for a Local Agent receipt."""
+        if max_output_bytes < 1:
+            raise ValueError("max_output_bytes must be positive")
+        return max_output_bytes + self.reserve_overhead_bytes
+
     def ensure_filesystem_capacity(self, reservation_bytes: int) -> None:
         probe = self.work_root
         while not probe.exists() and probe.parent != probe:

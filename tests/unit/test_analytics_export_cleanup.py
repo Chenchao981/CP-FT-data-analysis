@@ -12,8 +12,13 @@ from app.infrastructure.analytics_export_files import (
     AnalyticsExportPathPolicy,
     UnsafeAnalyticsExportPath,
 )
+from app.infrastructure.formal_artifact_files import (
+    FormalOrphanRootCleaner,
+    ManagedJobPathPolicy,
+)
 from app.infrastructure.sql_analytics_export_cleanup import (
     SqlAnalyticsExportCleanupService,
+    SqlAnalyticsExportOrphanCleanupService,
 )
 
 
@@ -37,6 +42,10 @@ class _Result:
 
     def scalar_one_or_none(self):
         return self.scalar
+
+    def one_or_none(self):
+        assert len(self.rows) <= 1
+        return self.rows[0] if self.rows else None
 
 
 class _Connection:
@@ -235,3 +244,50 @@ def test_cleanup_execute_blocks_escaped_registered_path_without_deleting(
     assert not any(
         "SET status='EXPIRED'" in statement for statement, _ in engine.connection.calls
     )
+
+
+def test_failed_analytics_export_orphan_is_rechecked_and_deleted(
+    tmp_path: Path,
+) -> None:
+    now = datetime.now(UTC)
+    policy = AnalyticsExportPathPolicy((tmp_path / "exports").absolute())
+    root = policy.prepare_job_root(22)
+    (root / ".analytics-export-22-attempt-1.csv.deadbeef.tmp").write_bytes(
+        b"partial"
+    )
+    state = {
+        "export_job_id": 22,
+        "contract_version": "ANALYTICS_EXPORT_V1",
+        "status": "FAILED",
+        "finished_at_utc": now - timedelta(days=8),
+        "lease_token": None,
+        "lease_owner": None,
+        "lease_expires_at_utc": None,
+        "artifact_count": 0,
+    }
+    engine = _Engine(
+        [
+            _Result(rows=[{"export_job_id": 22}]),
+            _Result(rows=[state]),
+            _Result(rows=[state]),
+        ]
+    )
+    service = SqlAnalyticsExportOrphanCleanupService(
+        engine,  # type: ignore[arg-type]
+        FormalOrphanRootCleaner(ManagedJobPathPolicy(policy.export_root)),
+    )
+
+    result = service.run(
+        now=now,
+        retention=timedelta(days=7),
+        dry_run=False,
+    )[0]
+
+    assert result.cleanup_status == "DELETED"
+    assert result.reason_code == "ORPHAN_ROOT_DELETED"
+    assert not root.exists()
+    assert engine.begin_calls == 1
+    state_sql = "\n".join(sql for sql, _ in engine.connection.calls)
+    assert "j.contract_version" in state_sql
+    assert "j.lease_token" in state_sql
+    assert "COUNT_BIG(*) FROM delivery.export_artifact" in state_sql

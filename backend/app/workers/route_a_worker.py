@@ -53,9 +53,7 @@ class QuickPatHandler:
         self._runner = runner or QuickPatRunner()
         self._work_root = Path(
             work_root
-            or os.getenv(
-                "TMS_QUICK_WORK_ROOT", r"F:\CP-FT数据分析\data\workspace"
-            )
+            or os.getenv("TMS_QUICK_WORK_ROOT", r"F:\CP-FT数据分析\data\workspace")
         )
 
     def __call__(self, job: Job) -> None:
@@ -64,8 +62,8 @@ class QuickPatHandler:
                 "QUICK_PAT requires analysis_session_id and cleaner_release_id"
             )
         session = self._quick_analysis.worker_session_info(job.analysis_session_id)
-        self._quick_analysis.mark_running(session.analysis_session_id)
         try:
+            self._quick_analysis.mark_running(session.analysis_session_id)
             if datetime.now(UTC) >= session.expires_at_utc:
                 raise RuntimeError("Quick PAT session expired before execution")
             if session.analysis_type != "QUICK_PAT":
@@ -84,12 +82,24 @@ class QuickPatHandler:
                     f"{release.test_stage}/{release.factory_code} != "
                     f"{session.test_stage}/{session.factory_code}"
                 )
-            self._source_catalog.require_scope(
+            root = self._source_catalog.require_scope(
                 session.source_root_code,
                 purpose="QUICK_ANALYSIS",
                 test_stage=session.test_stage,
                 factory_code=session.factory_code,
             )
+            if (
+                session.access_scope != "DOMAIN"
+                or session.data_domain_id is None
+                or not session.data_domain_code
+                or (root.data_domain_code or "").strip().upper()
+                != session.data_domain_code.strip().upper()
+            ):
+                raise DomainError(
+                    "QUICK_SOURCE_DOMAIN_BINDING_CHANGED",
+                    "Quick PAT 数据源的数据域绑定已变化，任务已停止",
+                    409,
+                )
             source = self._source_catalog.resolve_directory(
                 session.source_root_code, session.source_relative_path
             )
@@ -105,9 +115,7 @@ class QuickPatHandler:
                     "Source directory changed after the Quick PAT session was queued"
                 )
             output_root = (
-                self._work_root
-                / str(job.job_id)
-                / f"attempt-{job.attempt_count}"
+                self._work_root / str(job.job_id) / f"attempt-{job.attempt_count}"
             )
             result = self._runner.run_release(
                 release=release,
@@ -119,9 +127,17 @@ class QuickPatHandler:
             completed_manifest = self._source_catalog.build_manifest(
                 session.source_root_code, session.source_relative_path
             )
+            completed_root = self._source_catalog.require_scope(
+                session.source_root_code,
+                purpose="QUICK_ANALYSIS",
+                test_stage=session.test_stage,
+                factory_code=session.factory_code,
+            )
             if (
                 completed_manifest.sha256 != session.source_manifest_sha256
                 or completed_manifest.as_json() != session.source_manifest_json
+                or (completed_root.data_domain_code or "").strip().upper()
+                != session.data_domain_code.strip().upper()
             ):
                 raise RuntimeError(
                     "Source directory changed while Quick PAT was running"
@@ -134,6 +150,11 @@ class QuickPatHandler:
                 summary=result.summary,
                 artifacts=result.artifacts,
             )
+        except DomainError as exc:
+            self._quick_analysis.mark_failed(
+                session.analysis_session_id, exc.code, exc.message
+            )
+            raise
         except Exception as exc:
             self._quick_analysis.mark_failed(
                 session.analysis_session_id, "QUICK_PAT_FAILED", str(exc)
@@ -355,7 +376,10 @@ class DatabaseJobWorker:
                 raise RuntimeError(f"no Worker handler for {job.job_type}") from exc
             handled_job = handler(job)
             if handled_job is not None:
-                if handled_job.job_id != job.job_id or handled_job.status != JobStatus.SUCCESS:
+                if (
+                    handled_job.job_id != job.job_id
+                    or handled_job.status != JobStatus.SUCCESS
+                ):
                     raise RuntimeError(
                         "Worker handler returned an invalid terminal Job result"
                     )

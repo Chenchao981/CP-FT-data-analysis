@@ -72,13 +72,18 @@ class StubWorkerOperationsService:
         )
 
 
-def _principal(*, admin: bool, audit: bool = True) -> Principal:
+def _principal(
+    *, admin: bool, audit: bool = True, system_operate: bool = False
+) -> Principal:
+    permissions = {"AUDIT_READ"} if audit else {"DATASET_READ"}
+    if system_operate:
+        permissions.add("SYSTEM_OPERATE")
     return Principal(
         user_id=7,
         login_name="operator",
         display_name="操作员",
         roles=("SYSTEM_ADMIN",) if admin else ("OPERATOR",),
-        permissions=frozenset({"AUDIT_READ"} if audit else {"DATASET_READ"}),
+        permissions=frozenset(permissions),
     )
 
 
@@ -114,7 +119,7 @@ def test_worker_health_requires_audit_and_does_not_expose_host_identity() -> Non
     assert denied.status_code == 403
 
 
-def test_only_system_admin_can_request_drain_or_resume() -> None:
+def test_worker_control_uses_explicit_system_operate_permission_not_role_name() -> None:
     operations = StubWorkerOperationsService()
     worker_id = "route-a-0123456789abcdef"
 
@@ -124,7 +129,15 @@ def test_only_system_admin_can_request_drain_or_resume() -> None:
     assert denied.status_code == 403
     assert operations.actions == []
 
-    client = _client(operations, _principal(admin=True))
+    role_only = _client(operations, _principal(admin=True)).post(
+        f"/api/v1/operations/workers/{worker_id}/drain"
+    )
+    assert role_only.status_code == 403
+    assert operations.actions == []
+
+    client = _client(
+        operations, _principal(admin=False, system_operate=True)
+    )
     drained = client.post(f"/api/v1/operations/workers/{worker_id}/drain")
     resumed = client.post(f"/api/v1/operations/workers/{worker_id}/resume")
 

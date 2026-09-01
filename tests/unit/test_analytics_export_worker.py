@@ -995,6 +995,7 @@ class _Repository:
         self.completed: RenderedAnalyticsExport | None = None
         self.failure: tuple[str, str] | None = None
         self.heartbeats = 0
+        self.execution_checks = 0
 
     def claim_next(self):
         item, self.item = self.item, None
@@ -1003,6 +1004,9 @@ class _Repository:
     def complete(self, _item, artifact, *, expires_at_utc):
         assert expires_at_utc > datetime.now(UTC)
         self.completed = artifact
+
+    def assert_execution_authorized(self, _item):
+        self.execution_checks += 1
 
     def heartbeat(self, _item):
         self.heartbeats += 1
@@ -1023,6 +1027,7 @@ def test_worker_marks_supported_output_complete_and_dependency_failure_failed(
     )
     worker.run_once()
     assert success_repository.completed is not None
+    assert success_repository.execution_checks == 1
     assert success_repository.failure is None
 
     monkeypatch.setattr(renderer_module, "pdf_canvas", None)
@@ -1044,6 +1049,36 @@ def test_worker_marks_supported_output_complete_and_dependency_failure_failed(
     assert failed_repository.completed is None
     assert failed_repository.failure is not None
     assert failed_repository.failure[0] == "ANALYTICS_EXPORT_DEPENDENCY_UNAVAILABLE"
+
+
+def test_worker_stops_before_render_when_requester_is_disabled_after_claim(
+    tmp_path: Path,
+) -> None:
+    class _DisabledRepository(_Repository):
+        def assert_execution_authorized(self, _item):
+            self.execution_checks += 1
+            raise DomainError(
+                "ANALYTICS_EXPORT_ACCESS_REVOKED",
+                "requester account is disabled",
+                409,
+            )
+
+    class _ForbiddenContent:
+        @staticmethod
+        def table(_item):
+            raise AssertionError("disabled requester must not reach content rendering")
+
+    repository = _DisabledRepository(_work_item(export_job_id=43))
+    root = tmp_path / "disabled-before-render"
+    AnalyticsExportWorker(
+        repository,
+        AnalyticsExportRenderer(AnalyticsExportPathPolicy(root), _ForbiddenContent()),
+    ).run_once()
+
+    assert repository.execution_checks == 1
+    assert repository.failure is not None
+    assert repository.failure[0] == "ANALYTICS_EXPORT_ACCESS_REVOKED"
+    assert not (root / "43").exists()
 
 
 def test_worker_heartbeats_during_render_and_discards_output_after_claim_loss(
@@ -1088,6 +1123,70 @@ def test_worker_heartbeats_during_render_and_discards_output_after_claim_loss(
     assert not (root / "99").exists()
 
 
+def test_worker_discards_rendered_output_and_marks_failed_when_access_is_revoked(
+    tmp_path: Path,
+) -> None:
+    class _RevokedRepository(_Repository):
+        def complete(self, _item, _artifact, *, expires_at_utc):
+            assert expires_at_utc > datetime.now(UTC)
+            raise DomainError(
+                "ANALYTICS_EXPORT_ACCESS_REVOKED",
+                "requester grant was revoked while rendering",
+                409,
+            )
+
+    repository = _RevokedRepository(_work_item(export_job_id=100))
+    root = tmp_path / "revoked"
+
+    AnalyticsExportWorker(
+        repository,
+        AnalyticsExportRenderer(AnalyticsExportPathPolicy(root), _Content()),
+    ).run_once()
+
+    assert repository.completed is None
+    assert repository.failure is not None
+    assert repository.failure[0] == "ANALYTICS_EXPORT_ACCESS_REVOKED"
+    assert not (root / "100").exists()
+
+
+def test_cleanup_io_failure_keeps_job_failed_and_emits_controlled_log(
+    tmp_path: Path,
+    caplog,
+) -> None:
+    class _RevokedRepository(_Repository):
+        def complete(self, _item, _artifact, *, expires_at_utc):
+            assert expires_at_utc > datetime.now(UTC)
+            raise DomainError(
+                "ANALYTICS_EXPORT_ACCESS_REVOKED",
+                "requester was disabled while rendering",
+                409,
+            )
+
+    class _CleanupFailureRenderer(AnalyticsExportRenderer):
+        @staticmethod
+        def discard_attempt(_work_item):
+            raise OSError("synthetic managed-directory cleanup failure")
+
+    repository = _RevokedRepository(_work_item(export_job_id=101))
+    root = tmp_path / "cleanup-failure"
+    caplog.set_level("ERROR", logger="app.workers.analytics_export_worker")
+
+    AnalyticsExportWorker(
+        repository,
+        _CleanupFailureRenderer(AnalyticsExportPathPolicy(root), _Content()),
+    ).run_once()
+
+    assert repository.failure is not None
+    assert repository.failure[0] == "ANALYTICS_EXPORT_ACCESS_REVOKED"
+    assert (root / "101").exists()
+    assert any(
+        record.message == "failed to clean rejected Analytics Export attempt"
+        and record.export_job_id == 101
+        and record.attempt_count == 1
+        for record in caplog.records
+    )
+
+
 def test_attempt_specific_artifacts_prevent_stale_worker_file_collision(
     tmp_path: Path,
 ) -> None:
@@ -1102,6 +1201,29 @@ def test_attempt_specific_artifacts_prevent_stale_worker_file_collision(
         "analytics-export-77-attempt-1.csv",
         "analytics-export-77-attempt-2.csv",
     }
+
+
+def test_attempt_cleanup_removes_half_products_but_preserves_newer_attempt(
+    tmp_path: Path,
+) -> None:
+    policy = AnalyticsExportPathPolicy(tmp_path / "exports")
+    renderer = AnalyticsExportRenderer(policy, _Content())
+    root = policy.prepare_job_root(78)
+    stale_target = root / "analytics-export-78-attempt-1.csv"
+    stale_temp = root / (
+        ".analytics-export-78-attempt-1.csv."
+        "0123456789abcdef0123456789abcdef.tmp"
+    )
+    newer_target = root / "analytics-export-78-attempt-2.csv"
+    stale_target.write_bytes(b"stale")
+    stale_temp.write_bytes(b"partial")
+    newer_target.write_bytes(b"newer")
+
+    renderer.discard_attempt(_work_item(export_job_id=78))
+
+    assert not stale_target.exists()
+    assert not stale_temp.exists()
+    assert newer_target.read_bytes() == b"newer"
 
 
 class _ScalarResult:
@@ -1145,6 +1267,7 @@ class _StoredWorkItemConnection:
         current_page: bool = False,
         include_frozen_detail: bool = False,
         tamper_frozen_detail: bool = False,
+        authorized: bool = True,
     ) -> None:
         context = AnalyticsContextRequest.model_validate(
             {
@@ -1236,10 +1359,20 @@ class _StoredWorkItemConnection:
             "status": "PUBLISHED",
             "is_current": True,
             "test_stage": "CP",
+            "requested_by_user_id": 10,
+            "job_status": "RUNNING",
+            "job_contract_version": "ANALYTICS_EXPORT_V1",
+            "job_lease_token": "11111111-1111-4111-8111-111111111111",
+            "job_lease_owner": "worker-test",
+            "job_lease_expires_at_utc": datetime.now(UTC)
+            + timedelta(minutes=5),
+            "can_read": authorized,
         }
+        self.calls: list[str] = []
 
     def execute(self, statement, _parameters=None):
         sql = " ".join(str(statement).split())
+        self.calls.append(sql)
         if sql.startswith("SELECT export_job_id,requested_by,dataset_version_id"):
             return _OptionalMappingResult(self.job)
         if sql.startswith("SELECT ejd.dataset_version_id"):
@@ -1285,6 +1418,39 @@ def test_sql_worker_round_trips_and_verifies_presentation_envelope(
             expected_lease_token="11111111-1111-4111-8111-111111111111",
         )
     assert tampered.value.code == "ANALYTICS_EXPORT_INTEGRITY_ERROR"
+
+
+def test_sql_worker_rejects_inactive_requester_before_loading_export_payload(
+    tmp_path: Path,
+) -> None:
+    repository = SqlAnalyticsExportWorkerRepository(
+        object(),  # type: ignore[arg-type]
+        AnalyticsExportPathPolicy(tmp_path / "exports"),
+        worker_id="worker-test",
+    )
+    connection = _StoredWorkItemConnection(authorized=False)
+
+    with pytest.raises(DomainError) as revoked:
+        repository._load_work_item(
+            connection,  # type: ignore[arg-type]
+            41,
+            expected_lease_token="11111111-1111-4111-8111-111111111111",
+        )
+
+    assert revoked.value.code == "ANALYTICS_EXPORT_ACCESS_REVOKED"
+    authorization_sql = connection.calls[0]
+    assert "iam.app_user access_user WITH (UPDLOCK,HOLDLOCK)" in authorization_sql
+    assert "access_user.status='ACTIVE'" in authorization_sql
+    assert "access_grant.status='ACTIVE'" in authorization_sql
+    assert "access_domain.active=1" in authorization_sql
+    assert "access_grant.expires_at_utc>SYSUTCDATETIME()" in authorization_sql
+    assert "dataset.dataset_version dv WITH (UPDLOCK,HOLDLOCK)" in authorization_sql
+    assert "dv.status='PUBLISHED'" in authorization_sql
+    assert "dv.is_current=1" in authorization_sql
+    assert not any(
+        sql.startswith("SELECT export_job_id,requested_by,dataset_version_id")
+        for sql in connection.calls
+    )
 
 
 def test_sql_worker_replays_typed_current_page_filters_and_legacy_v1(
@@ -1481,8 +1647,9 @@ class _MappingResult:
 
 
 class _CompleteConnection:
-    def __init__(self) -> None:
+    def __init__(self, *, authorized: bool = True) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
+        self.authorized = authorized
 
     def execute(self, statement, parameters=None):
         sql = " ".join(str(statement).split())
@@ -1496,6 +1663,30 @@ class _CompleteConnection:
                     "lease_owner": "worker-test",
                     "lease_expires_at_utc": datetime.now(UTC) + timedelta(minutes=5),
                 }
+            )
+        if sql.startswith("SELECT ejd.dataset_version_id"):
+            return _MappingRowsResult(
+                [
+                    {
+                        "dataset_version_id": 71,
+                        "ordinal_no": 1,
+                        "dataset_id": 7,
+                        "version_no": 3,
+                        "status": "PUBLISHED",
+                        "is_current": True,
+                        "test_stage": "CP",
+                        "requested_by_user_id": 10,
+                        "job_status": "RUNNING",
+                        "job_contract_version": "ANALYTICS_EXPORT_V1",
+                        "job_lease_token": (
+                            "11111111-1111-4111-8111-111111111111"
+                        ),
+                        "job_lease_owner": "worker-test",
+                        "job_lease_expires_at_utc": datetime.now(UTC)
+                        + timedelta(minutes=5),
+                        "can_read": self.authorized,
+                    }
+                ]
             )
         if sql.startswith("SELECT COUNT_BIG(*) FROM delivery.export_artifact"):
             return _ScalarResult(0)
@@ -1618,6 +1809,74 @@ def test_old_worker_cannot_register_artifact_after_stale_recovery(
     )
 
 
+def test_revocation_during_render_blocks_success_artifact_registration(
+    tmp_path: Path,
+) -> None:
+    policy = AnalyticsExportPathPolicy(tmp_path / "exports")
+    item = _work_item()
+    artifact = AnalyticsExportRenderer(policy, _Content()).render(item)
+    engine = _CompleteEngine()
+    engine.connection.authorized = False
+
+    with pytest.raises(DomainError) as revoked:
+        SqlAnalyticsExportWorkerRepository(
+            engine,  # type: ignore[arg-type]
+            policy,
+            worker_id="worker-test",
+        ).complete(
+            item,
+            artifact,
+            expires_at_utc=datetime.now(UTC) + timedelta(hours=1),
+        )
+
+    assert revoked.value.code == "ANALYTICS_EXPORT_ACCESS_REVOKED"
+    assert not any(
+        sql.startswith("INSERT delivery.export_artifact")
+        for sql, _ in engine.connection.calls
+    )
+    assert not any(
+        sql.startswith("UPDATE delivery.export_job SET status='SUCCESS'")
+        for sql, _ in engine.connection.calls
+    )
+    authorization_sql = next(
+        sql
+        for sql, _ in engine.connection.calls
+        if sql.startswith("SELECT ejd.dataset_version_id")
+    )
+    assert "iam.app_user access_user WITH (UPDLOCK,HOLDLOCK)" in authorization_sql
+    assert "access_user.status='ACTIVE'" in authorization_sql
+    assert "dataset.dataset_version dv WITH (UPDLOCK,HOLDLOCK)" in authorization_sql
+    assert "dv.status='PUBLISHED'" in authorization_sql
+    assert "dv.is_current=1" in authorization_sql
+
+
+def test_requester_disabled_after_render_blocks_success_registration(
+    tmp_path: Path,
+) -> None:
+    policy = AnalyticsExportPathPolicy(tmp_path / "exports")
+    item = _work_item(export_job_id=142)
+    artifact = AnalyticsExportRenderer(policy, _Content()).render(item)
+    engine = _CompleteEngine()
+    engine.connection.authorized = False
+
+    with pytest.raises(DomainError) as disabled:
+        SqlAnalyticsExportWorkerRepository(
+            engine,  # type: ignore[arg-type]
+            policy,
+            worker_id="worker-test",
+        ).complete(
+            item,
+            artifact,
+            expires_at_utc=datetime.now(UTC) + timedelta(hours=1),
+        )
+
+    assert disabled.value.code == "ANALYTICS_EXPORT_ACCESS_REVOKED"
+    assert not any(
+        sql.startswith("INSERT delivery.export_artifact")
+        for sql, _ in engine.connection.calls
+    )
+
+
 @pytest.mark.parametrize(
     ("export_format", "mime_type"),
     (("PDF", "application/pdf"), ("PNG", "image/png")),
@@ -1654,6 +1913,16 @@ def test_repository_transactionally_registers_real_report_media(
     assert artifact_insert["file_size"] == artifact.file_size
     assert artifact_insert["sha256"] == artifact.sha256
     assert artifact_insert["storage_uri"] == str(artifact.path)
+    finalize_sql = next(
+        sql
+        for sql, _values in engine.connection.calls
+        if sql.startswith("UPDATE delivery.export_job SET status='SUCCESS'")
+    )
+    assert "iam.app_user access_user WITH (UPDLOCK,HOLDLOCK)" in finalize_sql
+    assert "access_user.status='ACTIVE'" in finalize_sql
+    assert "finalize_dv.status='PUBLISHED'" in finalize_sql
+    assert "finalize_dv.is_current=1" in finalize_sql
+    assert "finalize_dv WITH (UPDLOCK,HOLDLOCK)" in finalize_sql
 
 
 def test_repository_rejects_expired_or_tampered_artifact_before_sql(

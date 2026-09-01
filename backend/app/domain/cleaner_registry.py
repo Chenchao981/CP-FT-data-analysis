@@ -30,3 +30,15 @@ class CleanerRegistry(Protocol):
     def get_released(self, cleaner_release_id: int) -> CleanerRelease: ...
 
     def latest_released(self, test_stage: str, factory_code: str) -> CleanerRelease: ...
+
+    def latest_released_for_contract(
+        self,
+        *,
+        test_stage: str,
+        factory_code: str,
+        format_code: str,
+        cleaner_code: str,
+        adapter_code: str,
+        input_contract_version: str,
+        output_contract_version: str,
+    ) -> CleanerRelease: ...

@@ -26,13 +26,18 @@ from pydantic import ValidationError
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def _principal(user_id: int = 10, *, admin: bool = False) -> Principal:
+def _principal(
+    user_id: int = 10, *, admin: bool = False, break_glass: bool = False
+) -> Principal:
     return Principal(
         user_id=user_id,
         login_name=f"user-{user_id}",
         display_name=f"User {user_id}",
         roles=("SYSTEM_ADMIN",) if admin else ("FT_ENGINEER",),
-        permissions=frozenset({"DATASET_READ", "EXPORT_DATA"}),
+        permissions=frozenset(
+            {"DATASET_READ", "EXPORT_DATA"}
+            | ({"DATA_BREAK_GLASS"} if break_glass else set())
+        ),
     )
 
 
@@ -108,6 +113,9 @@ def _dataset(
     dataset_id: int,
     *,
     owner_user_id: int = 10,
+    access_scope: str = "PERSONAL",
+    data_domain_id: int | None = None,
+    domain_granted: bool = False,
     status: str = "PUBLISHED",
     is_current: bool = True,
     stage: str = "FT",
@@ -122,6 +130,9 @@ def _dataset(
         "spec_set_id": spec_set_id,
         "test_stage": stage,
         "owner_user_id": owner_user_id,
+        "access_scope": access_scope,
+        "data_domain_id": data_domain_id,
+        "domain_granted": domain_granted,
         "supplier_id": 7,
         "product_id": 8,
         "business_domain": "ENGINEERING",
@@ -198,7 +209,11 @@ class _Connection:
             row = self.state.datasets.get(
                 (int(params["dataset_id"]), int(params["version_no"]))
             )
-            return _Result([dict(row)] if row is not None else [])
+            if row is None:
+                return _Result()
+            result = dict(row)
+            result["can_read"] = self._can_read_dataset(result, params)
+            return _Result([result])
 
         if sql.startswith(
             "SELECT TOP (1) export_job_id,contract_version FROM delivery.export_job"
@@ -278,6 +293,7 @@ class _Connection:
             ):
                 row = dict(by_version[version_id])
                 row["ordinal_no"] = ordinal
+                row["can_read"] = self._can_read_dataset(row, params)
                 rows.append(row)
             return _Result(rows)
 
@@ -330,6 +346,25 @@ class _Connection:
             return _Result(visible[offset : offset + int(params["page_size"])])
 
         raise AssertionError(f"unexpected SQL: {sql}")
+
+    @staticmethod
+    def _can_read_dataset(
+        row: dict[str, Any], params: dict[str, Any]
+    ) -> bool:
+        return bool(
+            params.get("has_data_break_glass")
+            or (
+                row["access_scope"] == "PERSONAL"
+                and int(row["owner_user_id"]) == int(params["user_id"])
+            )
+            or (
+                row["access_scope"] == "DOMAIN"
+                and row["data_domain_id"] is not None
+                and bool(row["domain_granted"])
+                and row["status"] == "PUBLISHED"
+                and bool(row["is_current"])
+            )
+        )
 
 
 class _Context(AbstractContextManager[_Connection]):
@@ -485,7 +520,7 @@ def test_list_isolates_only_visible_integrity_blocked_jobs_without_rewriting_the
         assert exact_access.value.status_code == 409
 
 
-def test_list_does_not_swallow_non_integrity_domain_errors() -> None:
+def test_list_uses_uniform_not_found_when_dataset_access_is_revoked() -> None:
     state = _State(datasets={(1, 2): _dataset(1)})
     service = _service(state)
     service.create(_request(), _principal())
@@ -493,7 +528,8 @@ def test_list_does_not_swallow_non_integrity_domain_errors() -> None:
 
     with pytest.raises(DomainError) as revoked:
         service.list_page(_principal(), page=1, page_size=20)
-    assert revoked.value.code == "ANALYTICS_EXPORT_ACCESS_REVOKED"
+    assert revoked.value.code == "ANALYTICS_EXPORT_NOT_FOUND"
+    assert revoked.value.status_code == 404
 
 
 def test_current_page_create_freezes_typed_detail_filters_and_reconciles_replay() -> (
@@ -749,6 +785,26 @@ def test_stored_presentation_hash_detects_filter_envelope_tampering() -> None:
     assert tampered.value.code == "ANALYTICS_EXPORT_INTEGRITY_ERROR"
 
 
+def test_get_authorizes_before_decoding_sensitive_export_json() -> None:
+    state = _State(datasets={(1, 2): _dataset(1)})
+    service = _service(state)
+    created = service.create(_request(), _principal())
+    state.jobs[created.export_job_id]["filter_json"] = "not-json"
+    state.datasets[(1, 2)]["owner_user_id"] = 99
+    state.statements.clear()
+
+    with pytest.raises(DomainError) as hidden:
+        service.get(created.export_job_id, _principal())
+
+    assert hidden.value.code == "ANALYTICS_EXPORT_NOT_FOUND"
+    assert hidden.value.status_code == 404
+    identity_sql = state.statements[0][0]
+    assert "filter_json" in identity_sql
+    assert "WHERE ej.export_job_id=:export_job_id" in identity_sql
+    assert "NOT EXISTS(" in identity_sql
+    assert "iam.data_domain_grant" in identity_sql
+
+
 def test_legacy_delivery_jobs_are_isolated_from_the_analytics_export_contract() -> None:
     state = _State(datasets={(1, 2): _dataset(1)})
     service = _service(state)
@@ -871,9 +927,17 @@ def test_download_rechecks_owner_ttl_managed_path_size_and_sha(tmp_path: Path) -
     with pytest.raises(DomainError) as other_owner:
         service.resolve_download(created.export_job_id, 501, _principal(11))
     assert other_owner.value.code == "ANALYTICS_EXPORT_NOT_FOUND"
-    assert (
+    with pytest.raises(DomainError) as platform_admin:
         service.resolve_download(
             created.export_job_id, 501, _principal(11, admin=True)
+        )
+    assert platform_admin.value.code == "ANALYTICS_EXPORT_NOT_FOUND"
+    assert platform_admin.value.status_code == 404
+    assert (
+        service.resolve_download(
+            created.export_job_id,
+            501,
+            _principal(11, admin=True, break_glass=True),
         ).path
         == identity.path
     )
@@ -905,6 +969,27 @@ def test_create_rejects_non_current_and_cross_owner_engineering_versions() -> No
     with pytest.raises(DomainError) as forbidden:
         _service(state).create(_request(), _principal())
     assert forbidden.value.code == "ANALYTICS_EXPORT_DATASET_ACCESS_DENIED"
+
+
+def test_granted_domain_export_uses_domain_acl_not_production_classification() -> None:
+    state = _State(
+        datasets={
+            (1, 2): _dataset(
+                1,
+                owner_user_id=99,
+                access_scope="DOMAIN",
+                data_domain_id=7,
+                domain_granted=True,
+            )
+        }
+    )
+
+    created = _service(state).create(_request(), _principal())
+
+    assert created.status == "QUEUED"
+    visibility_sql = "\n".join(statement for statement, _ in state.statements)
+    assert "iam.data_domain_grant" in visibility_sql
+    assert "business_domain='PRODUCTION'" not in visibility_sql
 
 
 def test_service_rejects_registered_template_on_an_incompatible_dataset_stage() -> None:

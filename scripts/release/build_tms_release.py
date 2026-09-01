@@ -9,6 +9,7 @@ import shutil
 import socket
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import zipfile
@@ -39,6 +40,7 @@ ROOT_FILES = {
 ROOT_PREFIX_RULES: tuple[tuple[str, frozenset[str]], ...] = (
     ("backend/app", frozenset({".py"})),
     ("db/alembic", frozenset({".py", ".sql"})),
+    ("local_agent", frozenset({".py"})),
     ("scripts/windows", frozenset({".ps1"})),
     ("docs/examples", frozenset({".ps1", ".md"})),
     ("docs/operations", frozenset({".md"})),
@@ -70,6 +72,22 @@ WINDOWS_LOCAL_ACCEPTANCE_FILES = frozenset(
         "scripts/windows/stop_tms_local_test.ps1",
     }
 )
+LOCAL_AGENT_EXCLUDED_DIRECTORY_NAMES = frozenset(
+    {
+        ".pytest_cache",
+        "__pycache__",
+        "artifacts",
+        "logs",
+        "output",
+        "outputs",
+        "results",
+        "runs",
+        "test",
+        "tests",
+        "work",
+        "workspace",
+    }
+)
 EXPLICIT_FILES = {
     "backend/README.md",
     "frontend/README.md",
@@ -80,6 +98,8 @@ EXPLICIT_FILES = {
     "frontend/tsconfig.json",
     "frontend/tsconfig.node.json",
     "frontend/vite.config.ts",
+    "local_agent/README.md",
+    "local_agent/config.example.json",
     "scripts/__init__.py",
     "scripts/run_analytics_export_cleanup.py",
     "scripts/run_analytics_export_worker.py",
@@ -227,6 +247,12 @@ def _is_release_discovery_excluded(relative: str) -> bool:
     name = candidate.name.casefold()
     if name.startswith(SCRATCH_FILE_PREFIXES) or ".scratch." in name:
         return True
+    if candidate.parts[:1] == ("local_agent",):
+        local_directories = {
+            part.casefold() for part in candidate.parts[1:-1]
+        }
+        if local_directories & LOCAL_AGENT_EXCLUDED_DIRECTORY_NAMES:
+            return True
     if candidate.parts[:2] != ("frontend", "src"):
         return False
     frontend_parts = tuple(part.casefold() for part in candidate.parts[2:-1])
@@ -461,6 +487,58 @@ def _validate_unpacked_launcher(powershell: str, launcher: Path) -> None:
         raise ReleaseValidationError("unpacked launcher manifest validation failed")
 
 
+def _validate_unpacked_local_agent(python_path: Path, target: Path) -> None:
+    config = target / "local_agent" / "config.example.json"
+    if not config.is_file():
+        raise ReleaseValidationError("unpacked Local Agent example config is missing")
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment["PYTHONIOENCODING"] = "utf-8"
+    try:
+        completed = subprocess.run(
+            [
+                str(python_path),
+                "-m",
+                "local_agent",
+                "--config",
+                str(config),
+                "--validate-only",
+            ],
+            cwd=target,
+            env=environment,
+            stdin=subprocess.DEVNULL,
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ReleaseValidationError(
+            "unpacked Local Agent validation could not run"
+        ) from exc
+    if completed.returncode != 0:
+        raise ReleaseValidationError("unpacked Local Agent validation failed")
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise ReleaseValidationError(
+            "unpacked Local Agent validation returned invalid JSON"
+        ) from exc
+    tools = payload.get("tools") if isinstance(payload, dict) else None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("valid") is not True
+        or payload.get("bind_host") != "127.0.0.1"
+        or not isinstance(tools, list)
+        or not tools
+    ):
+        raise ReleaseValidationError(
+            "unpacked Local Agent validation contract is invalid"
+        )
+
+
 def _reserve_loopback_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
         listener.bind(("127.0.0.1", 0))
@@ -473,13 +551,13 @@ def _validate_ready_payload(payload: object) -> dict[str, str]:
     if (
         payload.get("status") != "ready"
         or payload.get("database") != "TMS_G0_DEV"
-        or payload.get("schema_revision") != "sql2014_0023"
+        or payload.get("schema_revision") != "sql2014_0024"
     ):
         raise ReleaseValidationError("unpacked API readiness target is invalid")
     return {
         "status": "ready",
         "database": "TMS_G0_DEV",
-        "schema_revision": "sql2014_0023",
+        "schema_revision": "sql2014_0024",
     }
 
 
@@ -551,6 +629,12 @@ def smoke_unpacked_launcher(
             archive.extractall(target)
         launcher = target / "scripts" / "windows" / "start_tms_runtime.ps1"
         _validate_unpacked_launcher(powershell, launcher)
+        local_agent_python = (
+            python_path.resolve(strict=True)
+            if python_path is not None
+            else Path(sys.executable).resolve(strict=True)
+        )
+        _validate_unpacked_local_agent(local_agent_python, target)
         if runtime_config is None or python_path is None:
             return None
         runtime_config = runtime_config.resolve(strict=True)

@@ -97,6 +97,9 @@ def _target(*, owner: int = 7) -> dict[str, Any]:
     return {
         "dataset_id": 5,
         "owner_user_id": owner,
+        "access_scope": "PERSONAL",
+        "data_domain_id": None,
+        "can_read": owner == 7,
         "test_stage": "FT",
         "lifecycle_status": "ACTIVE",
         "dataset_version_id": 6,
@@ -230,6 +233,52 @@ def test_dataset_owner_overreach_fails_before_job_creation(tmp_path: Path) -> No
         "INSERT ingestion.processing_job" not in statement
         for statement, _parameters in connection.calls
     )
+
+
+def test_system_admin_cannot_mutate_other_personal_dataset(tmp_path: Path) -> None:
+    service, engine, _connection = _service(
+        tmp_path, [_Result(), _Result(rows=[_target(owner=99)])]
+    )
+
+    with pytest.raises(DomainError) as exc_info:
+        service.create_archive(
+            5,
+            "approved archive reason",
+            "archive-request-admin-overreach",
+            _principal(admin=True),
+        )
+
+    assert exc_info.value.code == "DATASET_SCOPE_DENIED"
+    assert engine.rollbacks == 1
+
+
+def test_domain_grantee_can_export_without_mutating_dataset(tmp_path: Path) -> None:
+    target = {
+        **_target(owner=99),
+        "access_scope": "DOMAIN",
+        "data_domain_id": 12,
+        "can_read": True,
+    }
+    service, engine, connection = _service(
+        tmp_path,
+        [
+            _Result(),
+            _Result(rows=[target]),
+            _Result(scalars=[41]),
+            _Result(scalar=9),
+            _Result(rows=[{"job_id": 81, "status": "QUEUED"}]),
+            _Result(),
+            _Result(),
+        ],
+    )
+
+    receipt = service.create_export(5, "domain-export-request-001", _principal())
+
+    assert receipt.job_id == 81
+    assert engine.commits == 1
+    sql = "\n".join(statement for statement, _ in connection.calls)
+    assert "iam.data_domain_grant" in sql
+    assert "business_domain='PRODUCTION'" not in sql
 
 
 @pytest.mark.parametrize(
@@ -537,15 +586,52 @@ def test_download_rejects_registered_path_outside_its_managed_job_root(
         "status": "SUCCESS",
         "job_type": "EXPORT_LATEST",
         "action_type": "EXPORT_LATEST",
-        "owner_user_id": 7,
     }
-    service, _, _ = _service(tmp_path, [_Result(rows=[row])])
+    service, _, connection = _service(
+        tmp_path,
+        [
+            _Result(
+                rows=[
+                    {
+                        "processing_artifact_id": 3,
+                        "job_id": 81,
+                        "status": "SUCCESS",
+                        "job_type": "EXPORT_LATEST",
+                        "action_type": "EXPORT_LATEST",
+                    }
+                ]
+            ),
+            _Result(rows=[row]),
+        ],
+    )
 
     with pytest.raises(DomainError) as exc_info:
         service.artifact_download(81, 3, _principal())
 
     assert exc_info.value.code == "EXPORT_ARTIFACT_PATH_INVALID"
     assert outside.read_bytes() == b"raw-source-must-remain"
+    assert "storage_uri" not in connection.calls[0][0]
+    assert "storage_uri" in connection.calls[1][0]
+    assert "iam.data_domain_grant" in connection.calls[0][0]
+    assert "iam.data_domain_grant" in connection.calls[1][0]
+
+
+def test_download_hides_export_artifact_existence_after_access_is_revoked(
+    tmp_path: Path,
+) -> None:
+    service, _, connection = _service(
+        tmp_path,
+        [_Result()],
+    )
+
+    with pytest.raises(DomainError) as hidden:
+        service.artifact_download(81, 3, _principal())
+
+    assert hidden.value.code == "EXPORT_ARTIFACT_NOT_FOUND"
+    assert hidden.value.status_code == 404
+    assert len(connection.calls) == 1
+    assert "storage_uri" not in connection.calls[0][0]
+    assert "iam.data_domain_grant" in connection.calls[0][0]
 
 
 def test_export_status_returns_safe_artifact_discovery_without_paths_or_leases(
@@ -565,7 +651,6 @@ def test_export_status_returns_safe_artifact_discovery_without_paths_or_leases(
                         "dataset_id": 5,
                         "target_dataset_version_id": 6,
                         "action_type": "EXPORT_LATEST",
-                        "owner_user_id": 7,
                     }
                 ]
             ),
@@ -600,27 +685,15 @@ def test_export_status_checks_owner_before_loading_artifacts(tmp_path: Path) -> 
     service, _, connection = _service(
         tmp_path,
         [
-            _Result(
-                rows=[
-                    {
-                        "job_id": 81,
-                        "status": "SUCCESS",
-                        "error_code": None,
-                        "cleaner_release_id": 9,
-                        "dataset_id": 5,
-                        "target_dataset_version_id": 6,
-                        "action_type": "EXPORT_LATEST",
-                        "owner_user_id": 99,
-                    }
-                ]
-            )
+            _Result()
         ],
     )
 
     with pytest.raises(DomainError) as exc_info:
         service.export_status(81, _principal())
 
-    assert exc_info.value.code == "DATASET_SCOPE_DENIED"
+    assert exc_info.value.code == "EXPORT_JOB_NOT_FOUND"
+    assert exc_info.value.status_code == 404
     assert len(connection.calls) == 1
 
 
@@ -640,7 +713,6 @@ def test_export_status_exposes_safe_failure_code_without_infrastructure_details(
                         "dataset_id": 5,
                         "target_dataset_version_id": 6,
                         "action_type": "EXPORT_LATEST",
-                        "owner_user_id": 7,
                     }
                 ]
             ),
@@ -696,6 +768,80 @@ def test_export_artifact_fault_injection_rolls_back_registration(
     )
 
 
+def test_export_worker_context_rejects_inactive_requester_before_loading_inputs(
+    tmp_path: Path,
+) -> None:
+    row = {
+        "job_id": 81,
+        "job_type": "EXPORT_LATEST",
+        "import_batch_id": 17,
+        "cleaner_release_id": 9,
+        "action_type": "EXPORT_LATEST",
+        "dataset_id": 5,
+        "target_dataset_version_id": 6,
+        "requested_by_user_id": 7,
+        "request_reason": None,
+        "test_stage": "FT",
+        "lifecycle_status": "ACTIVE",
+        "version_status": "PUBLISHED",
+        "is_current": True,
+        "can_execute": False,
+        "batch_test_stage": "FT",
+        "factory_code": "RIYUEXIN",
+    }
+    service, engine, connection = _service(tmp_path, [_Result(rows=[row])])
+
+    with pytest.raises(DomainError) as denied:
+        service.worker_context(
+            81,
+            "11111111-1111-1111-1111-111111111111",
+            "EXPORT_LATEST",
+        )
+
+    assert denied.value.code == "LIFECYCLE_EXPORT_ACCESS_REVOKED"
+    assert engine.rollbacks == 1
+    assert len(connection.calls) == 1
+    sql = connection.calls[0][0]
+    assert "iam.app_user lifecycle_user WITH (UPDLOCK,HOLDLOCK)" in sql
+    assert "lifecycle_user.status='ACTIVE'" in sql
+    assert "iam.data_domain_grant" in sql
+    assert "expires_at_utc>SYSUTCDATETIME()" in sql
+    assert "lifecycle_domain.active=1" in sql
+
+
+def test_requester_disabled_after_render_keeps_lifecycle_artifact_and_success_absent(
+    tmp_path: Path,
+) -> None:
+    output = (tmp_path / "work" / "81" / "attempt-1" / "latest.xlsx").absolute()
+    output.parent.mkdir(parents=True)
+    payload = b"latest-export"
+    output.write_bytes(payload)
+    service, engine, connection = _service(tmp_path, [_Result(scalar=0)])
+
+    with pytest.raises(DomainError) as denied:
+        service.record_export_artifacts(
+            81,
+            "11111111-1111-1111-1111-111111111111",
+            (
+                TemporaryArtifactInput(
+                    role="EXPORT",
+                    path=str(output),
+                    size_bytes=len(payload),
+                    sha256=hashlib.sha256(payload).hexdigest(),
+                ),
+            ),
+            datetime.now(UTC) + timedelta(hours=1),
+        )
+
+    assert denied.value.code == "LIFECYCLE_EXPORT_ACCESS_REVOKED"
+    assert engine.rollbacks == 1
+    sql = "\n".join(statement for statement, _ in connection.calls)
+    assert "iam.app_user lifecycle_user WITH (UPDLOCK,HOLDLOCK)" in sql
+    assert "lifecycle_user.status='ACTIVE'" in sql
+    assert "INSERT ingestion.processing_artifact" not in sql
+    assert "status='SUCCESS'" not in sql
+
+
 def test_export_artifacts_and_job_success_commit_atomically(tmp_path: Path) -> None:
     output = (tmp_path / "work" / "81" / "attempt-1" / "latest.xlsx").absolute()
     output.parent.mkdir(parents=True)
@@ -741,6 +887,8 @@ def test_export_artifacts_and_job_success_commit_atomically(tmp_path: Path) -> N
     assert "INSERT ingestion.processing_artifact" in sql
     assert "UPDATE ingestion.processing_job SET status='SUCCESS'" in sql
     assert "lease_token=CONVERT(uniqueidentifier,:lease)" in sql
+    assert sql.count("iam.app_user lifecycle_user WITH (UPDLOCK,HOLDLOCK)") == 2
+    assert sql.count("lifecycle_user.status='ACTIVE'") == 2
 
 
 def test_export_terminal_fault_rolls_back_artifact_and_job_together(

@@ -64,6 +64,10 @@ from app.infrastructure.formal_spec_context_resolver import (
     resolve_formal_spec_context,
 )
 from app.infrastructure.sql_analysis_rule_service import SqlAnalysisRuleService
+from app.infrastructure.sql_visibility import (
+    current_dataset_read_scope_sql,
+    visibility_parameters,
+)
 
 RuleContextResolver = Callable[
     [Connection, tuple[Mapping[str, Any], ...], AnalyticsContextRequest],
@@ -81,10 +85,6 @@ _ARTIFACT_CONTRACTS = {
     "HTML": ({"text/html", "text/html; charset=utf-8"}, {".html", ".htm"}),
     "PDF": ({"application/pdf"}, {".pdf"}),
 }
-
-
-def _is_admin(principal: Principal) -> bool:
-    return "SYSTEM_ADMIN" in principal.roles
 
 
 def _row_version_hex(value: Any) -> str:
@@ -173,20 +173,14 @@ class SqlAnalyticsExportService:
 
     @staticmethod
     def _can_read_dataset(row: Mapping[str, Any], principal: Principal) -> bool:
-        return bool(
-            _is_admin(principal)
-            or int(row["owner_user_id"]) == principal.user_id
-            or (
-                str(row.get("business_domain") or "") == "PRODUCTION"
-                and str(row["status"]) == "PUBLISHED"
-                and bool(row["is_current"])
-            )
-        )
+        del principal
+        return bool(row["can_read"])
 
     @staticmethod
     def _dataset_row(
         connection: Connection,
         reference: AnalyticsDatasetReference,
+        principal: Principal,
         *,
         hold_lock: bool,
     ) -> Mapping[str, Any]:
@@ -196,17 +190,21 @@ class SqlAnalyticsExportService:
                 text(
                     "SELECT dv.dataset_version_id,dv.dataset_id,dv.version_no,"
                     "dv.status,dv.is_current,dv.spec_set_id,d.test_stage,"
-                    "d.owner_user_id,d.supplier_id,d.product_id,"
-                    "b.business_domain,ss.version_code AS spec_version "
+                    "d.owner_user_id,d.access_scope,d.data_domain_id,"
+                    "d.supplier_id,d.product_id,CASE WHEN "
+                    + current_dataset_read_scope_sql(
+                        dataset_alias="d", version_alias="dv"
+                    )
+                    + " THEN 1 ELSE 0 END AS can_read,"
+                    "ss.version_code AS spec_version "
                     "FROM dataset.dataset_version dv"
                     + lock_hint
                     + " JOIN dataset.dataset d ON d.dataset_id=dv.dataset_id "
-                    "LEFT JOIN ingestion.import_batch b "
-                    "ON b.import_batch_id=dv.input_batch_id "
                     "LEFT JOIN mdm.spec_set ss ON ss.spec_set_id=dv.spec_set_id "
                     "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no"
                 ),
-                {
+                visibility_parameters(principal)
+                | {
                     "dataset_id": reference.dataset_id,
                     "version_no": reference.version_no,
                 },
@@ -232,7 +230,9 @@ class SqlAnalyticsExportService:
         hold_lock: bool,
     ) -> tuple[Mapping[str, Any], ...]:
         rows = tuple(
-            self._dataset_row(connection, reference, hold_lock=hold_lock)
+            self._dataset_row(
+                connection, reference, principal, hold_lock=hold_lock
+            )
             for reference in references
         )
         for row in rows:
@@ -618,16 +618,17 @@ class SqlAnalyticsExportService:
                     "export_format,template_code,template_version,filter_json,status,"
                     "requested_at_utc,started_at_utc,finished_at_utc,contract_version,"
                     "filter_hash,context_hash,rule_context_json,idempotency_key,"
-                    "exported_row_count,error_message,row_version FROM delivery.export_job"
+                    "exported_row_count,error_message,row_version "
+                    "FROM delivery.export_job ej"
                     + lock_hint
-                    + " WHERE export_job_id=:export_job_id AND "
-                    "contract_version=:contract_version AND "
-                    "(requested_by=:user_id OR :is_admin=1)"
+                    + " WHERE ej.export_job_id=:export_job_id AND "
+                    + SqlAnalyticsExportService._visible_where()
                 ),
-                {
+                visibility_parameters(principal)
+                | {
                     "export_job_id": export_job_id,
-                    "user_id": principal.user_id,
-                    "is_admin": int(_is_admin(principal)),
+                    # Compatibility bind retained for deterministic service fakes;
+                    # the SQL contract itself uses the literal V1 discriminator.
                     "contract_version": ANALYTICS_EXPORT_CONTRACT_VERSION,
                 },
             )
@@ -642,24 +643,27 @@ class SqlAnalyticsExportService:
 
     @staticmethod
     def _job_dataset_rows(
-        connection: Connection, export_job_id: int
+        connection: Connection, export_job_id: int, principal: Principal
     ) -> tuple[Mapping[str, Any], ...]:
         rows = tuple(
             connection.execute(
                 text(
                     "SELECT ejd.dataset_version_id,ejd.ordinal_no,dv.dataset_id,"
                     "dv.version_no,dv.status,dv.is_current,dv.spec_set_id,d.test_stage,"
-                    "d.owner_user_id,d.supplier_id,d.product_id,b.business_domain,"
+                    "d.owner_user_id,d.access_scope,d.data_domain_id,"
+                    "d.supplier_id,d.product_id,CASE WHEN "
+                    + current_dataset_read_scope_sql(
+                        dataset_alias="d", version_alias="dv"
+                    )
+                    + " THEN 1 ELSE 0 END AS can_read,"
                     "ss.version_code AS spec_version FROM delivery.export_job_dataset ejd "
                     "JOIN dataset.dataset_version dv ON "
                     "dv.dataset_version_id=ejd.dataset_version_id "
                     "JOIN dataset.dataset d ON d.dataset_id=dv.dataset_id "
-                    "LEFT JOIN ingestion.import_batch b "
-                    "ON b.import_batch_id=dv.input_batch_id "
                     "LEFT JOIN mdm.spec_set ss ON ss.spec_set_id=dv.spec_set_id "
                     "WHERE ejd.export_job_id=:export_job_id ORDER BY ejd.ordinal_no"
                 ),
-                {"export_job_id": export_job_id},
+                visibility_parameters(principal) | {"export_job_id": export_job_id},
             )
             .mappings()
             .all()
@@ -684,7 +688,7 @@ class SqlAnalyticsExportService:
         hold_lock: bool = False,
     ) -> AnalyticsExportRecord:
         row = self._job_row(connection, export_job_id, principal, hold_lock=hold_lock)
-        dataset_rows = self._job_dataset_rows(connection, export_job_id)
+        dataset_rows = self._job_dataset_rows(connection, export_job_id, principal)
         if int(row["dataset_version_id"]) != int(dataset_rows[0]["dataset_version_id"]):
             raise DomainError(
                 "ANALYTICS_EXPORT_INTEGRITY_ERROR",
@@ -694,9 +698,9 @@ class SqlAnalyticsExportService:
         for dataset_row in dataset_rows:
             if not self._can_read_dataset(dataset_row, principal):
                 raise DomainError(
-                    "ANALYTICS_EXPORT_ACCESS_REVOKED",
-                    "access to one exported Dataset Version has been revoked",
-                    403,
+                    "ANALYTICS_EXPORT_NOT_FOUND",
+                    "analytics export was not found",
+                    404,
                 )
 
         try:
@@ -884,17 +888,17 @@ class SqlAnalyticsExportService:
     def _visible_where() -> str:
         return (
             "ej.contract_version='ANALYTICS_EXPORT_V1' AND "
-            "(ej.requested_by=:user_id OR :is_admin=1) AND NOT EXISTS("
+            "(ej.requested_by=:user_id OR :has_data_break_glass=1) "
+            "AND NOT EXISTS("
             "SELECT 1 FROM delivery.export_job_dataset denied "
             "JOIN dataset.dataset_version denied_dv ON "
             "denied_dv.dataset_version_id=denied.dataset_version_id "
             "JOIN dataset.dataset denied_d ON denied_d.dataset_id=denied_dv.dataset_id "
-            "LEFT JOIN ingestion.import_batch denied_b ON "
-            "denied_b.import_batch_id=denied_dv.input_batch_id "
             "WHERE denied.export_job_id=ej.export_job_id AND NOT("
-            ":is_admin=1 OR denied_d.owner_user_id=:user_id OR "
-            "(denied_b.business_domain='PRODUCTION' AND "
-            "denied_dv.status='PUBLISHED' AND denied_dv.is_current=1)))"
+            + current_dataset_read_scope_sql(
+                dataset_alias="denied_d", version_alias="denied_dv"
+            )
+            + "))"
         )
 
     def list_page(
@@ -905,9 +909,7 @@ class SqlAnalyticsExportService:
             raise DomainError(
                 "ANALYTICS_EXPORT_PAGE_INVALID", "export page is out of range", 422
             )
-        params = {
-            "user_id": principal.user_id,
-            "is_admin": int(_is_admin(principal)),
+        params = visibility_parameters(principal) | {
             "offset": (page - 1) * page_size,
             "page_size": page_size,
         }

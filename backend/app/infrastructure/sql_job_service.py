@@ -22,6 +22,32 @@ from app.domain.jobs import (
     TransitionJobRequest,
     TriggerType,
 )
+from app.infrastructure.sql_visibility import (
+    batch_read_scope_sql,
+    batch_write_scope_sql,
+    domain_grant_exists_sql,
+    quick_read_scope_sql,
+    quick_write_scope_sql,
+    visibility_parameters,
+)
+
+
+def _batch_job_input_scope_sql(*, batch_alias: str = "b") -> str:
+    """Authorize task creation without administrator or break-glass mutation bypass."""
+
+    return (
+        "(EXISTS(SELECT 1 FROM iam.app_user job_requester "
+        "WITH (UPDLOCK,HOLDLOCK) WHERE job_requester.user_id=:user_id "
+        "AND job_requester.status='ACTIVE') AND ("
+        f"({batch_alias}.access_scope='PERSONAL' "
+        f"AND {batch_alias}.owner_user_id=:user_id) OR "
+        f"({batch_alias}.access_scope='DOMAIN' AND "
+        + domain_grant_exists_sql(
+            data_domain_column=f"{batch_alias}.data_domain_id",
+            lock_authorization_rows=True,
+        )
+        + ")))"
+    )
 
 _LIFECYCLE_APPLOCK_BY_JOB_SQL = (
     "DECLARE @tms_lifecycle_dataset_id bigint=("
@@ -394,40 +420,46 @@ class SqlJobService:
             }
         )
         with self._engine.begin() as connection:
-            if "SYSTEM_ADMIN" not in principal.roles:
+            if request.analysis_session_id is not None:
+                allowed = connection.execute(
+                    text(
+                        "SELECT 1 FROM workspace.analysis_session ws "
+                        "WITH (UPDLOCK,HOLDLOCK) "
+                        "WHERE ws.analysis_session_id=:session AND "
+                        + quick_write_scope_sql(
+                            session_alias="ws", lock_authorization_rows=True
+                        )
+                    ),
+                    visibility_parameters(principal)
+                    | {"session": request.analysis_session_id},
+                ).scalar_one_or_none()
+                if allowed is None:
+                    raise DomainError(
+                        "JOB_INPUT_NOT_FOUND", "任务输入不存在或无权访问", 404
+                    )
+            else:
                 if request.import_batch_id is not None:
                     allowed = connection.execute(
                         text(
-                            "SELECT 1 FROM ingestion.import_batch "
-                            "WHERE import_batch_id=:batch AND owner_user_id=:user_id"
+                            "SELECT 1 FROM ingestion.import_batch b "
+                            "WITH (UPDLOCK,HOLDLOCK) "
+                            "WHERE b.import_batch_id=:batch AND "
+                            + _batch_job_input_scope_sql(batch_alias="b")
                         ),
-                        {
-                            "batch": request.import_batch_id,
-                            "user_id": principal.user_id,
-                        },
+                        visibility_parameters(principal)
+                        | {"batch": request.import_batch_id},
                     ).scalar_one_or_none()
                 elif request.source_file_id is not None:
                     allowed = connection.execute(
                         text(
                             "SELECT TOP (1) 1 FROM ingestion.source_file_receipt r "
-                            "JOIN ingestion.import_batch b ON b.import_batch_id=r.import_batch_id "
-                            "WHERE r.source_file_id=:source AND b.owner_user_id=:user_id"
+                            "JOIN ingestion.import_batch b WITH (UPDLOCK,HOLDLOCK) "
+                            "ON b.import_batch_id=r.import_batch_id "
+                            "WHERE r.source_file_id=:source AND "
+                            + _batch_job_input_scope_sql(batch_alias="b")
                         ),
-                        {
-                            "source": request.source_file_id,
-                            "user_id": principal.user_id,
-                        },
-                    ).scalar_one_or_none()
-                else:
-                    allowed = connection.execute(
-                        text(
-                            "SELECT 1 FROM workspace.analysis_session "
-                            "WHERE analysis_session_id=:session AND owner_user_id=:user_id"
-                        ),
-                        {
-                            "session": request.analysis_session_id,
-                            "user_id": principal.user_id,
-                        },
+                        visibility_parameters(principal)
+                        | {"source": request.source_file_id},
                     ).scalar_one_or_none()
                 if allowed is None:
                     raise DomainError(
@@ -468,7 +500,8 @@ class SqlJobService:
             batch = (
                 connection.execute(
                     text(
-                        "SELECT status,owner_user_id FROM ingestion.import_batch "
+                        "SELECT status,owner_user_id,access_scope,data_domain_id,"
+                        "source_channel,uploaded_by FROM ingestion.import_batch "
                         "WITH (UPDLOCK,HOLDLOCK) WHERE import_batch_id=:batch"
                     ),
                     {"batch": request.import_batch_id},
@@ -477,12 +510,47 @@ class SqlJobService:
                 .one_or_none()
             )
             owner_user_id = batch["owner_user_id"] if batch is not None else None
-            if batch is None or (
-                "SYSTEM_ADMIN" not in principal.roles
-                and (owner_user_id is None or int(owner_user_id) != principal.user_id)
+            batch_status = (
+                str(batch["status"]).strip().upper() if batch is not None else ""
+            )
+            can_queue = batch is not None and (
+                owner_user_id is not None
+                and int(owner_user_id) == principal.user_id
+            )
+            if (
+                not can_queue
+                and batch is not None
+                and allowed == frozenset({"RECEIVED"})
+                and batch_status == "RECEIVED"
+                and str(batch["access_scope"]).strip().upper() == "DOMAIN"
+                and batch["data_domain_id"] is not None
+                and str(batch["source_channel"]).strip().upper() == "SOURCE_CATALOG"
+                and str(batch["uploaded_by"] or "").strip() == principal.login_name
             ):
+                can_queue = (
+                    connection.execute(
+                        text(
+                            "SELECT TOP (1) 1 FROM iam.data_domain_grant g "
+                            "WITH (UPDLOCK,HOLDLOCK) JOIN iam.data_domain d "
+                            "WITH (UPDLOCK,HOLDLOCK) "
+                            "ON d.data_domain_id=g.data_domain_id "
+                            "JOIN iam.app_user u WITH (UPDLOCK,HOLDLOCK) "
+                            "ON u.user_id=g.user_id WHERE g.user_id=:user_id "
+                            "AND g.data_domain_id=:data_domain_id "
+                            "AND g.status='ACTIVE' AND d.active=1 "
+                            "AND u.status='ACTIVE' "
+                            "AND (g.expires_at_utc IS NULL OR "
+                            "g.expires_at_utc>SYSUTCDATETIME())"
+                        ),
+                        {
+                            "user_id": principal.user_id,
+                            "data_domain_id": int(batch["data_domain_id"]),
+                        },
+                    ).scalar_one_or_none()
+                    is not None
+                )
+            if not can_queue:
                 raise DomainError("BATCH_NOT_FOUND", "批次不存在或无权访问", 404)
-            batch_status = str(batch["status"]).strip().upper()
             if batch_status not in allowed:
                 _raise_initial_import_batch_state_conflict(batch_status)
             updated = connection.execute(
@@ -942,10 +1010,18 @@ class SqlJobService:
             batch = (
                 connection.execute(
                     text(
-                        "SELECT status,owner_user_id FROM ingestion.import_batch "
-                        "WITH (UPDLOCK,HOLDLOCK) WHERE import_batch_id=:batch"
+                        "SELECT b.status,b.owner_user_id,b.access_scope,b.data_domain_id,"
+                        "b.source_definition_id,d.access_scope AS dataset_access_scope,"
+                        "d.data_domain_id AS dataset_data_domain_id,"
+                        "d.source_definition_id AS dataset_source_definition_id "
+                        "FROM ingestion.import_batch b WITH (UPDLOCK,HOLDLOCK) "
+                        "JOIN dataset.dataset d ON d.dataset_id=:dataset "
+                        "WHERE b.import_batch_id=:batch"
                     ),
-                    {"batch": current.import_batch_id},
+                    {
+                        "batch": current.import_batch_id,
+                        "dataset": int(intent["dataset_id"]),
+                    },
                 )
                 .mappings()
                 .one_or_none()
@@ -958,6 +1034,17 @@ class SqlJobService:
                 raise DomainError(
                     "BATCH_NOT_PROCESSING",
                     "正式导入批次不在可发布的处理中状态",
+                    409,
+                )
+            if (
+                str(batch["access_scope"]) != str(batch["dataset_access_scope"])
+                or batch["data_domain_id"] != batch["dataset_data_domain_id"]
+                or batch["source_definition_id"]
+                != batch["dataset_source_definition_id"]
+            ):
+                raise DomainError(
+                    "DATA_ACCESS_SCOPE_MISMATCH",
+                    "Dataset 与输入批次的数据归属不一致",
                     409,
                 )
             links = (
@@ -1494,26 +1581,32 @@ class SqlJobService:
         return _to_job(row)
 
     def get_for_principal(self, job_id: int, principal: Principal) -> Job:
-        if "SYSTEM_ADMIN" in principal.roles:
-            return self.get(job_id)
         with self._engine.connect() as connection:
             access = (
                 connection.execute(
                     text(
-                        "SELECT TOP (1) CASE WHEN b.owner_user_id=:user_id OR "
-                        "ws.owner_user_id=:user_id OR j.requested_by_user_id=:user_id "
+                        "SELECT TOP (1) CASE WHEN "
+                        "(b.access_scope='PERSONAL' AND b.owner_user_id=:user_id) OR "
+                        + quick_write_scope_sql(session_alias="ws")
+                        + " OR "
+                        "(b.import_batch_id IS NULL AND ws.analysis_session_id IS NULL "
+                        "AND j.requested_by_user_id=:user_id) "
                         "THEN 1 ELSE 0 END AS can_manage,b.business_domain "
                         "FROM ingestion.processing_job j "
                         "LEFT JOIN ingestion.import_batch b "
                         "ON b.import_batch_id=j.import_batch_id "
                         "LEFT JOIN workspace.analysis_session ws "
                         "ON ws.analysis_session_id=j.analysis_session_id "
-                        "WHERE j.job_id=:job_id AND (b.owner_user_id=:user_id OR "
-                        "ws.owner_user_id=:user_id OR j.requested_by_user_id=:user_id OR "
+                        "WHERE j.job_id=:job_id AND ("
+                        + quick_read_scope_sql(session_alias="ws")
+                        + " OR "
+                        "(b.import_batch_id IS NULL AND ws.analysis_session_id IS NULL "
+                        "AND j.requested_by_user_id=:user_id) OR "
                         "(j.import_batch_id IS NOT NULL AND "
-                        "b.business_domain='PRODUCTION'))"
+                        + batch_read_scope_sql(batch_alias="b")
+                        + "))"
                     ),
-                    {"job_id": job_id, "user_id": principal.user_id},
+                    visibility_parameters(principal) | {"job_id": job_id},
                 )
                 .mappings()
                 .one_or_none()
@@ -1541,23 +1634,27 @@ class SqlJobService:
         request: TransitionJobRequest,
         principal: Principal,
     ) -> Job:
-        if "SYSTEM_ADMIN" not in principal.roles:
-            with self._engine.connect() as connection:
-                allowed = connection.execute(
-                    text(
-                        "SELECT TOP (1) 1 FROM ingestion.processing_job j "
-                        "LEFT JOIN ingestion.import_batch b "
-                        "ON b.import_batch_id=j.import_batch_id "
-                        "LEFT JOIN workspace.analysis_session ws "
-                        "ON ws.analysis_session_id=j.analysis_session_id "
-                        "WHERE j.job_id=:job_id AND (b.owner_user_id=:user_id OR "
-                        "ws.owner_user_id=:user_id OR "
-                        "j.requested_by_user_id=:user_id)"
-                    ),
-                    {"job_id": job_id, "user_id": principal.user_id},
-                ).scalar_one_or_none()
-            if allowed is None:
-                raise DomainError("JOB_NOT_FOUND", "任务不存在或无权操作", 404)
+        with self._engine.connect() as connection:
+            allowed = connection.execute(
+                text(
+                    "SELECT TOP (1) 1 FROM ingestion.processing_job j "
+                    "LEFT JOIN ingestion.import_batch b "
+                    "ON b.import_batch_id=j.import_batch_id "
+                    "LEFT JOIN workspace.analysis_session ws "
+                    "ON ws.analysis_session_id=j.analysis_session_id "
+                    "WHERE j.job_id=:job_id AND ("
+                    + quick_write_scope_sql(session_alias="ws")
+                    + " OR "
+                    "(b.import_batch_id IS NULL AND ws.analysis_session_id IS NULL "
+                    "AND j.requested_by_user_id=:user_id) OR "
+                    "(j.import_batch_id IS NOT NULL AND "
+                    + batch_write_scope_sql(batch_alias="b")
+                    + "))"
+                ),
+                visibility_parameters(principal) | {"job_id": job_id},
+            ).scalar_one_or_none()
+        if allowed is None:
+            raise DomainError("JOB_NOT_FOUND", "任务不存在或无权操作", 404)
         return self.transition(job_id, request)
 
     def transition(self, job_id: int, request: TransitionJobRequest) -> Job:

@@ -1,0 +1,22 @@
+{
+  "bind_host": "127.0.0.1",
+  "port": 8765,
+  "allowed_origins": [
+    "http://127.0.0.1:5173",
+    "http://localhost:5173"
+  ],
+  "allowed_hosts": [
+    "127.0.0.1:8765",
+    "localhost:8765"
+  ],
+  "work_root": "%LOCALAPPDATA%/NCE/TMSLocalAgent/work",
+  "python_runtime": "D:/ProgramData/anaconda3/python.exe",
+  "ft_package": "F:/data_IGBT_multiple/packaging/release/ft_data_cleaner.pyz",
+  "ft_package_sha256": "cce726de758dde85966fa7c601f455fc3a025f9c095db860c59affdf0b7fb272",
+  "run_timeout_seconds": 7200,
+  "max_output_bytes": 67108864,
+  "max_source_files": 100000,
+  "selection_ttl_seconds": 1800,
+  "pairing_token_ttl_seconds": 28800,
+  "max_workers": 1
+}

@@ -60,6 +60,7 @@ class StubDatasetService:
         self.detail_request: dict[str, object] | None = None
         self.gate_principal: Principal | None = None
         self.summary_principal: Principal | None = None
+        self.version_principal: Principal | None = None
         self.approved_parameter_analysis_rule_codes: set[str] = set()
         self.approval_calls: list[tuple[str, ...]] = []
 
@@ -124,8 +125,12 @@ class StubDatasetService:
         )
 
     def create_version(
-        self, dataset_id: int, request: CreateDatasetVersionRequest
+        self,
+        dataset_id: int,
+        request: CreateDatasetVersionRequest,
+        principal: Principal,
     ) -> DatasetVersionRecord:
+        self.version_principal = principal
         return DatasetVersionRecord(
             2,
             dataset_id,
@@ -456,6 +461,7 @@ def client_with_service() -> TestClient:
 
 def test_dataset_endpoints_cover_create_gate_publish_and_summary() -> None:
     client = client_with_service()
+    stub = client.app.state.dataset_service
     created = client.post(
         "/api/v1/datasets",
         json={
@@ -475,6 +481,8 @@ def test_dataset_endpoints_cover_create_gate_publish_and_summary() -> None:
     )
     assert version.status_code == 201
     assert version.json()["status"] == "VALIDATING"
+    assert stub.version_principal is not None
+    assert stub.version_principal.user_id == 1
     gate = client.get("/api/v1/datasets/1/versions/1/gate")
     expected_gate = asdict(
         StubDatasetService().evaluate_gate(

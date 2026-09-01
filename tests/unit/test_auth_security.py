@@ -55,6 +55,12 @@ def test_principal_permission_contract() -> None:
     assert not principal.can("USER_ADMIN")
 
 
+def test_development_principal_does_not_receive_break_glass() -> None:
+    from app.domain.auth import DEVELOPMENT_PRINCIPAL
+
+    assert "DATA_BREAK_GLASS" not in DEVELOPMENT_PRINCIPAL.permissions
+
+
 def test_auth_disabled_uses_real_database_principal_when_service_exists(
     monkeypatch,
 ) -> None:

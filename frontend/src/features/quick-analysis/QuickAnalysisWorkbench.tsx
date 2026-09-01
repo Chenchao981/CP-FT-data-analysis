@@ -2,6 +2,7 @@ import {
   CloudServerOutlined,
   DownloadOutlined,
   FolderOpenOutlined,
+  LaptopOutlined,
   LeftOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
@@ -20,6 +21,7 @@ import {
   Space,
   Statistic,
   Table,
+  Tabs,
   Tag,
   Typography,
   message,
@@ -42,6 +44,7 @@ import {
   recentShanghaiDayRange,
   shanghaiLocalInputToUtc,
 } from "../../utils/dateTime";
+import { LocalQuickAnalysisPanel } from "./LocalQuickAnalysisPanel";
 
 const statusColor: Record<string, string> = {
   QUEUED: "gold",
@@ -141,6 +144,7 @@ export function QuickAnalysisWorkbench() {
   ];
   const sessionColumns: ColumnsType<QuickAnalysisSession> = [
     { title: "会话", dataIndex: "analysis_session_id", width: 85, fixed: "left" },
+    { title: "权限范围", dataIndex: "access_scope", width: 140, render: (value, row) => value === "PERSONAL" ? <Tag color="cyan">个人</Tag> : <Tag color="blue">数据域 {row.data_domain_code ?? `#${row.data_domain_id}`}</Tag> },
     { title: "数据源", dataIndex: "source_root_code", width: 150 },
     { title: "相对目录", dataIndex: "source_relative_path", width: 260, ellipsis: true },
     { title: "源文件", dataIndex: "source_file_count", width: 95, render: count },
@@ -149,7 +153,7 @@ export function QuickAnalysisWorkbench() {
     { title: "参数", dataIndex: "parameter_count", width: 85, render: count },
     { title: "解析数据行", dataIndex: "record_count", width: 125, render: count },
     { title: "计算耗时", key: "elapsed", width: 105, render: (_, row) => row.summary?.elapsed_seconds == null ? "—" : `${row.summary.elapsed_seconds.toFixed(3)} 秒` },
-    { title: "创建人", dataIndex: "owner_name", width: 100 },
+    { title: "发起人", dataIndex: "owner_name", width: 100 },
     { title: "创建时间", dataIndex: "created_at_utc", width: 175, render: formatUtcDateTime },
     { title: "结果到期", dataIndex: "expires_at_utc", width: 175, render: formatUtcDateTime },
     { title: "错误", dataIndex: "error_message", width: 240, ellipsis: true, render: (value) => value || "—" },
@@ -160,25 +164,43 @@ export function QuickAnalysisWorkbench() {
   return <div className="workbench quick-analysis-workbench">
     {contextHolder}
     <div className="page-heading">
-      <div><Typography.Text type="secondary">快速计算 / FT PAT</Typography.Text><Typography.Title level={2}>快速分析</Typography.Title><Typography.Text type="secondary">直接读取受控服务器目录，复用已发布杰群 PAT 工具；不上传原始文件，也不写入正式 Canonical 明细。</Typography.Text></div>
+      <div><Typography.Text type="secondary">快速计算 / CP 与 FT 已发布工具</Typography.Text><Typography.Title level={2}>快速分析</Typography.Title><Typography.Text type="secondary">计算靠近数据执行：个人电脑使用 Local Agent，FTP/NAS 使用近数据 Worker；源文件不进入快速分析上传链，也不写入正式 Canonical 明细。</Typography.Text></div>
       <Button icon={<ReloadOutlined />} onClick={() => void Promise.all([roots.refetch(), directories.refetch(), manifest.refetch(), sessions.refetch()])}>刷新</Button>
     </div>
-    <Alert className="quick-analysis-alert" showIcon type="info" message="当前 P0：杰群统一 CSV 原始目录 → 低内存 PAT Excel" description="系统只保存来源 Manifest、工具版本、运行状态和结果文件，默认 7 天后过期。若要长期追溯或跨批次正式分析，请使用正式入库。" />
+    <Alert className="quick-analysis-alert" showIcon type="info" message="当前已批准能力：杰群统一 CSV 原始目录 → 低内存 PAT Excel" description="FT PAT 复用原桌面工具；CP 采用相同本机架构，但在原始目录 PAT Adapter 和 Golden 获批前保持禁用。系统只保存结果和证据，默认 7 天后过期。" />
     <Row gutter={16} className="production-stats"><Col span={6}><Card><Statistic title="筛选结果" value={metrics.total} /></Card></Col><Col span={6}><Card><Statistic title="本页排队/计算" value={metrics.running} valueStyle={{ color: "#1677ff" }} /></Card></Col><Col span={6}><Card><Statistic title="本页已完成" value={metrics.success} valueStyle={{ color: "#3f8600" }} /></Card></Col><Col span={6}><Card><Statistic title="本页失败" value={metrics.failed} valueStyle={{ color: metrics.failed ? "#cf1322" : undefined }} /></Card></Col></Row>
-    <Card title={<Space><CloudServerOutlined />选择受控服务器目录</Space>} className="quick-source-card" extra={<Button type="primary" icon={<PlayCircleOutlined />} disabled={!selectedRoot?.available || !manifest.data} loading={manifest.isFetching || createMutation.isPending} onClick={() => setConfirmOpen(true)}>确认范围并计算 PAT</Button>}>
-      {roots.isError ? <Alert type="error" showIcon message="数据源加载失败" description={roots.error.message} /> : !roots.isLoading && !roots.data?.length ? <Empty description="尚未配置快速分析数据源，请管理员设置 TMS_SOURCE_ROOTS_JSON。" /> : <>
-        <Space wrap className="quick-source-toolbar">
-          <Typography.Text strong>数据源</Typography.Text>
-          <Select value={rootCode} loading={roots.isLoading} style={{ minWidth: 240 }} options={(roots.data ?? []).map((item) => ({ value: item.code, label: `${item.name}${item.available ? "" : "（不可用）"}`, disabled: !item.available }))} onChange={(value) => { setRootCode(value); setRelativePath("."); }} />
-          <Button icon={<LeftOutlined />} disabled={!directories.data?.parent_relative_path} onClick={() => directories.data?.parent_relative_path != null && setRelativePath(directories.data.parent_relative_path)}>上一级</Button>
-          <Typography.Text code>{directories.data?.current_relative_path ?? relativePath}</Typography.Text>
-        </Space>
-        {directories.isError && <Alert type="error" showIcon message="目录读取失败" description={directories.error.message} />}
-        {manifest.isError && <Alert type="error" showIcon message="递归文件范围预览失败" description={manifest.error.message} />}
-        <Table rowKey="relative_path" size="small" loading={directories.isLoading} columns={directoryColumns} dataSource={directories.data?.directories ?? []} pagination={false} locale={{ emptyText: "当前目录没有子目录，可直接点击右上角开始计算。" }} />
-      </>}
-    </Card>
-    <Card title="快速分析记录" className="production-table-card quick-session-card">
+    <Tabs
+      defaultActiveKey="local"
+      className="quick-source-tabs"
+      items={[
+        {
+          key: "local",
+          label: <Space><LaptopOutlined />本机目录（Local Agent）</Space>,
+          children: <LocalQuickAnalysisPanel onRegistered={() => queryClient.invalidateQueries({ queryKey: ["quick-analysis", "sessions"] })} />,
+        },
+        {
+          key: "server",
+          label: <Space><CloudServerOutlined />服务器 / FTP / NAS</Space>,
+          children: <>
+            <Alert type="info" showIcon message="服务器受控数据源" description="适用于 Worker 能直接访问的 FTP、NAS 或服务器挂载目录。数据源由管理员配置，页面不会暴露真实根路径。" style={{ marginBottom: 16 }} />
+            <Card title={<Space><CloudServerOutlined />选择受控服务器目录</Space>} className="quick-source-card" extra={<Button type="primary" icon={<PlayCircleOutlined />} disabled={!selectedRoot?.available || !manifest.data} loading={manifest.isFetching || createMutation.isPending} onClick={() => setConfirmOpen(true)}>确认范围并计算 PAT</Button>}>
+              {roots.isError ? <Alert type="error" showIcon message="数据源加载失败" description={roots.error.message} /> : !roots.isLoading && !roots.data?.length ? <Empty description="尚未配置快速分析数据源，请管理员设置 TMS_SOURCE_ROOTS_JSON。" /> : <>
+                <Space wrap className="quick-source-toolbar">
+                  <Typography.Text strong>数据源</Typography.Text>
+                  <Select value={rootCode} loading={roots.isLoading} style={{ minWidth: 240 }} options={(roots.data ?? []).map((item) => ({ value: item.code, label: `${item.name}${item.available ? "" : "（不可用）"}`, disabled: !item.available }))} onChange={(value) => { setRootCode(value); setRelativePath("."); }} />
+                  <Button icon={<LeftOutlined />} disabled={!directories.data?.parent_relative_path} onClick={() => directories.data?.parent_relative_path != null && setRelativePath(directories.data.parent_relative_path)}>上一级</Button>
+                  <Typography.Text code>{directories.data?.current_relative_path ?? relativePath}</Typography.Text>
+                </Space>
+                {directories.isError && <Alert type="error" showIcon message="目录读取失败" description={directories.error.message} />}
+                {manifest.isError && <Alert type="error" showIcon message="递归文件范围预览失败" description={manifest.error.message} />}
+                <Table rowKey="relative_path" size="small" loading={directories.isLoading} columns={directoryColumns} dataSource={directories.data?.directories ?? []} pagination={false} locale={{ emptyText: "当前目录没有子目录，可直接点击右上角开始计算。" }} />
+              </>}
+            </Card>
+          </>,
+        },
+      ]}
+    />
+    <Card title="快速分析记录" className="production-table-card quick-session-card" extra={<Typography.Text type="secondary">个人结果仅本人；数据域结果仅当前有效成员</Typography.Text>}>
       <Space wrap style={{ marginBottom: 12 }}>
         <Typography.Text strong>状态</Typography.Text>
         <Select

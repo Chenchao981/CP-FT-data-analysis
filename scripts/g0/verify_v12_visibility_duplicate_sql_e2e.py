@@ -34,7 +34,7 @@ from app.infrastructure.sql_dataset_service import SqlDatasetService
 from app.infrastructure.sql_stage_data_service import SqlStageDataService
 
 EXPECTED_DATABASE = "TMS_G0_DEV"
-EXPECTED_SCHEMA_REVISION = "sql2014_0023"
+EXPECTED_SCHEMA_REVISION = "sql2014_0024"
 
 _COUNTED_TABLES = (
     "iam.app_user",
@@ -563,6 +563,7 @@ def _run_fixture(connection: Connection, token: str, sha256: str) -> dict[str, i
             input_batch_id=engineering_batch,
             processing_run_ids=[run_a1.processing_run_id],
         ),
+        owner_a,
     )
     production_v1 = dataset_service.create_version(
         production_dataset.dataset_id,
@@ -570,6 +571,7 @@ def _run_fixture(connection: Connection, token: str, sha256: str) -> dict[str, i
             input_batch_id=production_batch,
             processing_run_ids=[run_b1.processing_run_id],
         ),
+        owner_b,
     )
     dataset_service.publish(
         engineering_dataset.dataset_id,
@@ -623,6 +625,7 @@ def _run_fixture(connection: Connection, token: str, sha256: str) -> dict[str, i
             input_batch_id=engineering_batch,
             processing_run_ids=[run_a2.processing_run_id],
         ),
+        owner_a,
     )
     dataset_service.publish(
         engineering_dataset.dataset_id,
@@ -805,7 +808,7 @@ def main() -> None:
         "independent_receipts=true receipt_paths_independent=true"
     )
     print(
-        "v12_rollback=PASS database=TMS_G0_DEV schema=sql2014_0023 "
+        "v12_rollback=PASS database=TMS_G0_DEV schema=sql2014_0024 "
         "database_rows_restored=true durable_fixture_rows=0"
     )
 

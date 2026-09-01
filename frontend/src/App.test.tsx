@@ -92,6 +92,7 @@ vi.mock("./features/dashboard/PersonalDashboard", () => ({
     <button onClick={() => onNavigate("/production/ft")}>dashboard-production-ft</button>
   </div>,
 }));
+vi.mock("./features/data-domains/DataDomainManagement", () => ({ DataDomainManagement: () => <div>data-domains</div> }));
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,
@@ -136,6 +137,7 @@ describe("App navigation and deep links", () => {
     [["DATASET_READ"], "/dashboard", "dashboard:测试员"],
     [["MANAGEMENT_READ"], "/management/quality", "quality::analytics-false"],
     [["AUDIT_READ"], "/operations", "operations"],
+    [["DATA_DOMAIN_ADMIN"], "/data-domains", "data-domains"],
   ])("redirects the root route to the first permitted leaf for %j", async (permissions, expectedPath, expectedPage) => {
     vi.mocked(useAuth).mockReturnValue(authFor(permissions));
 

@@ -6,6 +6,8 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.domain.auth import Principal
+
 
 class StrictRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -764,7 +766,10 @@ class DatasetService(Protocol):
     def create_dataset(self, request: CreateDatasetRequest) -> DatasetRecord: ...
 
     def create_version(
-        self, dataset_id: int, request: CreateDatasetVersionRequest
+        self,
+        dataset_id: int,
+        request: CreateDatasetVersionRequest,
+        principal: Principal,
     ) -> DatasetVersionRecord: ...
 
     def evaluate_gate(
