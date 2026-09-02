@@ -1,6 +1,7 @@
 import { apiRequest, downloadAuthenticatedFile } from "./auth";
 
 export type BusinessDomain = "ENGINEERING" | "PRODUCTION";
+export type StageScope = BusinessDomain | "ALL";
 export type TestStage = "CP" | "FT";
 
 export interface PageResult<T> {
@@ -30,6 +31,7 @@ export interface StageUploadRow {
   extension: string;
   size_bytes: number;
   factory_code: string;
+  business_domain?: BusinessDomain;
   upload_time_utc: string;
   completion_time_utc: string | null;
   uploader_login: string;
@@ -80,6 +82,7 @@ export interface StageResultRow {
   lot_id: string | null;
   wafer_count: number | null;
   factory_code: string;
+  business_domain?: BusinessDomain;
   uploader_login: string;
   uploader_name: string;
   can_manage: boolean;
@@ -131,7 +134,7 @@ export interface FormalSourceManifestPreview {
   allowed_suffixes: string[];
 }
 
-const stageBase = (businessDomain: BusinessDomain, testStage: TestStage) =>
+const stageBase = (businessDomain: StageScope, testStage: TestStage) =>
   `/api/v1/${businessDomain.toLowerCase()}/${testStage.toLowerCase()}`;
 
 export const listStageUploads = (businessDomain: BusinessDomain, testStage: TestStage) =>
@@ -153,7 +156,7 @@ const stagePageQuery = (request: StagePageRequest) => {
 };
 
 export const listStageUploadsPage = (
-  businessDomain: BusinessDomain,
+  businessDomain: StageScope,
   testStage: TestStage,
   request: StagePageRequest,
 ) => apiRequest<PageResult<StageUploadRow>>(
@@ -161,7 +164,7 @@ export const listStageUploadsPage = (
 );
 
 export const listStageResultsPage = (
-  businessDomain: BusinessDomain,
+  businessDomain: StageScope,
   testStage: TestStage,
   request: StagePageRequest,
 ) => apiRequest<PageResult<StageResultRow>>(

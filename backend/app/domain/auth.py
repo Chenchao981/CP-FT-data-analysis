@@ -37,6 +37,11 @@ ALL_PERMISSIONS = frozenset(
     }
 )
 
+# Development-first data access: these operational administrator roles may
+# inspect and operate every PERSONAL and DOMAIN data object.  Ordinary CP/FT
+# users still use owner or data-domain grants.
+GLOBAL_DATA_ACCESS_ROLES = frozenset({"SYSTEM_ADMIN", "DATA_DOMAIN_ADMIN"})
+
 
 @dataclass(frozen=True, slots=True)
 class Principal:
@@ -51,14 +56,19 @@ class Principal:
         return permission in self.permissions
 
 
+def has_global_data_access(principal: Principal) -> bool:
+    return bool(GLOBAL_DATA_ACCESS_ROLES.intersection(principal.roles)) or principal.can(
+        "DATA_BREAK_GLASS"
+    )
+
+
 DEVELOPMENT_PRINCIPAL = Principal(
     user_id=1,
     login_name="development-admin",
     display_name="开发管理员",
     roles=("SYSTEM_ADMIN",),
-    # Authentication-disabled development mode is not an emergency-access
-    # workflow. Keep the reserved permission unusable here too; otherwise a
-    # local SYSTEM_ADMIN would silently bypass PERSONAL/DOMAIN row security.
+    # DATA_BREAK_GLASS stays reserved for the later security-hardening phase;
+    # SYSTEM_ADMIN already has explicit global data access in development.
     permissions=ALL_PERMISSIONS - {"DATA_BREAK_GLASS"},
 )
 

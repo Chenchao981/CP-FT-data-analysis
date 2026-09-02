@@ -1,5 +1,7 @@
 # TMS 数据访问与 Local Agent 架构 v1.0
 
+> 2026-09-02 变更：开发期 `SYSTEM_ADMIN`、`DATA_DOMAIN_ADMIN` 改为全数据访问；工程/量产菜单已合并。本文的严格管理员隔离内容转入安全延期项，最新口径见 `docs/business/TMS_Development_First_Access_and_Entry_Requirements_2026-09-02.md`。
+
 - 日期：2026-09-01
 - 状态：开发候选架构
 - 继承：Route A 唯一 Canonical 与 v0.8 双通道边界

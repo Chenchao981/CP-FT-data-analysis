@@ -196,14 +196,12 @@ export function PersonalDashboard({
             : <Table rowKey="analysis_session_id" columns={quickColumns} dataSource={personalQuickItems} pagination={false} size="small" scroll={{ x: 670 }} />}
     </Card>}
 
-    <Card className="cockpit-card quick-entry-panel" title="固定业务入口">
+    <Card className="cockpit-card quick-entry-panel" title="数据入口">
       <Row gutter={[8, 8]}>
         {[
-          ["/engineering/cp", "工程 CP", "Wafer 清洗与分析", <ExperimentOutlined />],
-          ["/engineering/ft", "工程 FT", "Lot 工程分析", <ThunderboltOutlined />],
-          ["/production/cp", "量产 CP", "量产 Wafer 数据", <ExperimentOutlined />],
-          ["/production/ft", "量产 FT", "量产 Lot 数据", <ThunderboltOutlined />],
-        ].map(([path, title, detail, icon]) => <Col xs={24} md={12} xl={6} key={String(path)}><button type="button" onClick={() => onNavigate(String(path))}>{icon}<span><b>{title}</b><small>{detail}</small></span><ArrowRightOutlined /></button></Col>)}
+          ["/cp", "CP 数据", "统一 Wafer 清洗与分析", <ExperimentOutlined />],
+          ["/ft", "FT 数据", "统一 Lot 清洗与分析", <ThunderboltOutlined />],
+        ].map(([path, title, detail, icon]) => <Col xs={24} md={12} key={String(path)}><button type="button" onClick={() => onNavigate(String(path))}>{icon}<span><b>{title}</b><small>{detail}</small></span><ArrowRightOutlined /></button></Col>)}
         <Col xs={24}><button type="button" disabled={!canRunQuickAnalysis} onClick={() => onNavigate("/quick-analysis")}><RadarChartOutlined /><span><b>快速分析</b><small>本机工具或服务器近数据计算</small></span><ArrowRightOutlined /></button></Col>
       </Row>
     </Card>

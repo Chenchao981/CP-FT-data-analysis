@@ -173,18 +173,18 @@ describe("PersonalDashboard data scopes", () => {
     })));
   });
 
-  it("keeps all four fixed business entries and quick analysis", async () => {
+  it("keeps unified CP and FT entries plus quick analysis", async () => {
     vi.mocked(listMyDataDomains).mockResolvedValue([]);
     vi.mocked(getQualityManagementSummary).mockResolvedValue(summary);
     const navigate = vi.fn();
     renderDashboard(navigate);
 
-    fireEvent.click(screen.getByRole("button", { name: /工程 FT/ }));
-    fireEvent.click(screen.getByRole("button", { name: /量产 CP/ }));
+    fireEvent.click(screen.getByRole("button", { name: /FT 数据/ }));
+    fireEvent.click(screen.getByRole("button", { name: /CP 数据/ }));
     fireEvent.click(screen.getByRole("button", { name: /快速分析/ }));
     expect(navigate.mock.calls).toEqual([
-      ["/engineering/ft"],
-      ["/production/cp"],
+      ["/ft"],
+      ["/cp"],
       ["/quick-analysis"],
     ]);
   });

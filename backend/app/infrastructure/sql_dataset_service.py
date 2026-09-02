@@ -989,7 +989,7 @@ class SqlDatasetService:
             "dataset_id": dataset_id
         }
         joins = ""
-        scope = "(d.access_scope='PERSONAL' AND d.owner_user_id=:user_id)"
+        scope = "(:is_admin=1 OR (d.access_scope='PERSONAL' AND d.owner_user_id=:user_id))"
         if normalized_mode == "READ":
             version_predicate = (
                 "access_dv.dataset_id=d.dataset_id AND "

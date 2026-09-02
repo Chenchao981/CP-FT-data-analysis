@@ -89,7 +89,7 @@ vi.mock("./features/datasets/DatasetCurrentCatalog", () => ({
 vi.mock("./features/dashboard/PersonalDashboard", () => ({
   PersonalDashboard: ({ userName, onNavigate }: { userName: string; onNavigate: (path: string) => void }) => <div>
     <span>{`dashboard:${userName}`}</span>
-    <button onClick={() => onNavigate("/production/ft")}>dashboard-production-ft</button>
+    <button onClick={() => onNavigate("/ft")}>dashboard-ft</button>
   </div>,
 }));
 vi.mock("./features/data-domains/DataDomainManagement", () => ({ DataDomainManagement: () => <div>data-domains</div> }));
@@ -147,7 +147,7 @@ describe("App navigation and deep links", () => {
     await waitFor(() => expect(window.location.pathname).toBe(expectedPath));
   }, 15_000);
 
-  it("opens the personal cockpit and follows its fixed-route shortcuts", async () => {
+  it("opens the personal cockpit and follows its unified CP/FT shortcuts", async () => {
     vi.mocked(useAuth).mockReturnValue(authFor(["DATASET_READ"]));
     window.history.replaceState({}, "", "/dashboard");
 
@@ -155,15 +155,15 @@ describe("App navigation and deep links", () => {
 
     expect(await screen.findByText("dashboard:测试员")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "个人驾驶舱" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "dashboard-production-ft" }));
-    expect(await screen.findByText("stage:PRODUCTION/FT")).toBeInTheDocument();
-    expect(window.location.pathname).toBe("/production/ft");
+    fireEvent.click(screen.getByRole("button", { name: "dashboard-ft" }));
+    expect(await screen.findByText("stage:ALL/FT")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/ft");
   }, 15_000);
 
   it.each([
-    ["/engineering", "/engineering/cp", "stage:ENGINEERING/CP"],
-    ["/production", "/production/cp", "stage:PRODUCTION/CP"],
-  ])("redirects the permitted parent route %s to its first leaf", async (path, expectedPath, expectedPage) => {
+    ["/engineering", "/cp", "stage:ALL/CP"],
+    ["/production", "/cp", "stage:ALL/CP"],
+  ])("redirects the legacy parent route %s to the unified entry", async (path, expectedPath, expectedPage) => {
     vi.mocked(useAuth).mockReturnValue(authFor(["DATASET_READ"]));
     window.history.replaceState({}, "", path);
 
@@ -198,9 +198,9 @@ describe("App navigation and deep links", () => {
     expect(await screen.findByText("analytics:20/3")).toBeInTheDocument();
     expect(screen.getByText("job-drawer:91")).toBeInTheDocument();
 
-    window.history.pushState({}, "", "/production/ft?job_id=92");
+    window.history.pushState({}, "", "/ft?job_id=92");
     window.dispatchEvent(new PopStateEvent("popstate"));
-    expect(await screen.findByText("stage:PRODUCTION/FT")).toBeInTheDocument();
+    expect(await screen.findByText("stage:ALL/FT")).toBeInTheDocument();
     expect(screen.getByText("job-drawer:92")).toBeInTheDocument();
   }, 15_000);
 
@@ -265,18 +265,18 @@ describe("App navigation and deep links", () => {
   }, 15_000);
 
   it.each([
-    ["/engineering/cp", "stage:ENGINEERING/CP"],
-    ["/engineering/ft", "stage:ENGINEERING/FT"],
-    ["/production/cp", "stage:PRODUCTION/CP"],
-    ["/production/ft", "stage:PRODUCTION/FT"],
-  ])("restores the fixed entry deep link %s on refresh", async (path, expected) => {
+    ["/cp", "/cp", "stage:ALL/CP"],
+    ["/ft", "/ft", "stage:ALL/FT"],
+    ["/engineering/cp", "/cp", "stage:ALL/CP"],
+    ["/production/ft", "/ft", "stage:ALL/FT"],
+  ])("restores or redirects the data entry deep link %s", async (path, expectedPath, expected) => {
     vi.mocked(useAuth).mockReturnValue(authFor(["DATASET_READ"]));
     window.history.replaceState({}, "", path);
 
     render(<App />);
 
     expect(await screen.findByText(expected)).toBeInTheDocument();
-    expect(window.location.pathname).toBe(path);
+    await waitFor(() => expect(window.location.pathname).toBe(expectedPath));
   }, 15_000);
 
   it("exposes operations only to AUDIT_READ users", async () => {

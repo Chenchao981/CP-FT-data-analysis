@@ -521,8 +521,8 @@ describe("StageDataWorkbench Lot input states", () => {
     renderWorkbench({ businessDomain, testStage: "FT", onOpenJob });
 
     fireEvent.click(await screen.findByRole("button", { name: /上传数据/ }));
-    const dialog = await screen.findByRole("dialog", { name: new RegExp(`提交${businessDomain === "ENGINEERING" ? "工程" : "量产"}FT数据`) });
-    const factoryLabel = within(dialog).getByText("封测厂", { selector: "label" });
+    const dialog = await screen.findByRole("dialog", { name: /提交FT数据/ });
+    const factoryLabel = within(dialog).getByText("选择解析工具", { selector: "label" });
     const factoryFormItem = factoryLabel.closest(".ant-form-item");
     const factorySelector = factoryFormItem?.querySelector(".ant-select-selector");
     const factoryInput = factoryFormItem?.querySelector(".ant-select-selection-search-input");

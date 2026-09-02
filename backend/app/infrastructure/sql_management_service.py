@@ -8,7 +8,7 @@ from typing import Any
 from sqlalchemy import Engine, text
 
 from app.core.errors import DomainError
-from app.domain.auth import Principal
+from app.domain.auth import Principal, has_global_data_access
 from app.domain.management import (
     FailBinSummary,
     QualityBreakdown,
@@ -19,6 +19,7 @@ from app.domain.management import (
 )
 from app.infrastructure.sql_visibility import (
     domain_grant_exists_sql,
+    visibility_parameters,
 )
 
 _DATASET_DASHBOARD_SCOPE_SQL = (
@@ -26,7 +27,9 @@ _DATASET_DASHBOARD_SCOPE_SQL = (
     "AND d.owner_user_id=:user_id) OR "
     "(:access_scope='DOMAIN' AND d.access_scope='DOMAIN' "
     "AND d.data_domain_id=:data_domain_id AND "
+    "(:is_admin=1 OR "
     + domain_grant_exists_sql(data_domain_column="d.data_domain_id")
+    + ")"
     + "))"
 )
 
@@ -35,7 +38,9 @@ _BATCH_DASHBOARD_SCOPE_SQL = (
     "AND b.owner_user_id=:user_id) OR "
     "(:access_scope='DOMAIN' AND b.access_scope='DOMAIN' "
     "AND b.data_domain_id=:data_domain_id AND "
+    "(:is_admin=1 OR "
     + domain_grant_exists_sql(data_domain_column="b.data_domain_id")
+    + ")"
     + "))"
 )
 
@@ -174,6 +179,7 @@ class SqlManagementService:
             product_name=product_name,
             lot_id=lot_id,
         )
+        params.update(visibility_parameters(principal))
         params.update(
             {
                 "from_utc": _naive_utc(from_utc),
@@ -187,10 +193,14 @@ class SqlManagementService:
         cte = _CURRENT_SCOPE_CTE.format(filters=filters)
         try:
             with self._engine.connect() as connection:
-                if access_scope == "DOMAIN" and not self._has_active_domain_grant(
+                if (
+                    access_scope == "DOMAIN"
+                    and not has_global_data_access(principal)
+                    and not self._has_active_domain_grant(
                     connection,
                     user_id=principal.user_id,
                     data_domain_id=int(data_domain_id or 0),
+                    )
                 ):
                     raise DomainError(
                         "QUALITY_DATA_DOMAIN_ACCESS_DENIED",
@@ -248,7 +258,7 @@ class SqlManagementService:
                 "time_range": "from_utc is inclusive and to_utc is exclusive, based on Dataset published_at_utc.",
                 "trend_period": "Trend periods are Asia/Shanghai business dates; period_start_utc is the UTC instant of Shanghai local midnight.",
                 "failed_job_scope": "Failed Job counts use time, business domain, test stage, and factory filters only; Product and Lot filters do not apply.",
-                "access_scope": "PERSONAL is always owner-only; DOMAIN requires an active, unexpired grant. Dashboard queries never use break-glass access.",
+                "access_scope": "PERSONAL shows the current user's data; DOMAIN requires an active grant, while SYSTEM_ADMIN and DATA_DOMAIN_ADMIN may inspect every domain during development.",
             },
             kpis=kpis,
             trends=trends,

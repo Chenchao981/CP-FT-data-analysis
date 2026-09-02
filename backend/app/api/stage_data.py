@@ -228,6 +228,12 @@ def _normalize_business_domain(value: str) -> str:
     return domain
 
 
+def _normalize_list_business_domain(value: str) -> str:
+    if value.strip().lower() == "all":
+        return "ALL"
+    return _normalize_business_domain(value)
+
+
 def _normalize_list_stage(value: str) -> str:
     stage = LIST_TEST_STAGES.get(value.strip().lower())
     if stage is None:
@@ -805,7 +811,7 @@ def list_stage_uploads_page(
     to_utc: datetime | None = Query(default=None),
     principal: Principal = Depends(require_permission("DATASET_READ")),
 ) -> dict:
-    domain = _normalize_business_domain(business_domain)
+    domain = _normalize_list_business_domain(business_domain)
     stage = _normalize_page_stage(test_stage)
     filters = build_page_filters(
         page=page,
@@ -838,7 +844,7 @@ def list_stage_results_page(
     to_utc: datetime | None = Query(default=None),
     principal: Principal = Depends(require_permission("DATASET_READ")),
 ) -> dict:
-    domain = _normalize_business_domain(business_domain)
+    domain = _normalize_list_business_domain(business_domain)
     stage = _normalize_page_stage(test_stage)
     filters = build_page_filters(
         page=page,

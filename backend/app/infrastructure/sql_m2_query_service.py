@@ -170,13 +170,13 @@ class SqlM2QueryService:
             factory_column="b.factory_code",
             status_column="b.status",
         )
-        parameters.update(
-            _scope_parameters(principal)
-            | {"business_domain": business_domain, "test_stage": test_stage}
-        )
+        parameters.update(_scope_parameters(principal) | {"test_stage": test_stage})
+        domain_clause = ""
+        if business_domain != "ALL":
+            domain_clause = "b.business_domain=:business_domain AND "
+            parameters["business_domain"] = business_domain
         base_where = (
-            " WHERE b.business_domain=:business_domain "
-            "AND b.test_stage=:test_stage "
+            " WHERE " + domain_clause + "b.test_stage=:test_stage "
             "AND " + batch_read_scope_sql(batch_alias="b") + where
         )
         base_from = (
@@ -199,7 +199,7 @@ class SqlM2QueryService:
                         "SELECT b.import_batch_id,ibf.ordinal_no,r.receipt_id,"
                         "r.source_file_id,r.original_file_name,s.file_size,"
                         "r.is_duplicate_receipt,"
-                        "b.factory_code,b.started_at_utc,b.completed_at_utc,"
+                        "b.factory_code,b.business_domain,b.started_at_utc,b.completed_at_utc,"
                         "u.login_name,u.display_name,b.status,latest.job_id "
                         "AS latest_job_id,latest.error_code,latest.error_message,"
                         "latest.queue_age_seconds,CASE WHEN "
@@ -244,16 +244,16 @@ class SqlM2QueryService:
             product_column="s.product_name",
             lot_column="s.lot_id",
         )
-        parameters.update(
-            _scope_parameters(principal)
-            | {"business_domain": business_domain, "test_stage": test_stage}
-        )
+        parameters.update(_scope_parameters(principal) | {"test_stage": test_stage})
+        domain_clause = ""
+        if business_domain != "ALL":
+            domain_clause = "b.business_domain=:business_domain AND "
+            parameters["business_domain"] = business_domain
         base = (
             " FROM ingestion.processing_result_summary s "
             "JOIN ingestion.import_batch b ON b.import_batch_id=s.import_batch_id "
             "JOIN iam.app_user u ON u.user_id=b.owner_user_id "
-            "WHERE b.business_domain=:business_domain "
-            "AND b.test_stage=:test_stage "
+            "WHERE " + domain_clause + "b.test_stage=:test_stage "
             "AND "
             + formal_result_read_scope_sql(summary_alias="s", batch_alias="b")
             + where
@@ -269,7 +269,7 @@ class SqlM2QueryService:
                     text(
                         "SELECT s.result_summary_id,s.import_batch_id,s.job_id,"
                         "s.data_name,s.product_name,s.lot_id,s.wafer_count,"
-                        "s.factory_code,s.test_item_count,s.unit_count,"
+                        "s.factory_code,b.business_domain,s.test_item_count,s.unit_count,"
                         "s.pass_count,s.yield_rate,s.status,s.data_type,"
                         "s.dataset_id,s.dataset_version_no,s.created_at_utc,"
                         "u.login_name,u.display_name,"
@@ -452,6 +452,7 @@ class SqlM2QueryService:
             extension=file_name.rsplit(".", 1)[-1].lower() if "." in file_name else "",
             size_bytes=int(row["file_size"] or 0),
             factory_code=str(row["factory_code"] or ""),
+            business_domain=str(row.get("business_domain") or ""),
             upload_time_utc=_iso(row["started_at_utc"]) or "",
             completion_time_utc=_iso(row["completed_at_utc"]),
             uploader_login=str(row["login_name"]),
@@ -479,6 +480,7 @@ class SqlM2QueryService:
             lot_id=(str(row["lot_id"]) if row["lot_id"] else None),
             wafer_count=_optional_int(row["wafer_count"]),
             factory_code=str(row["factory_code"] or ""),
+            business_domain=str(row.get("business_domain") or ""),
             test_item_count=_optional_int(row["test_item_count"]),
             unit_count=_optional_int(row["unit_count"]),
             pass_count=_optional_int(row["pass_count"]),
@@ -752,10 +754,10 @@ SELECT d.dataset_id,dv.dataset_version_id,dv.version_no,
        COALESCE(pr.finished_at_utc,dv.published_at_utc) AS processed_at_utc,
        owner_user.login_name AS owner_login,owner_user.display_name AS owner_name,
        cr.cleaner_version,
-       CASE WHEN d.access_scope='PERSONAL' AND d.owner_user_id=:user_id THEN 1 ELSE 0 END AS can_edit_product,
-       CASE WHEN d.access_scope='PERSONAL' AND d.owner_user_id=:user_id THEN 1 ELSE 0 END AS can_export,
-       CASE WHEN d.access_scope='PERSONAL' AND d.owner_user_id=:user_id THEN 1 ELSE 0 END AS can_reprocess,
-       CASE WHEN d.access_scope='PERSONAL' AND d.owner_user_id=:user_id THEN 1 ELSE 0 END AS can_archive
+       CASE WHEN :is_admin=1 OR (d.access_scope='PERSONAL' AND d.owner_user_id=:user_id) THEN 1 ELSE 0 END AS can_edit_product,
+       CASE WHEN :is_admin=1 OR (d.access_scope='PERSONAL' AND d.owner_user_id=:user_id) THEN 1 ELSE 0 END AS can_export,
+       CASE WHEN :is_admin=1 OR (d.access_scope='PERSONAL' AND d.owner_user_id=:user_id) THEN 1 ELSE 0 END AS can_reprocess,
+       CASE WHEN :is_admin=1 OR (d.access_scope='PERSONAL' AND d.owner_user_id=:user_id) THEN 1 ELSE 0 END AS can_archive
 """
 
 _CURRENT_DATASET_FROM = """
@@ -829,7 +831,7 @@ SELECT j.job_id,j.source_file_id,j.import_batch_id,j.analysis_session_id,
          (SELECT COUNT_BIG(*) FROM ingestion.import_batch_file ibf
          WHERE ibf.import_batch_id=j.import_batch_id)
          WHEN j.source_file_id IS NOT NULL THEN 1 ELSE 0 END AS source_file_count,
-        CASE WHEN (b.access_scope='PERSONAL' AND b.owner_user_id=:user_id)
+        CASE WHEN :is_admin=1 OR (b.access_scope='PERSONAL' AND b.owner_user_id=:user_id)
                 OR """
     + quick_write_scope_sql(session_alias="ws")
     + """

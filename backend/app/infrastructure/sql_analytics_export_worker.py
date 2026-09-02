@@ -52,13 +52,17 @@ def _requester_dataset_access_sql(
     requester_expression: str,
     lock_grants: bool,
 ) -> str:
-    """Authorize the original requester without an administrator bypass."""
+    """Authorize the original requester, including global administrator roles."""
 
     hint = " WITH (UPDLOCK,HOLDLOCK)" if lock_grants else ""
     return (
         f"(EXISTS(SELECT 1 FROM iam.app_user access_user{hint} "
         f"WHERE access_user.user_id={requester_expression} "
         "AND access_user.status='ACTIVE') AND ("
+        f"EXISTS(SELECT 1 FROM iam.user_role access_ur{hint} "
+        f"JOIN iam.role access_role{hint} ON access_role.role_id=access_ur.role_id "
+        f"WHERE access_ur.user_id={requester_expression} "
+        "AND access_role.role_code IN ('SYSTEM_ADMIN','DATA_DOMAIN_ADMIN')) OR "
         f"({dataset_alias}.access_scope='PERSONAL' "
         f"AND {dataset_alias}.owner_user_id={requester_expression}) OR "
         f"({dataset_alias}.access_scope='DOMAIN' AND EXISTS(SELECT 1 "
@@ -71,7 +75,7 @@ def _requester_dataset_access_sql(
         "AND (access_grant.expires_at_utc IS NULL "
         "OR access_grant.expires_at_utc>SYSUTCDATETIME())) "
         f"AND {version_alias}.status='PUBLISHED' "
-        f"AND {version_alias}.is_current=1)))"
+        f"AND {version_alias}.is_current=1))))"
     )
 
 

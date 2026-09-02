@@ -235,21 +235,31 @@ def test_dataset_owner_overreach_fails_before_job_creation(tmp_path: Path) -> No
     )
 
 
-def test_system_admin_cannot_mutate_other_personal_dataset(tmp_path: Path) -> None:
-    service, engine, _connection = _service(
-        tmp_path, [_Result(), _Result(rows=[_target(owner=99)])]
+def test_system_admin_can_mutate_other_personal_dataset(tmp_path: Path) -> None:
+    service, engine, connection = _service(
+        tmp_path,
+        [
+            _Result(),
+            _Result(rows=[_target(owner=99)]),
+            _Result(scalars=[41]),
+            _Result(rows=[{"job_id": 82, "status": "QUEUED"}]),
+            _Result(),
+            _Result(),
+        ],
     )
 
-    with pytest.raises(DomainError) as exc_info:
-        service.create_archive(
-            5,
-            "approved archive reason",
-            "archive-request-admin-overreach",
-            _principal(admin=True),
-        )
+    receipt = service.create_archive(
+        5,
+        "approved archive reason",
+        "archive-request-admin-support",
+        _principal(admin=True),
+    )
 
-    assert exc_info.value.code == "DATASET_SCOPE_DENIED"
-    assert engine.rollbacks == 1
+    assert receipt.job_id == 82
+    assert receipt.action_type == "DELETE_TASK"
+    assert engine.commits == 1
+    target_query = connection.calls[1]
+    assert target_query[1]["is_admin"] is True
 
 
 def test_domain_grantee_can_export_without_mutating_dataset(tmp_path: Path) -> None:

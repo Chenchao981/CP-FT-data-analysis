@@ -42,6 +42,7 @@ class StageUploadPageItem:
     extension: str
     size_bytes: int
     factory_code: str
+    business_domain: str
     upload_time_utc: str
     completion_time_utc: str | None
     uploader_login: str
@@ -68,6 +69,7 @@ class StageResultPageItem:
     lot_id: str | None
     wafer_count: int | None
     factory_code: str
+    business_domain: str
     test_item_count: int | None
     unit_count: int | None
     pass_count: int | None

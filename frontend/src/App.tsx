@@ -1,4 +1,4 @@
-import { ApartmentOutlined, DatabaseOutlined, DashboardOutlined, ExperimentOutlined, LinkOutlined, LogoutOutlined, PlayCircleOutlined, ProfileOutlined, RadarChartOutlined, SafetyCertificateOutlined, ThunderboltOutlined, UserOutlined } from "@ant-design/icons";
+import { DashboardOutlined, ExperimentOutlined, LinkOutlined, LogoutOutlined, PlayCircleOutlined, ProfileOutlined, RadarChartOutlined, SafetyCertificateOutlined, ThunderboltOutlined, UserOutlined } from "@ant-design/icons";
 import { PageContainer, ProLayout } from "@ant-design/pro-components";
 import { Avatar, Dropdown, Result, Spin, Typography } from "antd";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
@@ -30,14 +30,8 @@ interface AppRoute {
 
 const routes: AppRoute[] = [
   { path: "/dashboard", name: "个人驾驶舱", icon: <RadarChartOutlined />, permission: "DATASET_READ" },
-  { path: "/engineering", name: "工程数据", icon: <ApartmentOutlined />, permission: "DATASET_READ", routes: [
-    { path: "/engineering/cp", name: "CP数据", icon: <ExperimentOutlined />, permission: "DATASET_READ" },
-    { path: "/engineering/ft", name: "FT数据", icon: <ThunderboltOutlined />, permission: "DATASET_READ" },
-  ] },
-  { path: "/production", name: "量产数据", icon: <DatabaseOutlined />, permission: "DATASET_READ", routes: [
-    { path: "/production/cp", name: "CP数据", icon: <ExperimentOutlined />, permission: "DATASET_READ" },
-    { path: "/production/ft", name: "FT数据", icon: <ThunderboltOutlined />, permission: "DATASET_READ" },
-  ] },
+  { path: "/cp", name: "CP数据", icon: <ExperimentOutlined />, permission: "DATASET_READ" },
+  { path: "/ft", name: "FT数据", icon: <ThunderboltOutlined />, permission: "DATASET_READ" },
   { path: "/quick-analysis", name: "快速分析", icon: <PlayCircleOutlined />, permission: "ANALYSIS_RUN" },
   { path: "/datasets/current", name: "历史正式数据", icon: <ProfileOutlined />, permission: "DATASET_READ" },
   { path: "/management/quality", name: "质量管理摘要", icon: <DashboardOutlined />, permission: ["MANAGEMENT_READ", "RULE_GOVERN"] },
@@ -123,12 +117,15 @@ export default function App() {
   const visibleLeafPaths = permittedRoutes.flatMap((route) => route.routes?.length
     ? route.routes.map((child) => child.path)
     : [route.path]);
-  const parentDefaultPath = permittedRoutes
-    .find((route) => route.path === browserLocation.pathname)
-    ?.routes?.[0]?.path;
-  const redirectPath = browserLocation.pathname === "/"
-    ? visibleLeafPaths[0]
-    : parentDefaultPath;
+  const legacyPath = ({
+    "/engineering": "/cp",
+    "/production": "/cp",
+    "/engineering/cp": "/cp",
+    "/production/cp": "/cp",
+    "/engineering/ft": "/ft",
+    "/production/ft": "/ft",
+  } as Record<string, string>)[browserLocation.pathname];
+  const redirectPath = browserLocation.pathname === "/" ? visibleLeafPaths[0] : legacyPath;
   useEffect(() => {
     if (!loading && user && redirectPath && redirectPath !== browserLocation.pathname) {
       navigate(redirectPath, new URLSearchParams(browserLocation.search), true);
@@ -157,6 +154,6 @@ export default function App() {
     actionsRender={() => []}
     token={{ sider: { colorMenuBackground: "#082f52", colorTextMenu: "#c8d8e5", colorTextMenuSelected: "#ffffff", colorBgMenuItemSelected: "#1167a8" } }}
   ><PageContainer title={false} className="app-content">
-    {activePage === "/dashboard" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><PersonalDashboard userName={user.display_name} onNavigate={navigate} canOpenQuality={can("MANAGEMENT_READ") || can("RULE_GOVERN")} canRunQuickAnalysis={can("ANALYSIS_RUN")} /></Suspense> : activePage === "/engineering/cp" ? <StageDataWorkbench businessDomain="ENGINEERING" testStage="CP" searchParams={searchParams} onSearchParamsChange={(params) => navigate("/engineering/cp", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} /> : activePage === "/engineering/ft" ? <StageDataWorkbench businessDomain="ENGINEERING" testStage="FT" searchParams={searchParams} onSearchParamsChange={(params) => navigate("/engineering/ft", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} /> : activePage === "/production/cp" ? <StageDataWorkbench businessDomain="PRODUCTION" testStage="CP" searchParams={searchParams} onSearchParamsChange={(params) => navigate("/production/cp", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} /> : activePage === "/production/ft" ? <StageDataWorkbench businessDomain="PRODUCTION" testStage="FT" searchParams={searchParams} onSearchParamsChange={(params) => navigate("/production/ft", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} /> : activePage === "/quick-analysis" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><QuickAnalysisWorkbench /></Suspense> : activePage === "/datasets/current" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><DatasetCurrentCatalog searchParams={searchParams} onSearchParamsChange={(params) => navigate("/datasets/current", params)} onOpenAnalytics={openAnalytics} onOpenComparison={openComparison} onOpenJob={openJob} /></Suspense> : activePage === "/analytics" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><AnalyticsWorkbench datasets={analyticsDatasets} searchParams={searchParams} onSearchParamsChange={(params) => navigate("/analytics", params)} onOpenCatalog={() => navigate("/datasets/current")} /></Suspense> : activePage === "/management/quality" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><QualityManagementDashboard searchParams={searchParams} onSearchParamsChange={(params) => navigate("/management/quality", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} canOpenAnalytics={can("DATASET_READ")} canReadManagement={can("MANAGEMENT_READ")} canGovernRules={can("RULE_GOVERN")} /></Suspense> : activePage === "/master-data/product-crosswalks" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><ProductCrosswalkWorkbench searchParams={searchParams} onSearchParamsChange={(params) => navigate("/master-data/product-crosswalks", params)} /></Suspense> : activePage === "/operations" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><OperationsConsistency /></Suspense> : activePage === "/data-domains" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><DataDomainManagement /></Suspense> : activePage === "/users" ? <UserManagement /> : <Result status="403" title="无权访问" subTitle="当前 URL 对应的功能不存在，或当前账户没有访问权限。" />}
+    {activePage === "/dashboard" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><PersonalDashboard userName={user.display_name} onNavigate={navigate} canOpenQuality={can("MANAGEMENT_READ") || can("RULE_GOVERN")} canRunQuickAnalysis={can("ANALYSIS_RUN")} /></Suspense> : activePage === "/cp" ? <StageDataWorkbench businessDomain="ALL" testStage="CP" searchParams={searchParams} onSearchParamsChange={(params) => navigate("/cp", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} /> : activePage === "/ft" ? <StageDataWorkbench businessDomain="ALL" testStage="FT" searchParams={searchParams} onSearchParamsChange={(params) => navigate("/ft", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} /> : activePage === "/quick-analysis" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><QuickAnalysisWorkbench /></Suspense> : activePage === "/datasets/current" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><DatasetCurrentCatalog searchParams={searchParams} onSearchParamsChange={(params) => navigate("/datasets/current", params)} onOpenAnalytics={openAnalytics} onOpenComparison={openComparison} onOpenJob={openJob} /></Suspense> : activePage === "/analytics" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><AnalyticsWorkbench datasets={analyticsDatasets} searchParams={searchParams} onSearchParamsChange={(params) => navigate("/analytics", params)} onOpenCatalog={() => navigate("/datasets/current")} /></Suspense> : activePage === "/management/quality" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><QualityManagementDashboard searchParams={searchParams} onSearchParamsChange={(params) => navigate("/management/quality", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} canOpenAnalytics={can("DATASET_READ")} canReadManagement={can("MANAGEMENT_READ")} canGovernRules={can("RULE_GOVERN")} /></Suspense> : activePage === "/master-data/product-crosswalks" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><ProductCrosswalkWorkbench searchParams={searchParams} onSearchParamsChange={(params) => navigate("/master-data/product-crosswalks", params)} /></Suspense> : activePage === "/operations" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><OperationsConsistency /></Suspense> : activePage === "/data-domains" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><DataDomainManagement /></Suspense> : activePage === "/users" ? <UserManagement /> : <Result status="403" title="无权访问" subTitle="当前 URL 对应的功能不存在，或当前账户没有访问权限。" />}
   </PageContainer><JobDetailsDrawer jobId={jobId} open={jobId !== undefined} onClose={closeJob} onSelectJob={openJob} onOpenAnalytics={openAnalytics} /></ProLayout>;
 }

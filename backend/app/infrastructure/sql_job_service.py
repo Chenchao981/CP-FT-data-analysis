@@ -12,7 +12,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import Connection, Engine, text
 
 from app.core.errors import DomainError
-from app.domain.auth import Principal
+from app.domain.auth import Principal, has_global_data_access
 from app.domain.jobs import (
     ALLOWED_JOB_TRANSITIONS,
     CreateJobRequest,
@@ -33,12 +33,12 @@ from app.infrastructure.sql_visibility import (
 
 
 def _batch_job_input_scope_sql(*, batch_alias: str = "b") -> str:
-    """Authorize task creation without administrator or break-glass mutation bypass."""
+    """Authorize task creation for global administrators, owners, or domain users."""
 
     return (
         "(EXISTS(SELECT 1 FROM iam.app_user job_requester "
         "WITH (UPDLOCK,HOLDLOCK) WHERE job_requester.user_id=:user_id "
-        "AND job_requester.status='ACTIVE') AND ("
+        "AND job_requester.status='ACTIVE') AND (:is_admin=1 OR "
         f"({batch_alias}.access_scope='PERSONAL' "
         f"AND {batch_alias}.owner_user_id=:user_id) OR "
         f"({batch_alias}.access_scope='DOMAIN' AND "
@@ -46,7 +46,7 @@ def _batch_job_input_scope_sql(*, batch_alias: str = "b") -> str:
             data_domain_column=f"{batch_alias}.data_domain_id",
             lock_authorization_rows=True,
         )
-        + ")))"
+        + "))))"
     )
 
 _LIFECYCLE_APPLOCK_BY_JOB_SQL = (
@@ -514,8 +514,11 @@ class SqlJobService:
                 str(batch["status"]).strip().upper() if batch is not None else ""
             )
             can_queue = batch is not None and (
+                has_global_data_access(principal)
+                or (
                 owner_user_id is not None
                 and int(owner_user_id) == principal.user_id
+                )
             )
             if (
                 not can_queue
@@ -1586,6 +1589,7 @@ class SqlJobService:
                 connection.execute(
                     text(
                         "SELECT TOP (1) CASE WHEN "
+                        ":is_admin=1 OR "
                         "(b.access_scope='PERSONAL' AND b.owner_user_id=:user_id) OR "
                         + quick_write_scope_sql(session_alias="ws")
                         + " OR "

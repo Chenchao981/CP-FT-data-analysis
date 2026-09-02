@@ -9,7 +9,7 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import IntegrityError
 
 from app.core.errors import DomainError
-from app.domain.auth import Principal
+from app.domain.auth import Principal, has_global_data_access
 from app.domain.data_domains import (
     CreateDataDomainGrantRequest,
     CreateDataDomainRequest,
@@ -73,6 +73,21 @@ class SqlDataDomainService:
         self, principal: Principal
     ) -> tuple[DataDomainRecord, ...]:
         with self._engine.connect() as connection:
+            if has_global_data_access(principal):
+                rows = (
+                    connection.execute(
+                        text(
+                            "SELECT data_domain_id,domain_code,domain_name,test_stage,"
+                            "factory_code,active,NULL AS expires_at_utc "
+                            "FROM iam.data_domain WHERE active=1 "
+                            "AND domain_code<>N'MIGRATION_HOLD' "
+                            "ORDER BY test_stage,domain_name,data_domain_id"
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                return tuple(_domain_record(row) for row in rows)
             rows = (
                 connection.execute(
                     text(

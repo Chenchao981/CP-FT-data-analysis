@@ -103,6 +103,7 @@ def test_upload_page_uses_domain_aware_scope_offset_fetch_and_ignores_validated_
                         "original_file_name": "sample.xlsx",
                         "file_size": 120,
                         "factory_code": "RIYUEXIN",
+                        "business_domain": "PRODUCTION",
                         "started_at_utc": datetime(2026, 8, 29, 1),
                         "completed_at_utc": None,
                         "login_name": "owner",
@@ -154,6 +155,24 @@ def test_upload_page_uses_domain_aware_scope_offset_fetch_and_ignores_validated_
     assert "lot_id" not in page_parameters
     assert page.items[0].is_duplicate_receipt is True
     assert page.items[0].can_manage is True
+    assert page.items[0].business_domain == "PRODUCTION"
+
+
+def test_unified_stage_page_reads_both_business_domains() -> None:
+    service, connection = _service([_Result(scalar=0), _Result(rows=[])])
+
+    page = service.list_uploads_page(
+        OWNER,
+        "ALL",
+        "CP",
+        M2PageFilters(page=1, page_size=20),
+    )
+
+    assert page.total == 0
+    for sql, parameters in connection.calls:
+        assert "b.business_domain=:business_domain" not in sql
+        assert "business_domain" not in parameters
+        assert parameters["test_stage"] == "CP"
 
 
 def test_result_page_returns_job_id_nullable_metrics_and_no_storage_fields() -> None:
@@ -171,6 +190,7 @@ def test_result_page_returns_job_id_nullable_metrics_and_no_storage_fields() -> 
                         "lot_id": "LOT-1",
                         "wafer_count": None,
                         "factory_code": "RIYUEXIN",
+                        "business_domain": "PRODUCTION",
                         "test_item_count": 20,
                         "unit_count": 100,
                         "pass_count": None,
@@ -309,7 +329,7 @@ def test_current_catalog_only_returns_owner_visible_published_current_versions()
     assert "lot_filter_dvr.dataset_version_id=dv.dataset_version_id" in page_sql
     assert "lot_filter_tr.lot_id LIKE :lot_id ESCAPE '\\'" in page_sql
     assert "summary_row.lot_id" not in page_sql
-    assert "CASE WHEN d.access_scope='PERSONAL' AND d.owner_user_id=:user_id" in page_sql
+    assert "CASE WHEN :is_admin=1 OR (d.access_scope='PERSONAL' AND d.owner_user_id=:user_id)" in page_sql
     assert "AS can_edit_product" in page_sql
     assert "AS can_export" in page_sql
     assert "AS can_reprocess" in page_sql

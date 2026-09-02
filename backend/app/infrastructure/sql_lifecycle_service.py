@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import Connection, Engine, text
 
 from app.core.errors import DomainError
-from app.domain.auth import Principal
+from app.domain.auth import Principal, has_global_data_access
 from app.domain.lifecycle import (
     LifecycleArtifact,
     LifecycleArtifactDownload,
@@ -112,13 +112,17 @@ def _requester_dataset_access_sql(
     requester_expression: str,
     lock_grants: bool,
 ) -> str:
-    """Worker-side Dataset ACL without SYSTEM_ADMIN or break-glass bypass."""
+    """Worker-side Dataset ACL including global administrator roles."""
 
     hint = " WITH (UPDLOCK,HOLDLOCK)" if lock_grants else ""
     return (
         f"(EXISTS(SELECT 1 FROM iam.app_user lifecycle_user{hint} "
         f"WHERE lifecycle_user.user_id={requester_expression} "
         "AND lifecycle_user.status='ACTIVE') AND ("
+        f"EXISTS(SELECT 1 FROM iam.user_role lifecycle_ur{hint} "
+        f"JOIN iam.role lifecycle_role{hint} ON lifecycle_role.role_id=lifecycle_ur.role_id "
+        f"WHERE lifecycle_ur.user_id={requester_expression} "
+        "AND lifecycle_role.role_code IN ('SYSTEM_ADMIN','DATA_DOMAIN_ADMIN')) OR "
         f"({dataset_alias}.access_scope='PERSONAL' "
         f"AND {dataset_alias}.owner_user_id={requester_expression}) OR "
         f"({dataset_alias}.access_scope='DOMAIN' AND EXISTS(SELECT 1 "
@@ -129,7 +133,7 @@ def _requester_dataset_access_sql(
         f"AND lifecycle_grant.user_id={requester_expression} "
         "AND lifecycle_grant.status='ACTIVE' AND lifecycle_domain.active=1 "
         "AND (lifecycle_grant.expires_at_utc IS NULL "
-        "OR lifecycle_grant.expires_at_utc>SYSUTCDATETIME()))))"
+        "OR lifecycle_grant.expires_at_utc>SYSUTCDATETIME())))))"
     )
 
 
@@ -246,7 +250,8 @@ class SqlLifecycleService:
                             data_domain_column="d.data_domain_id",
                         )
                         + ") OR (t.action_type<>'EXPORT_LATEST' AND "
-                        "d.access_scope='PERSONAL' AND d.owner_user_id=:user_id)) "
+                        "(:is_admin=1 OR (d.access_scope='PERSONAL' "
+                        "AND d.owner_user_id=:user_id)))) "
                         "THEN 1 ELSE 0 END "
                         "FROM ingestion.lifecycle_job_target t "
                         "JOIN dataset.dataset d ON d.dataset_id=t.dataset_id "
@@ -499,7 +504,7 @@ class SqlLifecycleService:
             raise DomainError(
                 "DATASET_SCOPE_DENIED", "不能导出无权访问的 Dataset", 403
             )
-        if not allow_domain_read and (
+        if not allow_domain_read and not has_global_data_access(principal) and (
             str(row["access_scope"]) != "PERSONAL"
             or int(row["owner_user_id"]) != principal.user_id
         ):

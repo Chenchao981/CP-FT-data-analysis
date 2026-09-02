@@ -66,7 +66,7 @@ const methodologyValue: Record<string, string> = {
   "from_utc is inclusive and to_utc is exclusive, based on Dataset published_at_utc.": "按 Dataset published_at_utc 筛选：from_utc 含，to_utc 不含",
   "Trend periods are Asia/Shanghai business dates; period_start_utc is the UTC instant of Shanghai local midnight.": "趋势按 Asia/Shanghai 业务日分组；周期起点是上海当地零点对应的 UTC 时刻",
   "Failed Job counts use time, business domain, test stage, and factory filters only; Product and Lot filters do not apply.": "失败 Job 仅按时间、业务域、阶段和厂家筛选；产品与 Lot 筛选不适用",
-  "PERSONAL is always owner-only; DOMAIN requires an active, unexpired grant. Dashboard queries never use break-glass access.": "我的数据始终只统计归属本人的数据；数据域必须有未过期的有效授权；驾驶舱不使用紧急数据访问权限。",
+  "PERSONAL shows the current user's data; DOMAIN requires an active grant, while SYSTEM_ADMIN and DATA_DOMAIN_ADMIN may inspect every domain during development.": "我的数据统计当前用户数据；普通用户的数据域需要有效授权，系统管理员和数据域管理员在开发期可查看全部数据域。",
 };
 const breakdownDimensions = [
   { key: "FACTORY", label: "按厂家" },

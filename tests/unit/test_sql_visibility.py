@@ -94,7 +94,7 @@ def test_domain_dataset_and_result_reads_require_active_grant_and_current_publis
     assert "result_dv.is_current=1" in result_scope
 
 
-def test_quick_scope_has_no_admin_bypass_and_rechecks_requester_grant() -> None:
+def test_quick_scope_allows_global_admin_and_rechecks_ordinary_requester_grant() -> None:
     read_scope = quick_read_scope_sql(session_alias="ws")
     write_scope = quick_write_scope_sql(session_alias="ws")
     execution_scope = quick_execution_authorized_sql(session_alias="s")
@@ -106,7 +106,8 @@ def test_quick_scope_has_no_admin_bypass_and_rechecks_requester_grant() -> None:
     assert "access_domain.active=1" in read_scope
     assert "access_grant.expires_at_utc>SYSUTCDATETIME()" in read_scope
     assert "has_data_break_glass" not in read_scope
-    assert "is_admin" not in read_scope
+    assert ":is_admin=1" in read_scope
+    assert ":is_admin=1" in write_scope
     assert "ws.owner_user_id=:user_id" in write_scope
     assert "access_grant.user_id=s.owner_user_id" in execution_scope
     locked_write_scope = quick_write_scope_sql(

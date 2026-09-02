@@ -299,8 +299,8 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
       description={<Space direction="vertical" size={2}>
         <Typography.Text><strong>导出最新</strong>：由后端选择最新 Cleaner 生成有 TTL 的临时 Artifact；不调用 Canonical Importer，不创建或切换 Dataset Version，不改动人工补录。</Typography.Text>
         <Typography.Text><strong>显式重处理</strong>：生成新 Dataset Version，只有全量校验成功后才原子切换 Current；失败时旧 Current 仍可用。</Typography.Text>
-        <Typography.Text><strong>逻辑归档</strong>：仅 PERSONAL Dataset Owner 可执行；SYSTEM_ADMIN 不因管理身份获得数据操作权。不删除 FTP/NAS 原始文件或 Source Receipt。</Typography.Text>
-        <Typography.Text><strong>可见边界</strong>：PERSONAL 仅所有者可见；DOMAIN 仅当前有效数据域授权用户可见。ENGINEERING / PRODUCTION 只是业务分类，不产生数据权限。</Typography.Text>
+        <Typography.Text><strong>逻辑归档</strong>：个人用户可操作本人数据；系统管理员和数据域管理员可协助处理全部数据。不删除 FTP/NAS 原始文件或 Source Receipt。</Typography.Text>
+        <Typography.Text><strong>开发期可见边界</strong>：普通用户查看本人 PERSONAL 数据和已授权 DOMAIN 数据；系统管理员、数据域管理员默认查看全部数据。</Typography.Text>
       </Space>}
     />
     <Card
@@ -380,7 +380,7 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
       </Descriptions>
       {action?.kind === "EXPORT" && <Alert type="info" showIcon message="非变异临时导出" description="导出只生成临时文件并登记 SHA-256/TTL；Current Dataset、Canonical 数据与补录在导出前后保持不变。" style={{ marginBottom: 16 }} />}
       {action?.kind === "REPROCESS" && <Alert type="warning" showIcon message="将创建新版本" description="新版本全量校验成功后才会取代旧 Current；Cleaner、入库或切换失败时，旧 Current 不变。" style={{ marginBottom: 16 }} />}
-      {action?.kind === "ARCHIVE" && <Alert type="error" showIcon message="仅逻辑归档，不删除源文件" description="后端仅允许 PERSONAL Dataset Owner；SYSTEM_ADMIN 无隐式数据操作权，FTP/NAS 原始文件与 Source Receipt 均不在删除范围。" style={{ marginBottom: 16 }} />}
+      {action?.kind === "ARCHIVE" && <Alert type="error" showIcon message="仅逻辑归档，不删除源文件" description="本人数据可自行处理；系统管理员和数据域管理员可协助操作全部数据。FTP/NAS 原始文件与 Source Receipt 均不在删除范围。" style={{ marginBottom: 16 }} />}
       {actionError && <Alert type="error" showIcon message="生命周期操作失败" description={actionError} style={{ marginBottom: 16 }} />}
       <Form<LifecycleActionValues>
         form={actionForm}

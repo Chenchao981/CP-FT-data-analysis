@@ -375,7 +375,7 @@ def test_catalog_submitter_cannot_queue_after_domain_grant_revocation() -> None:
     assert all("status='QUEUED'" not in sql for sql, _ in connection.statements)
 
 
-def test_system_admin_cannot_queue_another_users_personal_batch() -> None:
+def test_system_admin_can_queue_another_users_personal_batch() -> None:
     principal = Principal(
         1,
         "admin",
@@ -405,15 +405,14 @@ def test_system_admin_cannot_queue_another_users_personal_batch() -> None:
     )
     service = SqlJobService(_AtomicEngine(connection))  # type: ignore[arg-type]
 
-    with pytest.raises(DomainError) as error:
-        service.create_initial_import_for_batch(
-            request,
-            principal,
-            allowed_batch_statuses=("PROCESSED", "FAILED"),
-        )
+    job = service.create_initial_import_for_batch(
+        request,
+        principal,
+        allowed_batch_statuses=("PROCESSED", "FAILED"),
+    )
 
-    assert error.value.code == "BATCH_NOT_FOUND"
-    assert all("status='QUEUED'" not in sql for sql, _ in connection.statements)
+    assert job.job_id == 91
+    assert any("status='QUEUED'" in sql for sql, _ in connection.statements)
 
 
 class _BatchFailureConnection:

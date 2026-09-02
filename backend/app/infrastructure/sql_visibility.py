@@ -1,20 +1,20 @@
 from __future__ import annotations
 
-from app.domain.auth import Principal
+from app.domain.auth import Principal, has_global_data_access
 
 
 def visibility_parameters(principal: Principal) -> dict[str, object]:
     """Bind row-level authorization parameters.
 
-    ``is_admin`` remains as a compatibility bind name for older query builders,
-    but it now means an explicit DATA_BREAK_GLASS grant. SYSTEM_ADMIN alone does
-    not bypass business-data authorization.
+    ``is_admin`` is the common development-time global data switch for
+    SYSTEM_ADMIN and DATA_DOMAIN_ADMIN. DATA_BREAK_GLASS remains compatible
+    with the future security-hardening design.
     """
 
     break_glass = principal.can("DATA_BREAK_GLASS")
     return {
         "user_id": principal.user_id,
-        "is_admin": break_glass,
+        "is_admin": has_global_data_access(principal),
         "has_data_break_glass": break_glass,
     }
 
@@ -61,7 +61,7 @@ def data_read_scope_sql(
     *, access_scope_column: str, owner_column: str, data_domain_column: str
 ) -> str:
     return (
-        "(:has_data_break_glass=1 OR "
+        "(:is_admin=1 OR "
         f"({access_scope_column}='PERSONAL' AND {owner_column}=:user_id) OR "
         f"({access_scope_column}='DOMAIN' AND "
         + domain_grant_exists_sql(data_domain_column=data_domain_column)
@@ -70,11 +70,7 @@ def data_read_scope_sql(
 
 
 def can_manage_sql(*, owner_column: str, access_scope_column: str | None = None) -> str:
-    """Only the human owner of PERSONAL data may mutate it.
-
-    DOMAIN data mutation is intentionally absent. It belongs to a separate
-    governance control plane, not to read membership or break-glass access.
-    """
+    """Allow global administrators or the human owner of PERSONAL data."""
 
     scope_column = access_scope_column
     if scope_column is None:
@@ -82,7 +78,7 @@ def can_manage_sql(*, owner_column: str, access_scope_column: str | None = None)
         if not separator:
             raise ValueError("access_scope_column is required for unqualified owner")
         scope_column = f"{prefix}.access_scope"
-    return f"({scope_column}='PERSONAL' AND {owner_column}=:user_id)"
+    return f"(:is_admin=1 OR ({scope_column}='PERSONAL' AND {owner_column}=:user_id))"
 
 
 def batch_owner_scope_sql(*, batch_alias: str = "b") -> str:
@@ -106,10 +102,10 @@ def batch_write_scope_sql(*, batch_alias: str = "b") -> str:
 
 
 def quick_read_scope_sql(*, session_alias: str = "ws") -> str:
-    """Quick result visibility without administrator or break-glass bypass."""
+    """Quick result visibility for administrators, owners, and domain members."""
 
     return (
-        f"(({session_alias}.access_scope='PERSONAL' "
+        f"(:is_admin=1 OR ({session_alias}.access_scope='PERSONAL' "
         f"AND {session_alias}.owner_user_id=:user_id) OR "
         f"({session_alias}.access_scope='DOMAIN' AND "
         + domain_grant_exists_sql(data_domain_column=f"{session_alias}.data_domain_id")
@@ -120,17 +116,17 @@ def quick_read_scope_sql(*, session_alias: str = "ws") -> str:
 def quick_write_scope_sql(
     *, session_alias: str = "ws", lock_authorization_rows: bool = False
 ) -> str:
-    """Only the requester may operate a Quick job, with a current domain grant."""
+    """Allow global administrators or the authorized Quick requester."""
 
     return (
-        f"({session_alias}.owner_user_id=:user_id AND ("
+        f"(:is_admin=1 OR ({session_alias}.owner_user_id=:user_id AND ("
         f"({session_alias}.access_scope='PERSONAL') OR "
         f"({session_alias}.access_scope='DOMAIN' AND "
         + domain_grant_exists_sql(
             data_domain_column=f"{session_alias}.data_domain_id",
             lock_authorization_rows=lock_authorization_rows,
         )
-        + ")))"
+        + "))))"
     )
 
 
@@ -157,7 +153,7 @@ def current_dataset_read_scope_sql(
     del batch_alias  # Kept for call-site compatibility; Dataset owns its ACL.
     access_scope, owner, domain = _dataset_columns(dataset_alias)
     return (
-        "(:has_data_break_glass=1 OR "
+        "(:is_admin=1 OR "
         f"({access_scope}='PERSONAL' AND {owner}=:user_id) OR ("
         f"{access_scope}='DOMAIN' AND "
         + domain_grant_exists_sql(data_domain_column=domain)
@@ -172,7 +168,7 @@ def formal_result_read_scope_sql(
 ) -> str:
     access_scope, owner, domain = _batch_columns(batch_alias)
     return (
-        "(:has_data_break_glass=1 OR "
+        "(:is_admin=1 OR "
         f"({access_scope}='PERSONAL' AND {owner}=:user_id) OR ("
         f"{access_scope}='DOMAIN' AND "
         + domain_grant_exists_sql(data_domain_column=domain)

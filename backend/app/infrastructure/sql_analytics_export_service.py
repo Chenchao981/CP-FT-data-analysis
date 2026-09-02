@@ -888,7 +888,7 @@ class SqlAnalyticsExportService:
     def _visible_where() -> str:
         return (
             "ej.contract_version='ANALYTICS_EXPORT_V1' AND "
-            "(ej.requested_by=:user_id OR :has_data_break_glass=1) "
+            "(ej.requested_by=:user_id OR :is_admin=1) "
             "AND NOT EXISTS("
             "SELECT 1 FROM delivery.export_job_dataset denied "
             "JOIN dataset.dataset_version denied_dv ON "
