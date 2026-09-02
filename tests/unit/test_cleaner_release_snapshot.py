@@ -85,14 +85,25 @@ def test_bootstrap_defines_dianji_as_an_independent_powertech_release() -> None:
 
 
 def test_bootstrap_pins_quick_pat_execution_limits() -> None:
-    jiequn = next(
-        item
+    quick_pat = {
+        item.factory: item
         for item in _definitions()
-        if item.cleaner_code == "JIEQUN_FT_QUICK_PAT_EXISTING"
-    )
+        if item.output_contract == "FT_PAT_RESULT_V1"
+    }
 
-    assert jiequn.timeout_seconds == 7200
-    assert jiequn.max_output_bytes == 64 * 1024 * 1024
+    assert set(quick_pat) == {"JIEQUN", "RIYUEXIN", "DIANJI"}
+    assert {
+        item.adapter_code for item in quick_pat.values()
+    } == {
+        "JIEQUN_FT_QUICK_PAT_PYZ",
+        "RIYUEXIN_FT_QUICK_PAT_PYZ",
+        "DIANJI_FT_QUICK_PAT_PYZ",
+    }
+    assert all(item.timeout_seconds == 7200 for item in quick_pat.values())
+    assert all(
+        item.max_output_bytes == 64 * 1024 * 1024
+        for item in quick_pat.values()
+    )
 
     script = (
         Path(__file__).resolve().parents[2]

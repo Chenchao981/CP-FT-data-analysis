@@ -39,6 +39,8 @@ class DirectPathPreviewRequest(BaseModel):
     path: str = Field(min_length=1, max_length=1000)
     tool_code: Literal[
         "JIEQUN_FT_QUICK_PAT_EXISTING",
+        "RIYUEXIN_FT_QUICK_PAT_EXISTING",
+        "DIANJI_FT_QUICK_PAT_EXISTING",
         "HUAHONG_CP_QUICK_PAT_EXISTING",
         "JETECH_CP_QUICK_PAT_EXISTING",
         "LION_CP_QUICK_PAT_EXISTING",
@@ -78,7 +80,32 @@ DIRECT_PATH_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
         "input_contract_version": LOCAL_QUICK_PAT_INPUT_CONTRACT,
         "output_contract_version": LOCAL_QUICK_PAT_OUTPUT_CONTRACT,
         "allowed_suffixes": (".csv",),
+        "manifest_policy": "ALL_MATCHING_SUFFIXES_V1",
         "tool_name": "杰群 FT 原始目录低内存 PAT",
+    },
+    "RIYUEXIN_FT_QUICK_PAT_EXISTING": {
+        "test_stage": "FT",
+        "factory_code": "RIYUEXIN",
+        "format_code": "RIYUEXIN_FT_QUICK_PAT_EXISTING",
+        "cleaner_code": "RIYUEXIN_FT_QUICK_PAT_EXISTING",
+        "adapter_code": "RIYUEXIN_FT_QUICK_PAT_PYZ",
+        "input_contract_version": "RIYUEXIN_RAW_XLSX_DIRECTORY_V1",
+        "output_contract_version": "FT_PAT_RESULT_V1",
+        "allowed_suffixes": (".xlsx",),
+        "manifest_policy": "RIYUEXIN_RAW_DIRECTORY_V1",
+        "tool_name": "日月新 FT 原始目录低内存 PAT",
+    },
+    "DIANJI_FT_QUICK_PAT_EXISTING": {
+        "test_stage": "FT",
+        "factory_code": "DIANJI",
+        "format_code": "DIANJI_FT_QUICK_PAT_EXISTING",
+        "cleaner_code": "DIANJI_FT_QUICK_PAT_EXISTING",
+        "adapter_code": "DIANJI_FT_QUICK_PAT_PYZ",
+        "input_contract_version": "DIANJI_REGISTERED_RAW_DIRECTORY_V1",
+        "output_contract_version": "FT_PAT_RESULT_V1",
+        "allowed_suffixes": (".xls", ".xlsx", ".csv"),
+        "manifest_policy": "DIANJI_RAW_DIRECTORY_V1",
+        "tool_name": "电基 FT 原始目录低内存 PAT",
     },
     "HUAHONG_CP_QUICK_PAT_EXISTING": {
         "test_stage": "CP",
@@ -89,6 +116,7 @@ DIRECT_PATH_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
         "input_contract_version": "CP_ARCHIVE_OR_TXT_V1",
         "output_contract_version": "CP_CSV_TRIPLET_V1",
         "allowed_suffixes": (".txt",),
+        "manifest_policy": "ALL_MATCHING_SUFFIXES_V1",
         "tool_name": "华虹 CP 原始目录 PAT",
     },
     "JETECH_CP_QUICK_PAT_EXISTING": {
@@ -100,6 +128,7 @@ DIRECT_PATH_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
         "input_contract_version": "CP_EXCEL_OR_ZIP_V1",
         "output_contract_version": "CP_STANDARD_CSV_TRIPLET_V1",
         "allowed_suffixes": (".xls", ".xlsx"),
+        "manifest_policy": "ALL_MATCHING_SUFFIXES_V1",
         "tool_name": "积塔 CP 原始目录 PAT",
     },
     "LION_CP_QUICK_PAT_EXISTING": {
@@ -111,6 +140,7 @@ DIRECT_PATH_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
         "input_contract_version": "CP_EXCEL_OR_ZIP_V1",
         "output_contract_version": "CP_STANDARD_CSV_TRIPLET_V1",
         "allowed_suffixes": (".xls", ".xlsx"),
+        "manifest_policy": "ALL_MATCHING_SUFFIXES_V1",
         "tool_name": "立昂微 CP 原始目录 PAT",
     },
     "GUOYU_CP_QUICK_PAT_EXISTING": {
@@ -122,6 +152,7 @@ DIRECT_PATH_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
         "input_contract_version": "CP_EXCEL_OR_ZIP_V1",
         "output_contract_version": "CP_STANDARD_CSV_TRIPLET_V1",
         "allowed_suffixes": (".xls", ".xlsx"),
+        "manifest_policy": "ALL_MATCHING_SUFFIXES_V1",
         "tool_name": "国宇 CP 原始目录 PAT",
     },
 }

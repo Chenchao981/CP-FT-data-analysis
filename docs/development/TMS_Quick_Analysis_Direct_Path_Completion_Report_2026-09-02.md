@@ -4,7 +4,8 @@
 
 - 快速分析前台取消 Local Agent、8765 端口、配对 Token 和独立工具安装等用户操作。
 - 新增“本机 / NAS 路径”：输入当前 TMS 主机可访问的本地盘符、映射盘符或 UNC 目录，选择 CP/FT 厂商工具，先递归预览工具需要的源文件，再创建个人 PAT 任务。
-- FT Worker 直接调用 Cleaner Registry 中已发布的杰群低内存 PAT 包；没有复制或重写 FT PAT 算法。
+- FT Worker 直接调用 Cleaner Registry 中已发布的杰群、日月新和电基低内存 PAT 入口；三家共用 FT 工具的统一统计引擎，TMS 没有复制或重写 PAT 算法。
+- 日月新 Manifest 与成熟工具的目录发现规则保持一致：产品根目录仅纳入 `DC/DVDS/RG` 一级子目录内的原始 XLSX，不把根目录的历史 PAT 报告当成源文件。电基 Manifest 同步排除 `output` 和 `PAT_n` 结果目录。
 - CP 已接入华虹、积塔、立昂微、国宇四个入口。Worker 先调用所选厂商的已发布 CP Cleaner，再在同一个版本化 `app.pyz` 中运行 CP PAT；TMS 不实现厂商解析和 CP PAT 公式。
 - CP 清洗中间 CSV 只位于任务 Workspace，PAT 完成后删除；系统只保留 PAT Excel、摘要和源目录 Manifest，不写入正式 Canonical。
 - 预览、排队前和计算完成前都使用同一文件数、大小、修改时间 Manifest。范围变化时停止任务并要求重新预览。
@@ -23,21 +24,27 @@
 
 ## 已验证
 
-- 新增 CP 迁移、API、Worker 和发布包调用测试；本轮核心定向后端回归：53 passed。
+- 新增 CP 迁移、API、Worker 和发布包调用测试；CP 阶段核心定向后端回归：53 passed。日月新/电基扩展后最终 Quick Analysis 相关后端回归：56 passed，Ruff 通过。
 - 后端全量单元测试：1123 passed，4 skipped，4 个与本功能无关的既有失败（M2 stub 缺少 `business_domain` 三项、Quick SQL 文本空白断言一项）。
 - CP 工具包 PAT 与发布打包测试：5 passed；`start.bat --check` 和包内 PAT 导入通过，发布目录敏感文件检查为 0。
-- 前端 Quick Analysis API 合同：5 passed；前端生产构建通过。并行 jsdom 套件仍存在既有挂起，未记为通过。
+- 前端 Quick Analysis API/工作台定向回归：7 passed；前端生产构建通过。
 - 前端生产构建：通过。
-- 浏览器页面验收通过：可见杰群 FT、华虹 CP、积塔 CP、立昂微 CP、国宇 CP 五个可选工具；积塔目录预览显示 1 个源文件、1.07 MB、`CP · JETECH`。
+- 浏览器页面验收通过：可见杰群 FT、日月新 FT、电基 FT、华虹 CP、积塔 CP、立昂微 CP、国宇 CP 七个可选工具；日月新产品根目录页面预览显示 6 个源文件、3.11 MB、`FT · RIYUEXIN`。
 - 开发环境 API、Worker、前端均已重启并处于 ready，数据库为 `TMS_G0_DEV/sql2014_0025`。
 - 真实目录 `F:\data\CP和FT源数据\FT数据\杰群data\520data\NCEAP020N10LL`：识别 520 个 CSV、3,041,085,645 bytes；清单预览约 0.055 秒，未上传源文件。
 - 真实目录预览：华虹 112 个 TXT、立昂微 24 个 Excel、国宇 48 个 Excel，全部按各自工具合同通过。
 - 真实积塔批次 `C146808.02` 完成端到端验收：1 个源文件、1,123,840 bytes，Cleaner + CP PAT 共约 5.426 秒，解析 2,581 行，输出 22 个参数；最终会话 10、作业 207 为 SUCCESS，PAT Excel 可下载。
 - CP Release SHA-256 为 `c1d6f65b9530944b70cd66205678f3ecd4a2bf2948a2b012f6178b78260838ae`，开发库登记的最终 Release 为华虹 44、积塔 45、立昂微 46、国宇 47；最终真实积塔验收使用 Release 45。
+- 已确认 FT PAT 统一业务公式可推广到其他已有严格源数据 Adapter 的 FT 工具：`Sigma=(Q3-Q1)/1.35`，`LCL=Median-6×Sigma`，`UCL=Median+6×Sigma`。
+- 日月新真实产品目录两次端到端均为 SUCCESS：6 文件、3,260,511 bytes、38,024 解析行、20 参数，计算耗时 2.731 / 2.376 秒；20/20 参数公式对账通过，重复运行语义哈希均为 `b7c4a54962b1a7943fcdd166c47a9e2b13e6958377aaaca22f6d1da9a416d640`。会话 11/13，Release 49。
+- 电基真实 `dj9` 两次端到端均为 SUCCESS：1 文件、133,340 bytes、517 解析行、19 参数，计算耗时 1.081 / 0.851 秒；19/19 参数公式对账通过，重复运行语义哈希均为 `b1a5add05fec3a2b5c91429360c6219a9f15a5f54a58ec16d6a2408406d5fb99`。会话 12/14，Release 50。
+- 两家重复运行前后正式事实计数保持 `test_run=235 / unit_result=964232 / measurement=17660854`，证明快速 PAT 没有写入正式 Canonical。FT 发布包 SHA-256 为 `cce726de758dde85966fa7c601f455fc3a025f9c095db860c59affdf0b7fb272`。
+- 服务器已有 Anaconda 由用户确认；正式部署只需让 API/Worker 指向该解释器，核对 TMS/CP/FT 依赖和服务账号目录读取权限。
 
 ## 尚未完成或限制
 
 - CP PAT 公式沿用历史 `VDMOS_Tool_v5.6.html`：至少 10 个有效值，位置四分位数，`sigma=max(0.0001,IQR)/1.349`，上下限 `Median ± 5σ`。该来源已写入结果摘要，但还需要业务负责人确认后才能标为生产批准标准。
+- 日月光和集佳当前没有与杰群/日月新/电基同等成熟的原始目录 PAT Adapter；本轮未用其他厂的解析器套用。
 - 华虹、立昂微、国宇本轮完成真实目录预览和发布合同验证，尚未逐厂完成真实 PAT 结果 Golden 对比；积塔已完成端到端实算。
 - 前端全量并行测试在本机 jsdom 下仍会挂起；生产构建、API 合同和浏览器页面验收已通过。
 - 后端全量测试的 4 个既有失败与本次 CP/FT 快速分析无代码交集，未在本功能任务中顺带修改。

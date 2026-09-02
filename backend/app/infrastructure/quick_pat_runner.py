@@ -60,14 +60,28 @@ class QuickPatRunner:
                 source_manifest_json=source_manifest_json,
                 source_manifest_sha256=source_manifest_sha256,
             )
+        approved_ft = {
+            "JIEQUN_FT_QUICK_PAT_PYZ": (
+                "JIEQUN",
+                "JIEQUN_UNIFIED_CSV_DIRECTORY_V1",
+            ),
+            "RIYUEXIN_FT_QUICK_PAT_PYZ": (
+                "RIYUEXIN",
+                "RIYUEXIN_RAW_XLSX_DIRECTORY_V1",
+            ),
+            "DIANJI_FT_QUICK_PAT_PYZ": (
+                "DIANJI",
+                "DIANJI_REGISTERED_RAW_DIRECTORY_V1",
+            ),
+        }
+        expected_ft = approved_ft.get(release.adapter_code)
         if (
             release.test_stage != "FT"
-            or release.factory_code != "JIEQUN"
-            or release.adapter_code != "JIEQUN_FT_QUICK_PAT_PYZ"
-            or release.input_contract_version != "JIEQUN_UNIFIED_CSV_DIRECTORY_V1"
+            or expected_ft is None
+            or (release.factory_code, release.input_contract_version) != expected_ft
             or release.output_contract_version != "FT_PAT_RESULT_V1"
         ):
-            raise ValueError("released tool is not an approved Jiequn Quick PAT adapter")
+            raise ValueError("released tool is not an approved FT Quick PAT adapter")
         source = Path(input_directory).resolve()
         package = Path(release.artifact_uri).resolve()
         runtime = Path(release.runtime_uri).resolve()
@@ -91,9 +105,10 @@ class QuickPatRunner:
 
         env = isolated_child_environment(
             {
-                "TMS_QUICK_PAT_PACKAGE": str(package),
-                "TMS_QUICK_PAT_INPUT": str(source),
-                "TMS_QUICK_PAT_OUTPUT": str(target),
+                "TMS_FT_PAT_PACKAGE": str(package),
+                "TMS_FT_PAT_INPUT": str(source),
+                "TMS_FT_PAT_OUTPUT": str(target),
+                "TMS_FT_PAT_ADAPTER": release.adapter_code,
                 "PYTHONUTF8": "1",
                 "PYTHONIOENCODING": "utf-8",
             }
@@ -101,7 +116,7 @@ class QuickPatRunner:
         started = time.perf_counter()
         try:
             completed = self._process_runner(
-                [str(runtime), "-c", _JIEQUN_QUICK_PAT_SCRIPT],
+                [str(runtime), "-c", _FT_QUICK_PAT_SCRIPT],
                 cwd=str(package.parent),
                 env=env,
                 text=True,
@@ -118,7 +133,9 @@ class QuickPatRunner:
         elapsed_seconds = time.perf_counter() - started
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or "unknown PAT error")[-4000:]
-            raise RuntimeError(f"released Jiequn Quick PAT failed: {detail}")
+            raise RuntimeError(
+                f"released {release.factory_code} Quick PAT failed: {detail}"
+            )
 
         reports = sorted(
             target.rglob("PAT_*.xlsx"), key=lambda item: str(item).casefold()
@@ -151,7 +168,7 @@ class QuickPatRunner:
             "schema_version": 1,
             "analysis_type": "QUICK_PAT",
             "test_stage": "FT",
-            "factory_code": "JIEQUN",
+            "factory_code": release.factory_code,
             "input_contract": release.input_contract_version,
             "output_contract": release.output_contract_version,
             "formula_contract": "SIGMA_IQR_1_35_MEDIAN_PLUS_MINUS_6SIGMA_V1",
@@ -430,32 +447,40 @@ def _file_sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-_JIEQUN_QUICK_PAT_SCRIPT = """
+_FT_QUICK_PAT_SCRIPT = """
 import os, sys
 from pathlib import Path
-package = os.environ['TMS_QUICK_PAT_PACKAGE']
-source = Path(os.environ['TMS_QUICK_PAT_INPUT']).resolve()
-output = Path(os.environ['TMS_QUICK_PAT_OUTPUT']).resolve()
+package = os.environ['TMS_FT_PAT_PACKAGE']
+source = Path(os.environ['TMS_FT_PAT_INPUT']).resolve()
+output = Path(os.environ['TMS_FT_PAT_OUTPUT']).resolve()
+adapter = os.environ['TMS_FT_PAT_ADAPTER']
 sys.path.insert(0, package)
-from factories.jiequn.dc_auto import DC_FORMAT_UNIFIED, detect_dc_format
-from factories.jiequn.pat_cleaner import generate_raw_pat
-detection = detect_dc_format(source)
-if detection.format_name != DC_FORMAT_UNIFIED:
-    raise SystemExit(
-        f'P0 Quick PAT only accepts Jiequn unified CSV, detected {detection.format_name}'
-    )
-detected = {path.resolve() for path in detection.files}
-all_csv = {
-    path.resolve() for path in source.rglob('*')
-    if path.is_file() and path.suffix.lower() == '.csv'
-}
-if detected != all_csv:
-    raise SystemExit(
-        f'Jiequn unified CSV contract mismatch: detected={len(detected)}, csv={len(all_csv)}'
-    )
+if adapter == 'JIEQUN_FT_QUICK_PAT_PYZ':
+    from factories.jiequn.dc_auto import DC_FORMAT_UNIFIED, detect_dc_format
+    from factories.jiequn.pat_cleaner import generate_raw_pat
+    detection = detect_dc_format(source)
+    if detection.format_name != DC_FORMAT_UNIFIED:
+        raise SystemExit(
+            f'Quick PAT only accepts Jiequn unified CSV, detected {detection.format_name}'
+        )
+    detected = {path.resolve() for path in detection.files}
+    all_csv = {
+        path.resolve() for path in source.rglob('*')
+        if path.is_file() and path.suffix.lower() == '.csv'
+    }
+    if detected != all_csv:
+        raise SystemExit(
+            f'Jiequn unified CSV contract mismatch: detected={len(detected)}, csv={len(all_csv)}'
+        )
+elif adapter == 'RIYUEXIN_FT_QUICK_PAT_PYZ':
+    from factories.riyuexin.pat_cleaner import generate_raw_pat
+elif adapter == 'DIANJI_FT_QUICK_PAT_PYZ':
+    from factories.dianji.pat_cleaner import generate_raw_pat
+else:
+    raise SystemExit(f'Unsupported FT Quick PAT adapter: {adapter}')
 result = generate_raw_pat(source_dir=source, output_dir=output)
 if not result:
-    raise SystemExit('Jiequn Quick PAT returned no result')
+    raise SystemExit('FT Quick PAT returned no result')
 print(f'TMS_QUICK_PAT_RESULT={Path(result).resolve()}')
 """
 

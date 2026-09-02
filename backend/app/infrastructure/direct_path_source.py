@@ -3,12 +3,21 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from app.core.errors import DomainError
 
 DIRECT_PATH_MANIFEST_MODE = "LOCAL_PATH_SIZE_MTIME_V1"
+DIRECT_PATH_MANIFEST_POLICIES = frozenset(
+    {
+        "ALL_MATCHING_SUFFIXES_V1",
+        "RIYUEXIN_RAW_DIRECTORY_V1",
+        "DIANJI_RAW_DIRECTORY_V1",
+    }
+)
+_RIYUEXIN_RAW_TYPES = frozenset({"DC", "DVDS", "RG"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +68,7 @@ def build_direct_path_manifest(
     *,
     allowed_suffixes: tuple[str, ...] = (".csv",),
     max_files: int | None = None,
+    path_policy: str = "ALL_MATCHING_SUFFIXES_V1",
 ) -> tuple[Path, DirectPathManifest]:
     """Preview a directory visible to the current TMS backend host."""
 
@@ -73,11 +83,24 @@ def build_direct_path_manifest(
     if not source.is_dir():
         raise DomainError("DIRECT_PATH_NOT_FOUND", "所选目录不存在", 404)
     suffixes = {item.lower() for item in allowed_suffixes}
+    normalized_policy = path_policy.strip().upper()
+    if normalized_policy not in DIRECT_PATH_MANIFEST_POLICIES:
+        raise ValueError(f"unsupported direct-path Manifest policy: {path_policy}")
     file_limit = max_files or int(os.getenv("TMS_QUICK_MAX_SOURCE_FILES", "100000"))
     files: list[DirectPathFile] = []
     seen: set[str] = set()
     total_bytes = 0
     try:
+        riyuexin_typed_directories = (
+            {
+                child.name.upper()
+                for child in source.iterdir()
+                if child.is_dir() and child.name.upper() in _RIYUEXIN_RAW_TYPES
+            }
+            if normalized_policy == "RIYUEXIN_RAW_DIRECTORY_V1"
+            and source.name.upper() not in _RIYUEXIN_RAW_TYPES
+            else set()
+        )
         for current_name, directory_names, file_names in os.walk(
             source, topdown=True, followlinks=False
         ):
@@ -93,13 +116,21 @@ def build_direct_path_manifest(
                 candidate = current / file_name
                 if candidate.suffix.lower() not in suffixes:
                     continue
+                relative_path = candidate.relative_to(source)
+                if not _matches_path_policy(
+                    source,
+                    relative_path,
+                    normalized_policy,
+                    riyuexin_typed_directories,
+                ):
+                    continue
                 if _is_link_or_junction(candidate):
                     raise DomainError(
                         "DIRECT_PATH_LINK_UNSUPPORTED",
                         "所选目录内不能包含符号链接文件",
                         422,
                     )
-                relative = candidate.relative_to(source).as_posix()
+                relative = relative_path.as_posix()
                 normalized = relative.casefold()
                 if normalized in seen:
                     raise DomainError(
@@ -144,6 +175,29 @@ def build_direct_path_manifest(
         total_bytes,
         hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
     )
+
+
+def _matches_path_policy(
+    source: Path,
+    relative_path: Path,
+    policy: str,
+    riyuexin_typed_directories: set[str],
+) -> bool:
+    if policy == "ALL_MATCHING_SUFFIXES_V1":
+        return True
+    parent_parts = tuple(part.upper() for part in relative_path.parts[:-1])
+    if policy == "DIANJI_RAW_DIRECTORY_V1":
+        return "OUTPUT" not in parent_parts and not any(
+            re.fullmatch(r"PAT_\d+", part) for part in parent_parts
+        )
+    if source.name.upper() in _RIYUEXIN_RAW_TYPES:
+        return len(relative_path.parts) == 1
+    if riyuexin_typed_directories:
+        return (
+            len(relative_path.parts) == 2
+            and relative_path.parts[0].upper() in riyuexin_typed_directories
+        )
+    return len(relative_path.parts) == 1
 
 
 def _is_link_or_junction(path: Path) -> bool:

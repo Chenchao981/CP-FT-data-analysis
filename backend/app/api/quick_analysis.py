@@ -279,6 +279,7 @@ def preview_direct_path(
     source, manifest = build_direct_path_manifest(
         payload.path,
         allowed_suffixes=tuple(contract["allowed_suffixes"]),
+        path_policy=str(contract["manifest_policy"]),
     )
     return {
         "path": str(source),
@@ -306,6 +307,7 @@ def create_direct_path_pat(
     source, manifest = build_direct_path_manifest(
         payload.path,
         allowed_suffixes=tuple(contract["allowed_suffixes"]),
+        path_policy=str(contract["manifest_policy"]),
     )
     if not manifest.matches_confirmation(
         mode=payload.source_manifest_mode,

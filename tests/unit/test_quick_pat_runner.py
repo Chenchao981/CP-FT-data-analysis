@@ -4,6 +4,7 @@ import hashlib
 import subprocess
 from pathlib import Path
 
+import pytest
 from app.domain.cleaner_registry import CleanerRelease
 from app.infrastructure.existing_cleaner_runner import (
     CleanerArtifact,
@@ -62,7 +63,8 @@ def test_runner_invokes_released_package_and_builds_auditable_artifacts(
     def fake_run(command, **kwargs):
         assert command[:2] == [str(runtime), "-c"]
         assert "generate_raw_pat" in command[2]
-        assert kwargs["env"]["TMS_QUICK_PAT_INPUT"] == str(source.resolve())
+        assert kwargs["env"]["TMS_FT_PAT_INPUT"] == str(source.resolve())
+        assert kwargs["env"]["TMS_FT_PAT_ADAPTER"] == "JIEQUN_FT_QUICK_PAT_PYZ"
         assert "TMS_DATABASE_URL" not in kwargs["env"]
         assert "TMS_JWT_SECRET" not in kwargs["env"]
         report = output / "PAT_001" / "PAT_001.xlsx"
@@ -97,6 +99,85 @@ def test_runner_invokes_released_package_and_builds_auditable_artifacts(
     }
     assert result.summary["parameters"][1]["parameter"] == "RDON"
     assert all(len(item.sha256) == 64 for item in result.artifacts)
+
+
+@pytest.mark.parametrize(
+    ("factory", "adapter", "input_contract", "source_name"),
+    [
+        (
+            "RIYUEXIN",
+            "RIYUEXIN_FT_QUICK_PAT_PYZ",
+            "RIYUEXIN_RAW_XLSX_DIRECTORY_V1",
+            "wafer.xlsx",
+        ),
+        (
+            "DIANJI",
+            "DIANJI_FT_QUICK_PAT_PYZ",
+            "DIANJI_REGISTERED_RAW_DIRECTORY_V1",
+            "raw.xls",
+        ),
+    ],
+)
+def test_runner_dispatches_additional_released_ft_pat_adapters(
+    tmp_path: Path,
+    factory: str,
+    adapter: str,
+    input_contract: str,
+    source_name: str,
+) -> None:
+    package = tmp_path / "ft_data_cleaner.pyz"
+    runtime = tmp_path / "python.exe"
+    package.write_bytes(b"released-ft")
+    runtime.touch()
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / source_name).write_bytes(b"raw")
+    manifest_payload = (
+        '{"file_count":1,"files":[],"mode":"LOCAL_PATH_SIZE_MTIME_V1",'
+        '"source_label":"source","total_bytes":3}'
+    )
+    manifest_sha = hashlib.sha256(manifest_payload.encode("utf-8")).hexdigest()
+    output = tmp_path / "output"
+    release = CleanerRelease(
+        41, 10, "FT", factory, f"{factory}_FT_QUICK_PAT_EXISTING", "route-a-v1",
+        f"{factory}_FT_QUICK_PAT_EXISTING", "v1",
+        hashlib.sha256(package.read_bytes()).hexdigest(), str(package), str(runtime),
+        "generate_raw_pat", adapter, input_contract, "FT_PAT_RESULT_V1", None,
+        30, 10_000_000,
+    )
+
+    def fake_run(command, **kwargs):
+        assert command[:2] == [str(runtime), "-c"]
+        assert "generate_raw_pat" in command[2]
+        assert kwargs["env"]["TMS_FT_PAT_ADAPTER"] == adapter
+        report = output / "PAT_001" / "PAT_001.xlsx"
+        report.parent.mkdir(parents=True)
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["statistics", "count"])
+        sheet.append(["variable", "count"])
+        sheet.append(["VTH", 100])
+        workbook.save(report)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=f"{factory} PAT raw data summary: 文件=1, 解析行=100, 参数=1\n",
+            stderr="",
+        )
+
+    result = QuickPatRunner(process_runner=fake_run).run_release(
+        release=release,
+        input_directory=source,
+        output_root=output,
+        source_manifest_json=manifest_payload,
+        source_manifest_sha256=manifest_sha,
+    )
+
+    assert result.summary["factory_code"] == factory
+    assert result.summary["formula_contract"] == (
+        "SIGMA_IQR_1_35_MEDIAN_PLUS_MINUS_6SIGMA_V1"
+    )
+    assert result.record_count == 100
 
 
 def test_runner_uses_cp_release_for_cleaning_and_package_owned_pat(tmp_path: Path) -> None:

@@ -281,6 +281,64 @@ def test_direct_path_api_previews_and_queues_cp_factory_pat(tmp_path: Path) -> N
     assert body["access_scope"] == "PERSONAL"
 
 
+@pytest.mark.parametrize(
+    ("tool_code", "factory_code", "file_name", "allowed_suffixes"),
+    [
+        (
+            "RIYUEXIN_FT_QUICK_PAT_EXISTING",
+            "RIYUEXIN",
+            "wafer.xlsx",
+            [".xlsx"],
+        ),
+        (
+            "DIANJI_FT_QUICK_PAT_EXISTING",
+            "DIANJI",
+            "raw.xls",
+            [".xls", ".xlsx", ".csv"],
+        ),
+    ],
+)
+def test_direct_path_api_previews_and_queues_additional_ft_pat(
+    tmp_path: Path,
+    tool_code: str,
+    factory_code: str,
+    file_name: str,
+    allowed_suffixes: list[str],
+) -> None:
+    source = tmp_path / factory_code / "product"
+    source.mkdir(parents=True)
+    (source / file_name).write_bytes(b"raw-ft-fixture")
+    app = create_app()
+    app.state.cleaner_registry = StubRegistry()
+    app.state.quick_analysis_service = InMemoryQuickAnalysisService()
+    client = TestClient(app)
+
+    preview = client.post(
+        "/api/v1/quick-analysis/direct-path/preview",
+        json={"path": str(source), "tool_code": tool_code},
+    )
+    assert preview.status_code == 200, preview.text
+    manifest = preview.json()
+    assert manifest["test_stage"] == "FT"
+    assert manifest["factory_code"] == factory_code
+    assert manifest["allowed_suffixes"] == allowed_suffixes
+
+    created = client.post(
+        "/api/v1/quick-analysis/direct-path/pat",
+        json={
+            "path": str(source),
+            "tool_code": tool_code,
+            "source_manifest_mode": manifest["mode"],
+            "source_manifest_sha256": manifest["sha"],
+        },
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["test_stage"] == "FT"
+    assert body["factory_code"] == factory_code
+    assert body["access_scope"] == "PERSONAL"
+
+
 def test_direct_path_api_rejects_changed_preview(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
