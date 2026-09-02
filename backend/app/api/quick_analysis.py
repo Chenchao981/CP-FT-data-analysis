@@ -29,11 +29,15 @@ from app.domain.quick_analysis import (
     LOCAL_QUICK_PAT_INPUT_CONTRACT,
     LOCAL_QUICK_PAT_OUTPUT_CONTRACT,
     LOCAL_QUICK_PAT_TOOL_CODE,
+    CreateDirectPathPatRequest,
     CreateQuickPatRequest,
+    DirectPathPreviewRequest,
     LocalQuickPatResultReceipt,
     NewQuickAnalysisSession,
     QuickAnalysisStatus,
+    TemporaryFtpPreviewRequest,
 )
+from app.infrastructure.direct_path_source import build_direct_path_manifest
 from app.infrastructure.local_quick_result import (
     CommittedLocalQuickResult,
     LocalQuickResultStore,
@@ -41,6 +45,7 @@ from app.infrastructure.local_quick_result import (
     local_quick_pat_capability,
     validate_local_quick_pat_release,
 )
+from app.infrastructure.temporary_ftp_source import preview_ftp_directory
 
 router = APIRouter(prefix="/quick-analysis")
 logger = logging.getLogger(__name__)
@@ -241,6 +246,136 @@ def _discard_local_result(
                 committed.job_root,
             )
     return cleanup_complete
+
+
+@router.post("/direct-path/preview")
+def preview_direct_path(
+    payload: DirectPathPreviewRequest,
+    request: Request,
+    _principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
+) -> dict[str, object]:
+    release = _local_quick_pat_release(request)
+    validate_local_quick_pat_release(release)
+    source, manifest = build_direct_path_manifest(payload.path)
+    return {
+        "path": str(source),
+        "source_label": manifest.source_label,
+        "mode": manifest.mode,
+        "recursive": True,
+        "file_count": manifest.file_count,
+        "total_bytes": manifest.total_bytes,
+        "sha": manifest.sha256,
+        "allowed_suffixes": [".csv"],
+        "tool_code": payload.tool_code,
+        "tool_name": "杰群 FT 原始目录低内存 PAT",
+    }
+
+
+@router.post("/direct-path/pat", status_code=status.HTTP_201_CREATED)
+def create_direct_path_pat(
+    payload: CreateDirectPathPatRequest,
+    request: Request,
+    principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
+) -> dict[str, object]:
+    source, manifest = build_direct_path_manifest(payload.path)
+    if not manifest.matches_confirmation(
+        mode=payload.source_manifest_mode,
+        sha256=payload.source_manifest_sha256,
+    ):
+        raise DomainError(
+            "QUICK_SOURCE_CHANGED",
+            "目录与预览时的文件范围不一致，请重新预览后再计算",
+            409,
+        )
+    capacity = capacity_policy(request)
+    reserved_bytes = capacity.reservation_for(manifest.total_bytes)
+    capacity.ensure_filesystem_capacity(reserved_bytes)
+    release = _local_quick_pat_release(request)
+    validate_local_quick_pat_release(release)
+    session = quick_service(request).create(
+        principal,
+        NewQuickAnalysisSession(
+            analysis_type="QUICK_PAT",
+            test_stage="FT",
+            factory_code="JIEQUN",
+            # LOCAL_AGENT is retained as the SQL compatibility value for personal
+            # direct-path results. No Local Agent process participates in this flow.
+            source_root_code="LOCAL_AGENT",
+            source_relative_path=str(source),
+            source_manifest_mode=manifest.mode,
+            source_manifest_json=manifest.as_json(),
+            source_manifest_sha256=manifest.sha256,
+            source_file_count=manifest.file_count,
+            source_total_bytes=manifest.total_bytes,
+            retention_mode="RESULT_ONLY",
+            cleaner_release_id=release.cleaner_release_id,
+            expires_at_utc=_quick_expiry(),
+            access_scope="PERSONAL",
+            data_domain_id=None,
+            reserved_bytes=reserved_bytes,
+        ),
+    )
+    job = None
+    try:
+        job = _create_quick_job(
+            request,
+            CreateJobRequest(
+                analysis_session_id=session.analysis_session_id,
+                cleaner_release_id=release.cleaner_release_id,
+                job_type=JobType.QUICK_PAT,
+                trigger_type=TriggerType.MANUAL,
+                requested_by=principal.login_name,
+                requested_by_user_id=principal.user_id,
+                reason="直接读取当前 TMS 主机可访问目录并调用既有 FT PAT 工具",
+                idempotency_key=f"direct-path-pat:{session.analysis_session_id}",
+            ),
+            principal,
+        )
+        quick_service(request).attach_job(session.analysis_session_id, job.job_id)
+    except Exception as exc:
+        if job is None:
+            quick_service(request).mark_failed_cleaned(
+                session.analysis_session_id, "QUEUE_CREATE_FAILED", str(exc)
+            )
+        else:
+            quick_service(request).mark_failed(
+                session.analysis_session_id, "QUEUE_CREATE_FAILED", str(exc)
+            )
+        raise
+    return asdict(
+        quick_service(request).get_for_principal(
+            session.analysis_session_id, principal
+        )
+    )
+
+
+@router.post("/temporary-ftp/preview")
+def preview_temporary_ftp(
+    payload: TemporaryFtpPreviewRequest,
+    _principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
+) -> dict[str, object]:
+    preview = preview_ftp_directory(
+        protocol=payload.protocol,
+        server=payload.server,
+        port=payload.port,
+        username=payload.username,
+        password=payload.password,
+        remote_path=payload.remote_path,
+    )
+    return {
+        "protocol": preview.protocol,
+        "server": preview.server,
+        "port": preview.port,
+        "remote_path": preview.remote_path,
+        "mode": "FTP_PATH_SIZE_MTIME_V1",
+        "recursive": True,
+        "file_count": preview.file_count,
+        "total_bytes": preview.total_bytes,
+        "sha": preview.sha256,
+        "allowed_suffixes": [".csv"],
+        "sample_files": [item.relative_path for item in preview.files[:20]],
+        "tool_code": LOCAL_QUICK_PAT_TOOL_CODE,
+    }
 
 
 @router.get("/source-roots")

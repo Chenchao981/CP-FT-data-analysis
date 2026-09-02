@@ -15,6 +15,7 @@ from app.domain.quick_analysis import (
     QuickAnalysisArtifact,
     QuickAnalysisStatus,
 )
+from app.infrastructure.direct_path_source import build_direct_path_manifest
 from app.infrastructure.quick_pat_runner import QuickPatRunResult
 from app.infrastructure.source_catalog import SourceCatalog, SourceRoot
 from app.workers.route_a_worker import QuickPatHandler
@@ -172,6 +173,65 @@ def test_quick_pat_handler_checks_manifest_and_records_result(tmp_path: Path) ->
     )
     assert completed.status.value == "SUCCESS"
     assert completed.parameter_count == 23
+    assert completed.record_count == 6_813_800
+
+
+def test_quick_pat_handler_runs_personal_direct_path(tmp_path: Path) -> None:
+    source = tmp_path / "local" / "520data"
+    source.mkdir(parents=True)
+    (source / "one.csv").write_text("x\n1\n", encoding="utf-8")
+    resolved, manifest = build_direct_path_manifest(source)
+    service = InMemoryQuickAnalysisService()
+    session = service.create(
+        DEVELOPMENT_PRINCIPAL,
+        NewQuickAnalysisSession(
+            "QUICK_PAT",
+            "FT",
+            "JIEQUN",
+            "LOCAL_AGENT",
+            str(resolved),
+            manifest.mode,
+            manifest.as_json(),
+            manifest.sha256,
+            manifest.file_count,
+            manifest.total_bytes,
+            "RESULT_ONLY",
+            21,
+            datetime.now(UTC) + timedelta(days=7),
+            "PERSONAL",
+            None,
+        ),
+    )
+    service.attach_job(session.analysis_session_id, 45)
+    package = tmp_path / "ft.pyz"
+    runtime = tmp_path / "python.exe"
+    package.write_bytes(b"package")
+    runtime.touch()
+    release = CleanerRelease(
+        21, 8, "FT", "JIEQUN", "FORMAT", "v1", "PAT", "v1",
+        hashlib.sha256(package.read_bytes()).hexdigest(), str(package), str(runtime),
+        "entrypoint", "JIEQUN_FT_QUICK_PAT_PYZ",
+        "JIEQUN_UNIFIED_CSV_DIRECTORY_V1", "FT_PAT_RESULT_V1", None, 3600,
+        10_000_000,
+    )
+    now = datetime.now(UTC)
+    job = Job(
+        45, None, None, session.analysis_session_id, 21, JobType.QUICK_PAT,
+        TriggerType.MANUAL, "tester", 1, None, JobStatus.RUNNING, now,
+        started_at_utc=now,
+    )
+    report = tmp_path / "work" / "PAT_001.xlsx"
+
+    QuickPatHandler(
+        StubRegistry(release), service, SourceCatalog(), runner=StubRunner(report),
+        work_root=tmp_path / "work",
+    )(job)
+
+    completed = service.get_for_principal(
+        session.analysis_session_id, DEVELOPMENT_PRINCIPAL
+    )
+    assert completed.status == QuickAnalysisStatus.SUCCESS
+    assert completed.access_scope == "PERSONAL"
     assert completed.record_count == 6_813_800
 
 

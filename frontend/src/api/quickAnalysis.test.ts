@@ -1,10 +1,12 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
+  createDirectPathPat,
   createQuickPat,
   downloadQuickPat,
   listQuickAnalysisSessions,
   listQuickSourceDirectories,
+  previewDirectPath,
   previewQuickSourceManifest,
 } from "./quickAnalysis";
 
@@ -38,6 +40,40 @@ describe("quick analysis api", () => {
       source_relative_path: "520data/NCEAP020N10LL",
       source_manifest_mode: "PATH_SIZE_MTIME_V1",
       source_manifest_sha256: "a".repeat(64),
+    });
+  });
+
+  it("previews and queues a directly accessible directory without file upload", async () => {
+    const preview = {
+      path: String.raw`F:\data\520data`,
+      source_label: "520data",
+      mode: "LOCAL_PATH_SIZE_MTIME_V1" as const,
+      recursive: true as const,
+      file_count: 520,
+      total_bytes: 1234,
+      sha: "b".repeat(64),
+      allowed_suffixes: [".csv"],
+      tool_code: "JIEQUN_FT_QUICK_PAT_EXISTING" as const,
+      tool_name: "杰群 FT 原始目录低内存 PAT",
+    };
+    const fetchMock = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify(preview), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ analysis_session_id: 10 }), { status: 201 }));
+
+    await previewDirectPath(preview.path);
+    await createDirectPathPat(preview);
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/quick-analysis/direct-path/preview");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      path: preview.path,
+      tool_code: preview.tool_code,
+    });
+    expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/quick-analysis/direct-path/pat");
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({
+      path: preview.path,
+      tool_code: preview.tool_code,
+      source_manifest_mode: preview.mode,
+      source_manifest_sha256: preview.sha,
     });
   });
 

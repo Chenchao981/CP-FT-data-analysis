@@ -33,6 +33,31 @@ class CreateQuickPatRequest(BaseModel):
     source_manifest_sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
 
 
+class DirectPathPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    path: str = Field(min_length=1, max_length=1000)
+    tool_code: Literal["JIEQUN_FT_QUICK_PAT_EXISTING"] = (
+        "JIEQUN_FT_QUICK_PAT_EXISTING"
+    )
+
+
+class CreateDirectPathPatRequest(DirectPathPreviewRequest):
+    source_manifest_mode: Literal["LOCAL_PATH_SIZE_MTIME_V1"]
+    source_manifest_sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+
+
+class TemporaryFtpPreviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    protocol: Literal["FTP", "FTPS"] = "FTP"
+    server: str = Field(min_length=1, max_length=255)
+    port: int | None = Field(default=None, ge=1, le=65535)
+    username: str = Field(min_length=1, max_length=255)
+    password: str = Field(min_length=1, max_length=1000)
+    remote_path: str = Field(default="/", min_length=1, max_length=1000)
+
+
 LOCAL_RESULT_CONTRACT_VERSION = "TMS_LOCAL_RESULT_V1"
 LOCAL_QUICK_PAT_TOOL_CODE = "JIEQUN_FT_QUICK_PAT_EXISTING"
 LOCAL_QUICK_PAT_ADAPTER_CODE = "JIEQUN_FT_QUICK_PAT_PYZ"

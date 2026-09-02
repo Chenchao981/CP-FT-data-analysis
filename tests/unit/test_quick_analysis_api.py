@@ -213,6 +213,72 @@ def test_quick_pat_api_queues_server_directory_without_uploading_files(
     assert listed.json()["total"] == 1
 
 
+def test_direct_path_api_previews_and_queues_personal_pat(tmp_path: Path) -> None:
+    source = tmp_path / "520data" / "NCEAP020N10LL"
+    source.mkdir(parents=True)
+    (source / "one.csv").write_text("value\n1\n", encoding="utf-8")
+    app = create_app()
+    app.state.cleaner_registry = StubRegistry()
+    app.state.quick_analysis_service = InMemoryQuickAnalysisService()
+    client = TestClient(app)
+
+    preview = client.post(
+        "/api/v1/quick-analysis/direct-path/preview",
+        json={"path": str(source), "tool_code": "JIEQUN_FT_QUICK_PAT_EXISTING"},
+    )
+
+    assert preview.status_code == 200, preview.text
+    manifest = preview.json()
+    assert manifest["path"] == str(source.resolve())
+    assert manifest["source_label"] == "NCEAP020N10LL"
+    assert manifest["file_count"] == 1
+    assert manifest["mode"] == "LOCAL_PATH_SIZE_MTIME_V1"
+
+    created = client.post(
+        "/api/v1/quick-analysis/direct-path/pat",
+        json={
+            "path": str(source),
+            "tool_code": "JIEQUN_FT_QUICK_PAT_EXISTING",
+            "source_manifest_mode": manifest["mode"],
+            "source_manifest_sha256": manifest["sha"],
+        },
+    )
+
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["access_scope"] == "PERSONAL"
+    assert body["source_root_code"] == "LOCAL_AGENT"
+    assert body["source_relative_path"] == str(source.resolve())
+    assert body["status"] == "QUEUED"
+    assert body["job_id"] == 1
+
+
+def test_direct_path_api_rejects_changed_preview(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "one.csv").write_text("value\n1\n", encoding="utf-8")
+    app = create_app()
+    app.state.cleaner_registry = StubRegistry()
+    app.state.quick_analysis_service = InMemoryQuickAnalysisService()
+    client = TestClient(app)
+    preview = client.post(
+        "/api/v1/quick-analysis/direct-path/preview", json={"path": str(source)}
+    ).json()
+    (source / "two.csv").write_text("value\n2\n", encoding="utf-8")
+
+    response = client.post(
+        "/api/v1/quick-analysis/direct-path/pat",
+        json={
+            "path": str(source),
+            "source_manifest_mode": preview["mode"],
+            "source_manifest_sha256": preview["sha"],
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "QUICK_SOURCE_CHANGED"
+
+
 def test_quick_pat_rejects_a_changed_or_unconfirmed_manifest(tmp_path: Path) -> None:
     source = tmp_path / "shared" / "product-a"
     source.mkdir(parents=True)

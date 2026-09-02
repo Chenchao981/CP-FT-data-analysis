@@ -114,6 +114,66 @@ export const createQuickPat = (
     }),
   });
 
+export interface DirectPathPreview {
+  path: string;
+  source_label: string;
+  mode: "LOCAL_PATH_SIZE_MTIME_V1";
+  recursive: true;
+  file_count: number;
+  total_bytes: number;
+  sha: string;
+  allowed_suffixes: string[];
+  tool_code: "JIEQUN_FT_QUICK_PAT_EXISTING";
+  tool_name: string;
+}
+
+export const previewDirectPath = (path: string) =>
+  apiRequest<DirectPathPreview>(`${base}/direct-path/preview`, {
+    method: "POST",
+    body: JSON.stringify({ path, tool_code: "JIEQUN_FT_QUICK_PAT_EXISTING" }),
+  });
+
+export const createDirectPathPat = (preview: DirectPathPreview) =>
+  apiRequest<QuickAnalysisSession>(`${base}/direct-path/pat`, {
+    method: "POST",
+    body: JSON.stringify({
+      path: preview.path,
+      tool_code: preview.tool_code,
+      source_manifest_mode: preview.mode,
+      source_manifest_sha256: preview.sha,
+    }),
+  });
+
+export interface TemporaryFtpRequest {
+  protocol: "FTP" | "FTPS";
+  server: string;
+  port?: number;
+  username: string;
+  password: string;
+  remote_path: string;
+}
+
+export interface TemporaryFtpPreview {
+  protocol: "FTP" | "FTPS";
+  server: string;
+  port: number;
+  remote_path: string;
+  mode: "FTP_PATH_SIZE_MTIME_V1";
+  recursive: true;
+  file_count: number;
+  total_bytes: number;
+  sha: string;
+  allowed_suffixes: string[];
+  sample_files: string[];
+  tool_code: "JIEQUN_FT_QUICK_PAT_EXISTING";
+}
+
+export const previewTemporaryFtp = (request: TemporaryFtpRequest) =>
+  apiRequest<TemporaryFtpPreview>(`${base}/temporary-ftp/preview`, {
+    method: "POST",
+    body: JSON.stringify(request),
+  });
+
 export interface QuickSessionRequest {
   page: number;
   page_size: number;

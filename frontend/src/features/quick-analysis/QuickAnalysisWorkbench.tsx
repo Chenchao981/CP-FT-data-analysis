@@ -44,7 +44,8 @@ import {
   recentShanghaiDayRange,
   shanghaiLocalInputToUtc,
 } from "../../utils/dateTime";
-import { LocalQuickAnalysisPanel } from "./LocalQuickAnalysisPanel";
+import { DirectPathAnalysisPanel } from "./DirectPathAnalysisPanel";
+import { TemporaryFtpPanel } from "./TemporaryFtpPanel";
 
 const statusColor: Record<string, string> = {
   QUEUED: "gold",
@@ -145,8 +146,8 @@ export function QuickAnalysisWorkbench() {
   const sessionColumns: ColumnsType<QuickAnalysisSession> = [
     { title: "会话", dataIndex: "analysis_session_id", width: 85, fixed: "left" },
     { title: "权限范围", dataIndex: "access_scope", width: 140, render: (value, row) => value === "PERSONAL" ? <Tag color="cyan">个人</Tag> : <Tag color="blue">数据域 {row.data_domain_code ?? `#${row.data_domain_id}`}</Tag> },
-    { title: "数据源", dataIndex: "source_root_code", width: 150 },
-    { title: "相对目录", dataIndex: "source_relative_path", width: 260, ellipsis: true },
+    { title: "数据源", dataIndex: "source_root_code", width: 150, render: (value) => value === "LOCAL_AGENT" ? "本机 / 直连目录" : value },
+    { title: "目录", dataIndex: "source_relative_path", width: 300, ellipsis: true },
     { title: "源文件", dataIndex: "source_file_count", width: 95, render: count },
     { title: "源数据量", dataIndex: "source_total_bytes", width: 115, render: size },
     { title: "状态", dataIndex: "status", width: 100, render: (value) => <Tag color={statusColor[value]}>{statusName[value] ?? value}</Tag> },
@@ -164,10 +165,10 @@ export function QuickAnalysisWorkbench() {
   return <div className="workbench quick-analysis-workbench">
     {contextHolder}
     <div className="page-heading">
-      <div><Typography.Text type="secondary">快速计算 / CP 与 FT 已发布工具</Typography.Text><Typography.Title level={2}>快速分析</Typography.Title><Typography.Text type="secondary">计算靠近数据执行：个人电脑使用 Local Agent，FTP/NAS 使用近数据 Worker；源文件不进入快速分析上传链，也不写入正式 Canonical 明细。</Typography.Text></div>
+      <div><Typography.Text type="secondary">快速计算 / 复用 CP 与 FT 个人工具</Typography.Text><Typography.Title level={2}>快速分析</Typography.Title><Typography.Text type="secondary">输入目录先预览，再选择工具计算；源文件无需通过浏览器逐个上传，快速结果不写入正式 Canonical 明细。</Typography.Text></div>
       <Button icon={<ReloadOutlined />} onClick={() => void Promise.all([roots.refetch(), directories.refetch(), manifest.refetch(), sessions.refetch()])}>刷新</Button>
     </div>
-    <Alert className="quick-analysis-alert" showIcon type="info" message="当前已批准能力：杰群统一 CSV 原始目录 → 低内存 PAT Excel" description="FT PAT 复用原桌面工具；CP 采用相同本机架构，但在原始目录 PAT Adapter 和 Golden 获批前保持禁用。系统只保存结果和证据，默认 7 天后过期。" />
+    <Alert className="quick-analysis-alert" showIcon type="info" message="当前可运行：杰群统一 CSV 原始目录 → 低内存 PAT Excel" description="FT PAT 直接复用原桌面工具的发布包；CP 工具入口已经保留，但原始目录 PAT 调用合同尚未接入，因此界面明确禁用。系统只保存结果，默认 7 天后过期。" />
     <Row gutter={16} className="production-stats"><Col span={6}><Card><Statistic title="筛选结果" value={metrics.total} /></Card></Col><Col span={6}><Card><Statistic title="本页排队/计算" value={metrics.running} valueStyle={{ color: "#1677ff" }} /></Card></Col><Col span={6}><Card><Statistic title="本页已完成" value={metrics.success} valueStyle={{ color: "#3f8600" }} /></Card></Col><Col span={6}><Card><Statistic title="本页失败" value={metrics.failed} valueStyle={{ color: metrics.failed ? "#cf1322" : undefined }} /></Card></Col></Row>
     <Tabs
       defaultActiveKey="local"
@@ -175,14 +176,14 @@ export function QuickAnalysisWorkbench() {
       items={[
         {
           key: "local",
-          label: <Space><LaptopOutlined />本机目录（Local Agent）</Space>,
-          children: <LocalQuickAnalysisPanel onRegistered={() => queryClient.invalidateQueries({ queryKey: ["quick-analysis", "sessions"] })} />,
+          label: <Space><LaptopOutlined />本机 / NAS 路径</Space>,
+          children: <DirectPathAnalysisPanel onCreated={() => queryClient.invalidateQueries({ queryKey: ["quick-analysis", "sessions"] })} />,
         },
         {
           key: "server",
-          label: <Space><CloudServerOutlined />服务器 / FTP / NAS</Space>,
+          label: <Space><CloudServerOutlined />已配置服务器</Space>,
           children: <>
-            <Alert type="info" showIcon message="服务器受控数据源" description="适用于 Worker 能直接访问的 FTP、NAS 或服务器挂载目录。数据源由管理员配置，页面不会暴露真实根路径。" style={{ marginBottom: 16 }} />
+            <Alert type="info" showIcon message="后台已配置的数据源" description="适用于经常使用或定时拉取的 FTP、NAS、服务器挂载目录。用户无需重复输入地址和密码，可直接选择目录并后台计算。" style={{ marginBottom: 16 }} />
             <Card title={<Space><CloudServerOutlined />选择受控服务器目录</Space>} className="quick-source-card" extra={<Button type="primary" icon={<PlayCircleOutlined />} disabled={!selectedRoot?.available || !manifest.data} loading={manifest.isFetching || createMutation.isPending} onClick={() => setConfirmOpen(true)}>确认范围并计算 PAT</Button>}>
               {roots.isError ? <Alert type="error" showIcon message="数据源加载失败" description={roots.error.message} /> : !roots.isLoading && !roots.data?.length ? <Empty description="尚未配置快速分析数据源，请管理员设置 TMS_SOURCE_ROOTS_JSON。" /> : <>
                 <Space wrap className="quick-source-toolbar">
@@ -197,6 +198,11 @@ export function QuickAnalysisWorkbench() {
               </>}
             </Card>
           </>,
+        },
+        {
+          key: "temporary-ftp",
+          label: <Space><CloudServerOutlined />临时 FTP 预览</Space>,
+          children: <TemporaryFtpPanel />,
         },
       ]}
     />

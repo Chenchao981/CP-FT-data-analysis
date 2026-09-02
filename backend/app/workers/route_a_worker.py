@@ -16,6 +16,7 @@ from app.infrastructure.cp_csv_triplet_writer import (
     CpCsvTripletWriter,
     CpMultiLotSpecBindingRequired,
 )
+from app.infrastructure.direct_path_source import build_direct_path_manifest
 from app.infrastructure.existing_cleaner_results import (
     summarize_existing_cleaner_result,
 )
@@ -82,30 +83,46 @@ class QuickPatHandler:
                     f"{release.test_stage}/{release.factory_code} != "
                     f"{session.test_stage}/{session.factory_code}"
                 )
-            root = self._source_catalog.require_scope(
-                session.source_root_code,
-                purpose="QUICK_ANALYSIS",
-                test_stage=session.test_stage,
-                factory_code=session.factory_code,
-            )
-            if (
-                session.access_scope != "DOMAIN"
-                or session.data_domain_id is None
-                or not session.data_domain_code
-                or (root.data_domain_code or "").strip().upper()
-                != session.data_domain_code.strip().upper()
-            ):
-                raise DomainError(
-                    "QUICK_SOURCE_DOMAIN_BINDING_CHANGED",
-                    "Quick PAT 数据源的数据域绑定已变化，任务已停止",
-                    409,
+            is_direct_path = session.source_root_code == "LOCAL_AGENT"
+            if is_direct_path:
+                if (
+                    session.access_scope != "PERSONAL"
+                    or session.data_domain_id is not None
+                    or session.data_domain_code is not None
+                ):
+                    raise DomainError(
+                        "QUICK_DIRECT_PATH_BINDING_INVALID",
+                        "本机目录快速分析必须属于发起人个人数据",
+                        409,
+                    )
+                source, current_manifest = build_direct_path_manifest(
+                    session.source_relative_path
                 )
-            source = self._source_catalog.resolve_directory(
-                session.source_root_code, session.source_relative_path
-            )
-            current_manifest = self._source_catalog.build_manifest(
-                session.source_root_code, session.source_relative_path
-            )
+            else:
+                root = self._source_catalog.require_scope(
+                    session.source_root_code,
+                    purpose="QUICK_ANALYSIS",
+                    test_stage=session.test_stage,
+                    factory_code=session.factory_code,
+                )
+                if (
+                    session.access_scope != "DOMAIN"
+                    or session.data_domain_id is None
+                    or not session.data_domain_code
+                    or (root.data_domain_code or "").strip().upper()
+                    != session.data_domain_code.strip().upper()
+                ):
+                    raise DomainError(
+                        "QUICK_SOURCE_DOMAIN_BINDING_CHANGED",
+                        "Quick PAT 数据源的数据域绑定已变化，任务已停止",
+                        409,
+                    )
+                source = self._source_catalog.resolve_directory(
+                    session.source_root_code, session.source_relative_path
+                )
+                current_manifest = self._source_catalog.build_manifest(
+                    session.source_root_code, session.source_relative_path
+                )
             if (
                 current_manifest.mode != session.source_manifest_mode
                 or current_manifest.sha256 != session.source_manifest_sha256
@@ -124,20 +141,29 @@ class QuickPatHandler:
                 source_manifest_json=session.source_manifest_json,
                 source_manifest_sha256=session.source_manifest_sha256,
             )
-            completed_manifest = self._source_catalog.build_manifest(
-                session.source_root_code, session.source_relative_path
-            )
-            completed_root = self._source_catalog.require_scope(
-                session.source_root_code,
-                purpose="QUICK_ANALYSIS",
-                test_stage=session.test_stage,
-                factory_code=session.factory_code,
-            )
+            if is_direct_path:
+                _completed_source, completed_manifest = build_direct_path_manifest(
+                    session.source_relative_path
+                )
+                binding_changed = False
+            else:
+                completed_manifest = self._source_catalog.build_manifest(
+                    session.source_root_code, session.source_relative_path
+                )
+                completed_root = self._source_catalog.require_scope(
+                    session.source_root_code,
+                    purpose="QUICK_ANALYSIS",
+                    test_stage=session.test_stage,
+                    factory_code=session.factory_code,
+                )
+                binding_changed = (
+                    (completed_root.data_domain_code or "").strip().upper()
+                    != session.data_domain_code.strip().upper()
+                )
             if (
                 completed_manifest.sha256 != session.source_manifest_sha256
                 or completed_manifest.as_json() != session.source_manifest_json
-                or (completed_root.data_domain_code or "").strip().upper()
-                != session.data_domain_code.strip().upper()
+                or binding_changed
             ):
                 raise RuntimeError(
                     "Source directory changed while Quick PAT was running"
