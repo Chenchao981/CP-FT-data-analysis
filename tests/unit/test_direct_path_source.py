@@ -45,6 +45,26 @@ def test_riyuexin_single_type_manifest_uses_only_direct_files(tmp_path: Path) ->
     assert [item.relative_path for item in manifest.files] == ["one.xlsx"]
 
 
+def test_riyueguang_manifest_uses_only_dc_dvds_rg_xlsx(tmp_path: Path) -> None:
+    source = tmp_path / "RIYUEGUANG"
+    for raw_type in ("DC", "DVDS", "RG"):
+        _write(source / raw_type / f"{raw_type}.xlsx")
+    _write(source / "HTDC" / "high-temp.xlsx")
+    _write(source / "TF" / "switching.xlsx")
+
+    _, manifest = build_direct_path_manifest(
+        source,
+        allowed_suffixes=(".xlsx",),
+        path_policy="RIYUEGUANG_RAW_DIRECTORY_V1",
+    )
+
+    assert {item.relative_path for item in manifest.files} == {
+        "DC/DC.xlsx",
+        "DVDS/DVDS.xlsx",
+        "RG/RG.xlsx",
+    }
+
+
 def test_dianji_manifest_excludes_prior_output_and_pat_runs(tmp_path: Path) -> None:
     source = tmp_path / "dianji"
     _write(source / "raw.xls")

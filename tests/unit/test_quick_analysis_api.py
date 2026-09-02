@@ -291,10 +291,22 @@ def test_direct_path_api_previews_and_queues_cp_factory_pat(tmp_path: Path) -> N
             [".xlsx"],
         ),
         (
+            "RIYUEGUANG_FT_QUICK_PAT_EXISTING",
+            "RIYUEGUANG",
+            "wafer.xlsx",
+            [".xlsx"],
+        ),
+        (
             "DIANJI_FT_QUICK_PAT_EXISTING",
             "DIANJI",
             "raw.xls",
             [".xls", ".xlsx", ".csv"],
+        ),
+        (
+            "JIJIA_FT_QUICK_PAT_EXISTING",
+            "JIJIA",
+            "raw.csv",
+            [".csv"],
         ),
     ],
 )

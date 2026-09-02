@@ -197,8 +197,12 @@ def _direct_path_suffixes(adapter_code: str) -> tuple[str, ...]:
         return (".csv",)
     if adapter_code == "RIYUEXIN_FT_QUICK_PAT_PYZ":
         return (".xlsx",)
+    if adapter_code == "RIYUEGUANG_FT_QUICK_PAT_PYZ":
+        return (".xlsx",)
     if adapter_code == "DIANJI_FT_QUICK_PAT_PYZ":
         return (".xls", ".xlsx", ".csv")
+    if adapter_code == "JIJIA_FT_QUICK_PAT_PYZ":
+        return (".csv",)
     if adapter_code == "HUAHONG_CP_PYZ":
         return (".txt",)
     if adapter_code in {"JETECH_CP_PYZ", "LION_CP_PYZ", "GUOYU_CP_PYZ"}:
@@ -209,6 +213,8 @@ def _direct_path_suffixes(adapter_code: str) -> tuple[str, ...]:
 def _direct_path_manifest_policy(adapter_code: str) -> str:
     if adapter_code == "RIYUEXIN_FT_QUICK_PAT_PYZ":
         return "RIYUEXIN_RAW_DIRECTORY_V1"
+    if adapter_code == "RIYUEGUANG_FT_QUICK_PAT_PYZ":
+        return "RIYUEGUANG_RAW_DIRECTORY_V1"
     if adapter_code == "DIANJI_FT_QUICK_PAT_PYZ":
         return "DIANJI_RAW_DIRECTORY_V1"
     _direct_path_suffixes(adapter_code)

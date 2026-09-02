@@ -22,7 +22,7 @@ describe("capability catalog", () => {
 
   it("publishes the approved Dianji v2.19 input contract", () => {
     expect(factoryInputs.dianji.accept).toBe(".xls,.xlsx");
-    expect(factoryInputs.dianji.hint).toContain("v2.19.0");
+    expect(factoryInputs.dianji.hint).toContain("v2.20.0");
     expect(factoryInputs.dianji.hint).toContain("PowerTECH");
     expect(factoryInputs.dianji.hint).toContain("CONT");
   });

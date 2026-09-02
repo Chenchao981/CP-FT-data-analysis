@@ -14,10 +14,11 @@ DIRECT_PATH_MANIFEST_POLICIES = frozenset(
     {
         "ALL_MATCHING_SUFFIXES_V1",
         "RIYUEXIN_RAW_DIRECTORY_V1",
+        "RIYUEGUANG_RAW_DIRECTORY_V1",
         "DIANJI_RAW_DIRECTORY_V1",
     }
 )
-_RIYUEXIN_RAW_TYPES = frozenset({"DC", "DVDS", "RG"})
+_FT_TYPED_RAW_TYPES = frozenset({"DC", "DVDS", "RG"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,14 +92,15 @@ def build_direct_path_manifest(
     seen: set[str] = set()
     total_bytes = 0
     try:
-        riyuexin_typed_directories = (
+        typed_raw_directories = (
             {
                 child.name.upper()
                 for child in source.iterdir()
-                if child.is_dir() and child.name.upper() in _RIYUEXIN_RAW_TYPES
+                if child.is_dir() and child.name.upper() in _FT_TYPED_RAW_TYPES
             }
-            if normalized_policy == "RIYUEXIN_RAW_DIRECTORY_V1"
-            and source.name.upper() not in _RIYUEXIN_RAW_TYPES
+            if normalized_policy
+            in {"RIYUEXIN_RAW_DIRECTORY_V1", "RIYUEGUANG_RAW_DIRECTORY_V1"}
+            and source.name.upper() not in _FT_TYPED_RAW_TYPES
             else set()
         )
         for current_name, directory_names, file_names in os.walk(
@@ -121,7 +123,7 @@ def build_direct_path_manifest(
                     source,
                     relative_path,
                     normalized_policy,
-                    riyuexin_typed_directories,
+                    typed_raw_directories,
                 ):
                     continue
                 if _is_link_or_junction(candidate):
@@ -181,7 +183,7 @@ def _matches_path_policy(
     source: Path,
     relative_path: Path,
     policy: str,
-    riyuexin_typed_directories: set[str],
+    typed_raw_directories: set[str],
 ) -> bool:
     if policy == "ALL_MATCHING_SUFFIXES_V1":
         return True
@@ -190,12 +192,12 @@ def _matches_path_policy(
         return "OUTPUT" not in parent_parts and not any(
             re.fullmatch(r"PAT_\d+", part) for part in parent_parts
         )
-    if source.name.upper() in _RIYUEXIN_RAW_TYPES:
+    if source.name.upper() in _FT_TYPED_RAW_TYPES:
         return len(relative_path.parts) == 1
-    if riyuexin_typed_directories:
+    if typed_raw_directories:
         return (
             len(relative_path.parts) == 2
-            and relative_path.parts[0].upper() in riyuexin_typed_directories
+            and relative_path.parts[0].upper() in typed_raw_directories
         )
     return len(relative_path.parts) == 1
 

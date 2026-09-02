@@ -81,7 +81,7 @@ def test_bootstrap_defines_dianji_as_an_independent_powertech_release() -> None:
     assert dianji.adapter_code == "DIANJI_FT_PYZ"
     assert dianji.input_contract == "DIANJI_POWERTECH_DIRECTORY_V1"
     assert dianji.output_contract == "DIANJI_FT_SCATTER_V1"
-    assert dianji.cleaner_version == "v2.19.0"
+    assert dianji.cleaner_version == "v2.20.0"
 
 
 def test_bootstrap_pins_quick_pat_execution_limits() -> None:
@@ -91,13 +91,21 @@ def test_bootstrap_pins_quick_pat_execution_limits() -> None:
         if item.output_contract == "FT_PAT_RESULT_V1"
     }
 
-    assert set(quick_pat) == {"JIEQUN", "RIYUEXIN", "DIANJI"}
+    assert set(quick_pat) == {
+        "JIEQUN",
+        "RIYUEXIN",
+        "RIYUEGUANG",
+        "DIANJI",
+        "JIJIA",
+    }
     assert {
         item.adapter_code for item in quick_pat.values()
     } == {
         "JIEQUN_FT_QUICK_PAT_PYZ",
         "RIYUEXIN_FT_QUICK_PAT_PYZ",
+        "RIYUEGUANG_FT_QUICK_PAT_PYZ",
         "DIANJI_FT_QUICK_PAT_PYZ",
+        "JIJIA_FT_QUICK_PAT_PYZ",
     }
     assert all(item.timeout_seconds == 7200 for item in quick_pat.values())
     assert all(

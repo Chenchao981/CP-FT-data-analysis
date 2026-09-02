@@ -111,10 +111,22 @@ def test_runner_invokes_released_package_and_builds_auditable_artifacts(
             "wafer.xlsx",
         ),
         (
+            "RIYUEGUANG",
+            "RIYUEGUANG_FT_QUICK_PAT_PYZ",
+            "RIYUEGUANG_RAW_XLSX_DIRECTORY_V1",
+            "wafer.xlsx",
+        ),
+        (
             "DIANJI",
             "DIANJI_FT_QUICK_PAT_PYZ",
             "DIANJI_REGISTERED_RAW_DIRECTORY_V1",
             "raw.xls",
+        ),
+        (
+            "JIJIA",
+            "JIJIA_FT_QUICK_PAT_PYZ",
+            "JIJIA_STS8203_CSV_DIRECTORY_V1",
+            "raw.csv",
         ),
     ],
 )

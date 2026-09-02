@@ -168,7 +168,7 @@ export function QuickAnalysisWorkbench() {
       <div><Typography.Text type="secondary">快速计算 / 复用 CP 与 FT 个人工具</Typography.Text><Typography.Title level={2}>快速分析</Typography.Title><Typography.Text type="secondary">输入目录先预览，再选择工具计算；源文件无需通过浏览器逐个上传，快速结果不写入正式 Canonical 明细。</Typography.Text></div>
       <Button icon={<ReloadOutlined />} onClick={() => void Promise.all([roots.refetch(), directories.refetch(), manifest.refetch(), sessions.refetch()])}>刷新</Button>
     </div>
-    <Alert className="quick-analysis-alert" showIcon type="info" message="当前可运行：CP / FT 原始目录 → 厂商工具 PAT Excel" description="FT 直接复用杰群、日月新和电基工具的低内存 PAT；CP 先调用华虹、积塔、立昂微或国宇的已发布 Cleaner，再由同一 CP 工具包执行 PAT。系统只保存结果，不写入正式 Canonical，默认 7 天后过期。" />
+    <Alert className="quick-analysis-alert" showIcon type="info" message="当前可运行：CP / FT 原始目录 → 厂商工具 PAT Excel" description="FT 直接复用杰群、日月新、日月光、电基和集佳工具的统一低内存 PAT；CP 先调用华虹、积塔、立昂微或国宇的已发布 Cleaner，再由同一 CP 工具包执行 PAT。系统只保存结果，不写入正式 Canonical，默认 7 天后过期。" />
     <Row gutter={16} className="production-stats"><Col span={6}><Card><Statistic title="筛选结果" value={metrics.total} /></Card></Col><Col span={6}><Card><Statistic title="本页排队/计算" value={metrics.running} valueStyle={{ color: "#1677ff" }} /></Card></Col><Col span={6}><Card><Statistic title="本页已完成" value={metrics.success} valueStyle={{ color: "#3f8600" }} /></Card></Col><Col span={6}><Card><Statistic title="本页失败" value={metrics.failed} valueStyle={{ color: metrics.failed ? "#cf1322" : undefined }} /></Card></Col></Row>
     <Tabs
       defaultActiveKey="local"

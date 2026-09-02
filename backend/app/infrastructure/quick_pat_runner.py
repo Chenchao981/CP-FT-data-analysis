@@ -69,9 +69,17 @@ class QuickPatRunner:
                 "RIYUEXIN",
                 "RIYUEXIN_RAW_XLSX_DIRECTORY_V1",
             ),
+            "RIYUEGUANG_FT_QUICK_PAT_PYZ": (
+                "RIYUEGUANG",
+                "RIYUEGUANG_RAW_XLSX_DIRECTORY_V1",
+            ),
             "DIANJI_FT_QUICK_PAT_PYZ": (
                 "DIANJI",
                 "DIANJI_REGISTERED_RAW_DIRECTORY_V1",
+            ),
+            "JIJIA_FT_QUICK_PAT_PYZ": (
+                "JIJIA",
+                "JIJIA_STS8203_CSV_DIRECTORY_V1",
             ),
         }
         expected_ft = approved_ft.get(release.adapter_code)
@@ -474,8 +482,12 @@ if adapter == 'JIEQUN_FT_QUICK_PAT_PYZ':
         )
 elif adapter == 'RIYUEXIN_FT_QUICK_PAT_PYZ':
     from factories.riyuexin.pat_cleaner import generate_raw_pat
+elif adapter == 'RIYUEGUANG_FT_QUICK_PAT_PYZ':
+    from factories.tms_adapters.riyueguang_pat import generate_raw_pat
 elif adapter == 'DIANJI_FT_QUICK_PAT_PYZ':
     from factories.dianji.pat_cleaner import generate_raw_pat
+elif adapter == 'JIJIA_FT_QUICK_PAT_PYZ':
+    from factories.jijia.pat_cleaner import generate_raw_pat
 else:
     raise SystemExit(f'Unsupported FT Quick PAT adapter: {adapter}')
 result = generate_raw_pat(source_dir=source, output_dir=output)

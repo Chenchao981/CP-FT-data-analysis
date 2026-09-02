@@ -66,7 +66,9 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
             options={[
               { value: "JIEQUN_FT_QUICK_PAT_EXISTING", label: "FT 工具 · 杰群原始目录 PAT" },
               { value: "RIYUEXIN_FT_QUICK_PAT_EXISTING", label: "FT 工具 · 日月新原始目录 PAT" },
+              { value: "RIYUEGUANG_FT_QUICK_PAT_EXISTING", label: "FT 工具 · 日月光原始目录 PAT" },
               { value: "DIANJI_FT_QUICK_PAT_EXISTING", label: "FT 工具 · 电基原始目录 PAT" },
+              { value: "JIJIA_FT_QUICK_PAT_EXISTING", label: "FT 工具 · 集佳原始目录 PAT" },
               { value: "HUAHONG_CP_QUICK_PAT_EXISTING", label: "CP 工具 · 华虹原始目录 PAT" },
               { value: "JETECH_CP_QUICK_PAT_EXISTING", label: "CP 工具 · 积塔原始目录 PAT" },
               { value: "LION_CP_QUICK_PAT_EXISTING", label: "CP 工具 · 立昂微原始目录 PAT" },
