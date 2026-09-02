@@ -37,9 +37,13 @@ class DirectPathPreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     path: str = Field(min_length=1, max_length=1000)
-    tool_code: Literal["JIEQUN_FT_QUICK_PAT_EXISTING"] = (
-        "JIEQUN_FT_QUICK_PAT_EXISTING"
-    )
+    tool_code: Literal[
+        "JIEQUN_FT_QUICK_PAT_EXISTING",
+        "HUAHONG_CP_QUICK_PAT_EXISTING",
+        "JETECH_CP_QUICK_PAT_EXISTING",
+        "LION_CP_QUICK_PAT_EXISTING",
+        "GUOYU_CP_QUICK_PAT_EXISTING",
+    ] = "JIEQUN_FT_QUICK_PAT_EXISTING"
 
 
 class CreateDirectPathPatRequest(DirectPathPreviewRequest):
@@ -63,6 +67,64 @@ LOCAL_QUICK_PAT_TOOL_CODE = "JIEQUN_FT_QUICK_PAT_EXISTING"
 LOCAL_QUICK_PAT_ADAPTER_CODE = "JIEQUN_FT_QUICK_PAT_PYZ"
 LOCAL_QUICK_PAT_INPUT_CONTRACT = "JIEQUN_UNIFIED_CSV_DIRECTORY_V1"
 LOCAL_QUICK_PAT_OUTPUT_CONTRACT = "FT_PAT_RESULT_V1"
+
+DIRECT_PATH_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
+    LOCAL_QUICK_PAT_TOOL_CODE: {
+        "test_stage": "FT",
+        "factory_code": "JIEQUN",
+        "format_code": LOCAL_QUICK_PAT_TOOL_CODE,
+        "cleaner_code": LOCAL_QUICK_PAT_TOOL_CODE,
+        "adapter_code": LOCAL_QUICK_PAT_ADAPTER_CODE,
+        "input_contract_version": LOCAL_QUICK_PAT_INPUT_CONTRACT,
+        "output_contract_version": LOCAL_QUICK_PAT_OUTPUT_CONTRACT,
+        "allowed_suffixes": (".csv",),
+        "tool_name": "杰群 FT 原始目录低内存 PAT",
+    },
+    "HUAHONG_CP_QUICK_PAT_EXISTING": {
+        "test_stage": "CP",
+        "factory_code": "HUAHONG",
+        "format_code": "HUAHONG_DCP_EXISTING",
+        "cleaner_code": "HUAHONG_CP_EXISTING",
+        "adapter_code": "HUAHONG_CP_PYZ",
+        "input_contract_version": "CP_ARCHIVE_OR_TXT_V1",
+        "output_contract_version": "CP_CSV_TRIPLET_V1",
+        "allowed_suffixes": (".txt",),
+        "tool_name": "华虹 CP 原始目录 PAT",
+    },
+    "JETECH_CP_QUICK_PAT_EXISTING": {
+        "test_stage": "CP",
+        "factory_code": "JETECH",
+        "format_code": "JETECH_CP_EXISTING",
+        "cleaner_code": "JETECH_CP_EXISTING",
+        "adapter_code": "JETECH_CP_PYZ",
+        "input_contract_version": "CP_EXCEL_OR_ZIP_V1",
+        "output_contract_version": "CP_STANDARD_CSV_TRIPLET_V1",
+        "allowed_suffixes": (".xls", ".xlsx"),
+        "tool_name": "积塔 CP 原始目录 PAT",
+    },
+    "LION_CP_QUICK_PAT_EXISTING": {
+        "test_stage": "CP",
+        "factory_code": "LION",
+        "format_code": "LION_CP_EXISTING",
+        "cleaner_code": "LION_CP_EXISTING",
+        "adapter_code": "LION_CP_PYZ",
+        "input_contract_version": "CP_EXCEL_OR_ZIP_V1",
+        "output_contract_version": "CP_STANDARD_CSV_TRIPLET_V1",
+        "allowed_suffixes": (".xls", ".xlsx"),
+        "tool_name": "立昂微 CP 原始目录 PAT",
+    },
+    "GUOYU_CP_QUICK_PAT_EXISTING": {
+        "test_stage": "CP",
+        "factory_code": "GUOYU",
+        "format_code": "GUOYU_FRD_CP_EXISTING",
+        "cleaner_code": "GUOYU_FRD_CP_EXISTING",
+        "adapter_code": "GUOYU_CP_PYZ",
+        "input_contract_version": "CP_EXCEL_OR_ZIP_V1",
+        "output_contract_version": "CP_STANDARD_CSV_TRIPLET_V1",
+        "allowed_suffixes": (".xls", ".xlsx"),
+        "tool_name": "国宇 CP 原始目录 PAT",
+    },
+}
 
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-fA-F]{64}$")]
 

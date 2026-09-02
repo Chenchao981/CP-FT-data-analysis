@@ -3,7 +3,12 @@ import { useMutation } from "@tanstack/react-query";
 import { Alert, Button, Card, Col, Input, Row, Select, Space, Statistic, Typography, message } from "antd";
 import { useState } from "react";
 
-import { createDirectPathPat, previewDirectPath, type DirectPathPreview } from "../../api/quickAnalysis";
+import {
+  createDirectPathPat,
+  previewDirectPath,
+  type DirectPathPreview,
+  type DirectPathToolCode,
+} from "../../api/quickAnalysis";
 
 const displaySize = (value: number) => {
   if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
@@ -13,10 +18,11 @@ const displaySize = (value: number) => {
 
 export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }) {
   const [path, setPath] = useState("");
+  const [toolCode, setToolCode] = useState<DirectPathToolCode>("JIEQUN_FT_QUICK_PAT_EXISTING");
   const [preview, setPreview] = useState<DirectPathPreview>();
   const [messageApi, contextHolder] = message.useMessage();
   const previewMutation = useMutation({
-    mutationFn: () => previewDirectPath(path),
+    mutationFn: () => previewDirectPath(path, toolCode),
     onSuccess: (value) => setPreview(value),
     onError: (error) => { setPreview(undefined); messageApi.error(error.message); },
   });
@@ -53,20 +59,25 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
         <Space wrap>
           <Typography.Text strong>分析工具</Typography.Text>
           <Select
-            value="JIEQUN_FT_QUICK_PAT_EXISTING"
-            style={{ width: 300 }}
+            aria-label="分析工具"
+            value={toolCode}
+            style={{ width: 330 }}
+            onChange={(value: DirectPathToolCode) => { setToolCode(value); setPreview(undefined); }}
             options={[
               { value: "JIEQUN_FT_QUICK_PAT_EXISTING", label: "FT 工具 · 杰群原始目录 PAT" },
-              { value: "CP_RAW_QUICK_PAT", label: "CP 工具 · 原始目录 PAT（接口待接入）", disabled: true },
+              { value: "HUAHONG_CP_QUICK_PAT_EXISTING", label: "CP 工具 · 华虹原始目录 PAT" },
+              { value: "JETECH_CP_QUICK_PAT_EXISTING", label: "CP 工具 · 积塔原始目录 PAT" },
+              { value: "LION_CP_QUICK_PAT_EXISTING", label: "CP 工具 · 立昂微原始目录 PAT" },
+              { value: "GUOYU_CP_QUICK_PAT_EXISTING", label: "CP 工具 · 国宇原始目录 PAT" },
             ]}
           />
           <Typography.Text type="secondary">仅做 PAT，不清洗、不写入正式数据库</Typography.Text>
         </Space>
         {preview && <Card size="small" type="inner" title={`已预览：${preview.source_label}`} extra={<Button type="primary" icon={<PlayCircleOutlined />} loading={runMutation.isPending} onClick={() => runMutation.mutate()}>开始后台 PAT</Button>}>
           <Row gutter={16}>
-            <Col span={8}><Statistic title="CSV 文件" value={preview.file_count} /></Col>
+            <Col span={8}><Statistic title="源文件" value={preview.file_count} /></Col>
             <Col span={8}><Statistic title="源数据大小" value={displaySize(preview.total_bytes)} /></Col>
-            <Col span={8}><Statistic title="执行工具" value="FT PAT" /></Col>
+            <Col span={8}><Statistic title="执行工具" value={`${preview.test_stage} · ${preview.factory_code}`} /></Col>
           </Row>
           <Typography.Paragraph style={{ marginTop: 12, marginBottom: 0 }}><strong>目录：</strong><Typography.Text code copyable>{preview.path}</Typography.Text></Typography.Paragraph>
         </Card>}

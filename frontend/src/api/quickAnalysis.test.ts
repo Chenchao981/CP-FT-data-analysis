@@ -55,12 +55,14 @@ describe("quick analysis api", () => {
       allowed_suffixes: [".csv"],
       tool_code: "JIEQUN_FT_QUICK_PAT_EXISTING" as const,
       tool_name: "杰群 FT 原始目录低内存 PAT",
+      test_stage: "FT" as const,
+      factory_code: "JIEQUN",
     };
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(JSON.stringify(preview), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ analysis_session_id: 10 }), { status: 201 }));
 
-    await previewDirectPath(preview.path);
+    await previewDirectPath(preview.path, preview.tool_code);
     await createDirectPathPat(preview);
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/quick-analysis/direct-path/preview");

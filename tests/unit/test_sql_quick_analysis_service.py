@@ -10,6 +10,7 @@ from app.infrastructure.sql_quick_analysis_service import (
     SqlQuickAnalysisService,
     _to_session,
 )
+from sqlalchemy.exc import DBAPIError
 
 
 class _EmptyResult:
@@ -361,3 +362,59 @@ def test_worker_execution_rejects_personal_session_when_owner_account_is_disable
 
     assert error.value.code == "QUICK_ANALYSIS_REQUESTER_INACTIVE"
     assert "FROM iam.app_user WITH (UPDLOCK,HOLDLOCK)" in connection.calls[-1]
+
+
+def test_quick_session_page_retries_one_sql_server_deadlock(monkeypatch) -> None:
+    class Result:
+        def scalar_one(self):
+            return 0
+
+        def mappings(self):
+            return self
+
+        def all(self):
+            return []
+
+    class Connection:
+        def __init__(self, engine):
+            self.engine = engine
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, *_args, **_kwargs):
+            self.engine.execute_calls += 1
+            if self.engine.execute_calls == 1:
+                raise DBAPIError(
+                    "SELECT",
+                    {},
+                    RuntimeError("SQL Server deadlock victim (1205)"),
+                    False,
+                )
+            return Result()
+
+    class Engine:
+        def __init__(self):
+            self.execute_calls = 0
+            self.connect_calls = 0
+
+        def connect(self):
+            self.connect_calls += 1
+            return Connection(self)
+
+    engine = Engine()
+    monkeypatch.setattr(
+        "app.infrastructure.sql_quick_analysis_service.time.sleep",
+        lambda _delay: None,
+    )
+    service = SqlQuickAnalysisService(engine)  # type: ignore[arg-type]
+    principal = Principal(8, "owner", "Owner", (), frozenset())
+
+    page = service.list_page_for_principal(principal, page=1, page_size=20)
+
+    assert page.total == 0
+    assert page.items == ()
+    assert engine.connect_calls == 2

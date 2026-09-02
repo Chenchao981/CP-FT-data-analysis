@@ -71,8 +71,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise RuntimeError(
                     "database identity does not match --expected-database"
                 )
-            if str(identity["revision"]) != "sql2014_0024":
-                raise RuntimeError("sql2014_0024 is required")
+            if str(identity["revision"]) != "sql2014_0025":
+                raise RuntimeError("sql2014_0025 is required")
 
             domains = (
                 connection.execute(

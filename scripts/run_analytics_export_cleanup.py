@@ -51,8 +51,8 @@ def main() -> None:
     if not os.getenv("TMS_DATABASE_URL"):
         raise RuntimeError("TMS_DATABASE_URL is required")
     database = check_database()
-    if database["schema_revision"] != "sql2014_0024":
-        raise RuntimeError("Analytics Export cleanup requires sql2014_0024")
+    if database["schema_revision"] != "sql2014_0025":
+        raise RuntimeError("Analytics Export cleanup requires sql2014_0025")
     configured_root = os.getenv("TMS_ANALYTICS_EXPORT_ROOT", "").strip()
     if not configured_root:
         if os.getenv("TMS_ENV", "").strip().lower() == "production":

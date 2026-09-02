@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import time
 from collections.abc import Callable
@@ -15,6 +16,7 @@ from openpyxl import load_workbook
 from app.domain.cleaner_registry import CleanerRelease
 from app.domain.quick_analysis import QuickAnalysisArtifact
 from app.infrastructure.child_process_environment import isolated_child_environment
+from app.infrastructure.existing_cleaner_runner import ExistingCleanerRunner
 
 ProcessRunner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -29,10 +31,17 @@ class QuickPatRunResult:
 
 
 class QuickPatRunner:
-    """Invoke the released Jiequn low-memory raw PAT implementation."""
+    """Invoke released FT raw PAT or CP Cleaner + package-owned PAT."""
 
-    def __init__(self, process_runner: ProcessRunner = subprocess.run) -> None:
+    def __init__(
+        self,
+        process_runner: ProcessRunner = subprocess.run,
+        cleaner_runner: ExistingCleanerRunner | None = None,
+    ) -> None:
         self._process_runner = process_runner
+        self._cleaner_runner = cleaner_runner or ExistingCleanerRunner(
+            process_runner=process_runner
+        )
 
     def run_release(
         self,
@@ -43,6 +52,14 @@ class QuickPatRunner:
         source_manifest_json: str,
         source_manifest_sha256: str,
     ) -> QuickPatRunResult:
+        if release.test_stage == "CP":
+            return self._run_cp_release(
+                release=release,
+                input_directory=input_directory,
+                output_root=output_root,
+                source_manifest_json=source_manifest_json,
+                source_manifest_sha256=source_manifest_sha256,
+            )
         if (
             release.test_stage != "FT"
             or release.factory_code != "JIEQUN"
@@ -180,6 +197,152 @@ class QuickPatRunner:
             (completed.stdout or "")[-4000:],
         )
 
+    def _run_cp_release(
+        self,
+        *,
+        release: CleanerRelease,
+        input_directory: str | Path,
+        output_root: str | Path,
+        source_manifest_json: str,
+        source_manifest_sha256: str,
+    ) -> QuickPatRunResult:
+        approved = {
+            "HUAHONG_CP_PYZ": ("HUAHONG", "CP_ARCHIVE_OR_TXT_V1", "CP_CSV_TRIPLET_V1"),
+            "JETECH_CP_PYZ": ("JETECH", "CP_EXCEL_OR_ZIP_V1", "CP_STANDARD_CSV_TRIPLET_V1"),
+            "LION_CP_PYZ": ("LION", "CP_EXCEL_OR_ZIP_V1", "CP_STANDARD_CSV_TRIPLET_V1"),
+            "GUOYU_CP_PYZ": ("GUOYU", "CP_EXCEL_OR_ZIP_V1", "CP_STANDARD_CSV_TRIPLET_V1"),
+        }
+        expected = approved.get(release.adapter_code)
+        if expected is None or (
+            release.factory_code,
+            release.input_contract_version,
+            release.output_contract_version,
+        ) != expected:
+            raise ValueError("released tool is not an approved CP Quick PAT adapter")
+
+        source = Path(input_directory).resolve()
+        target = Path(output_root).resolve()
+        package = Path(release.artifact_uri).resolve()
+        runtime = Path(release.runtime_uri).resolve()
+        if not source.is_dir():
+            raise FileNotFoundError(f"Quick PAT input directory is unavailable: {source}")
+        for required in (runtime, package):
+            if not required.is_file():
+                raise FileNotFoundError(f"CP Quick PAT runtime is unavailable: {required}")
+        if _file_sha256(package) != release.code_checksum.lower():
+            raise RuntimeError(
+                f"CP PAT package checksum differs from released contract: {package}"
+            )
+        actual_manifest_sha = hashlib.sha256(
+            source_manifest_json.encode("utf-8")
+        ).hexdigest()
+        if actual_manifest_sha != source_manifest_sha256.lower():
+            raise RuntimeError("source Manifest JSON does not match its SHA-256")
+        manifest = json.loads(source_manifest_json)
+        target.mkdir(parents=True, exist_ok=True)
+        intermediate = (target / "cp_cleaner_intermediate").resolve()
+        if intermediate.parent != target:
+            raise RuntimeError("CP Quick PAT intermediate path escaped its job workspace")
+
+        started = time.perf_counter()
+        cleaner_result = self._cleaner_runner.run_release(
+            release=release,
+            inputs=(source,),
+            output_root=intermediate,
+        )
+        cleaned = [item.path for item in cleaner_result.artifacts if item.role == "cleaned"]
+        specs = [item.path for item in cleaner_result.artifacts if item.role == "spec"]
+        env = isolated_child_environment(
+            {
+                "TMS_CP_PAT_PACKAGE": str(package),
+                "TMS_CP_PAT_CLEANED_JSON": json.dumps(cleaned, ensure_ascii=False),
+                "TMS_CP_PAT_SPEC_JSON": json.dumps(specs, ensure_ascii=False),
+                "TMS_CP_PAT_OUTPUT": str(target),
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8",
+            }
+        )
+        try:
+            completed = self._process_runner(
+                [str(runtime), "-c", _CP_QUICK_PAT_SCRIPT],
+                cwd=str(package.parent),
+                env=env,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                capture_output=True,
+                check=False,
+                timeout=release.timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"CP Quick PAT timed out after {release.timeout_seconds}s"
+            ) from exc
+        finally:
+            if intermediate.exists() and intermediate.parent == target:
+                shutil.rmtree(intermediate)
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "unknown CP PAT error")[-4000:]
+            raise RuntimeError(f"released CP Quick PAT failed: {detail}")
+
+        reports = sorted(target.glob("PAT_CP_*.xlsx"), key=lambda item: item.name.casefold())
+        if len(reports) != 1:
+            raise RuntimeError(
+                f"CP Quick PAT output contract requires one PAT Excel, found {len(reports)}"
+            )
+        engine = _parse_cp_engine_summary(completed.stdout or "")
+        report = reports[0].resolve()
+        parameter_rows = _read_pat_rows(report)
+        if engine["parameter_count"] != len(parameter_rows):
+            raise RuntimeError("CP PAT engine parameter count differs from result workbook")
+        elapsed_seconds = time.perf_counter() - started
+        summary: dict[str, Any] = {
+            "schema_version": 1,
+            "analysis_type": "QUICK_PAT",
+            "test_stage": "CP",
+            "factory_code": release.factory_code,
+            "input_contract": release.input_contract_version,
+            "output_contract": "CP_PAT_RESULT_V1",
+            "formula_contract": engine["formula_contract"],
+            "formula_provenance": "VDMOS_Tool_v5.6.html existing CP PAT",
+            "manifest_mode": manifest.get("mode"),
+            "source_file_count": manifest.get("file_count"),
+            "source_total_bytes": manifest.get("total_bytes"),
+            "source_manifest_sha256": source_manifest_sha256,
+            "cleaned_file_count": engine["source_files"],
+            "parameter_count": len(parameter_rows),
+            "record_count": engine["record_count"],
+            "record_count_basis": "CP_CLEANER_STANDARD_CSV_ROWS",
+            "elapsed_seconds": round(elapsed_seconds, 3),
+            "parameters": parameter_rows,
+        }
+        manifest_path = target / "source_manifest.json"
+        manifest_path.write_text(source_manifest_json, encoding="utf-8")
+        summary_path = target / "pat_summary.json"
+        summary_path.write_text(
+            json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        artifacts = tuple(
+            _artifact(role, path)
+            for role, path in (
+                ("pat_report", report),
+                ("pat_summary", summary_path),
+                ("source_manifest", manifest_path),
+            )
+        )
+        output_bytes = sum(path.stat().st_size for path in target.rglob("*") if path.is_file())
+        if output_bytes > release.max_output_bytes:
+            raise RuntimeError(
+                f"CP Quick PAT output exceeds released limit: {output_bytes}>{release.max_output_bytes}"
+            )
+        return QuickPatRunResult(
+            len(parameter_rows),
+            int(engine["record_count"]),
+            summary,
+            artifacts,
+            (cleaner_result.stdout_tail + "\n" + (completed.stdout or ""))[-4000:],
+        )
+
 
 def _read_pat_rows(path: Path) -> list[dict[str, Any]]:
     workbook = load_workbook(path, read_only=True, data_only=True)
@@ -234,6 +397,21 @@ def _parse_engine_summary(stdout: str) -> tuple[int, int, int]:
     return int(files.replace(",", "")), int(rows.replace(",", "")), int(parameters)
 
 
+def _parse_cp_engine_summary(stdout: str) -> dict[str, Any]:
+    marked = [
+        line.removeprefix("TMS_CP_PAT_SUMMARY=")
+        for line in stdout.splitlines()
+        if line.startswith("TMS_CP_PAT_SUMMARY=")
+    ]
+    if len(marked) != 1:
+        raise RuntimeError("CP PAT engine did not emit one auditable summary")
+    payload = json.loads(marked[0])
+    required = {"source_files", "record_count", "parameter_count", "formula_contract", "report"}
+    if not isinstance(payload, dict) or set(payload) != required:
+        raise RuntimeError("CP PAT engine summary has an invalid schema")
+    return payload
+
+
 def _artifact(role: str, path: Path) -> QuickAnalysisArtifact:
     resolved = path.resolve()
     return QuickAnalysisArtifact(
@@ -279,4 +457,18 @@ result = generate_raw_pat(source_dir=source, output_dir=output)
 if not result:
     raise SystemExit('Jiequn Quick PAT returned no result')
 print(f'TMS_QUICK_PAT_RESULT={Path(result).resolve()}')
+"""
+
+
+_CP_QUICK_PAT_SCRIPT = """
+import json, os, sys
+sys.path.insert(0, os.environ['TMS_CP_PAT_PACKAGE'])
+from cp_data_processor.analysis.quick_pat import generate_cleaned_csv_pat
+result = generate_cleaned_csv_pat(
+    cleaned_files=json.loads(os.environ['TMS_CP_PAT_CLEANED_JSON']),
+    spec_files=json.loads(os.environ['TMS_CP_PAT_SPEC_JSON']),
+    output_dir=os.environ['TMS_CP_PAT_OUTPUT'],
+)
+if not result:
+    raise SystemExit('CP Quick PAT returned no result')
 """

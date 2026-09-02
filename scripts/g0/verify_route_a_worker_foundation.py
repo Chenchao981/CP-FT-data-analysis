@@ -52,7 +52,7 @@ def main() -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            assert revision == "sql2014_0024", revision
+            assert revision == "sql2014_0025", revision
             route_b_count = connection.execute(
                 text(
                     "SELECT COUNT(*) FROM sys.tables t JOIN sys.schemas s "

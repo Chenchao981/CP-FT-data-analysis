@@ -123,14 +123,23 @@ export interface DirectPathPreview {
   total_bytes: number;
   sha: string;
   allowed_suffixes: string[];
-  tool_code: "JIEQUN_FT_QUICK_PAT_EXISTING";
+  tool_code: DirectPathToolCode;
   tool_name: string;
+  test_stage: "CP" | "FT";
+  factory_code: string;
 }
 
-export const previewDirectPath = (path: string) =>
+export type DirectPathToolCode =
+  | "JIEQUN_FT_QUICK_PAT_EXISTING"
+  | "HUAHONG_CP_QUICK_PAT_EXISTING"
+  | "JETECH_CP_QUICK_PAT_EXISTING"
+  | "LION_CP_QUICK_PAT_EXISTING"
+  | "GUOYU_CP_QUICK_PAT_EXISTING";
+
+export const previewDirectPath = (path: string, toolCode: DirectPathToolCode) =>
   apiRequest<DirectPathPreview>(`${base}/direct-path/preview`, {
     method: "POST",
-    body: JSON.stringify({ path, tool_code: "JIEQUN_FT_QUICK_PAT_EXISTING" }),
+    body: JSON.stringify({ path, tool_code: toolCode }),
   });
 
 export const createDirectPathPat = (preview: DirectPathPreview) =>

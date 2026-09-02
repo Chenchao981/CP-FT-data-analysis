@@ -25,6 +25,7 @@ from app.domain.jobs import (
     TriggerType,
 )
 from app.domain.quick_analysis import (
+    DIRECT_PATH_TOOL_CONTRACTS,
     LOCAL_QUICK_PAT_ADAPTER_CODE,
     LOCAL_QUICK_PAT_INPUT_CONTRACT,
     LOCAL_QUICK_PAT_OUTPUT_CONTRACT,
@@ -134,6 +135,23 @@ def _local_quick_pat_release(request: Request):
         adapter_code=LOCAL_QUICK_PAT_ADAPTER_CODE,
         input_contract_version=LOCAL_QUICK_PAT_INPUT_CONTRACT,
         output_contract_version=LOCAL_QUICK_PAT_OUTPUT_CONTRACT,
+    )
+
+
+def _direct_path_tool(tool_code: str) -> dict[str, object]:
+    return DIRECT_PATH_TOOL_CONTRACTS[tool_code]
+
+
+def _direct_path_release(request: Request, tool_code: str):
+    contract = _direct_path_tool(tool_code)
+    return cleaner_registry(request).latest_released_for_contract(
+        test_stage=str(contract["test_stage"]),
+        factory_code=str(contract["factory_code"]),
+        format_code=str(contract["format_code"]),
+        cleaner_code=str(contract["cleaner_code"]),
+        adapter_code=str(contract["adapter_code"]),
+        input_contract_version=str(contract["input_contract_version"]),
+        output_contract_version=str(contract["output_contract_version"]),
     )
 
 
@@ -254,9 +272,14 @@ def preview_direct_path(
     request: Request,
     _principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
 ) -> dict[str, object]:
-    release = _local_quick_pat_release(request)
-    validate_local_quick_pat_release(release)
-    source, manifest = build_direct_path_manifest(payload.path)
+    contract = _direct_path_tool(payload.tool_code)
+    release = _direct_path_release(request, payload.tool_code)
+    if payload.tool_code == LOCAL_QUICK_PAT_TOOL_CODE:
+        validate_local_quick_pat_release(release)
+    source, manifest = build_direct_path_manifest(
+        payload.path,
+        allowed_suffixes=tuple(contract["allowed_suffixes"]),
+    )
     return {
         "path": str(source),
         "source_label": manifest.source_label,
@@ -265,9 +288,11 @@ def preview_direct_path(
         "file_count": manifest.file_count,
         "total_bytes": manifest.total_bytes,
         "sha": manifest.sha256,
-        "allowed_suffixes": [".csv"],
+        "allowed_suffixes": list(contract["allowed_suffixes"]),
         "tool_code": payload.tool_code,
-        "tool_name": "杰群 FT 原始目录低内存 PAT",
+        "tool_name": contract["tool_name"],
+        "test_stage": contract["test_stage"],
+        "factory_code": contract["factory_code"],
     }
 
 
@@ -277,7 +302,11 @@ def create_direct_path_pat(
     request: Request,
     principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
 ) -> dict[str, object]:
-    source, manifest = build_direct_path_manifest(payload.path)
+    contract = _direct_path_tool(payload.tool_code)
+    source, manifest = build_direct_path_manifest(
+        payload.path,
+        allowed_suffixes=tuple(contract["allowed_suffixes"]),
+    )
     if not manifest.matches_confirmation(
         mode=payload.source_manifest_mode,
         sha256=payload.source_manifest_sha256,
@@ -290,14 +319,15 @@ def create_direct_path_pat(
     capacity = capacity_policy(request)
     reserved_bytes = capacity.reservation_for(manifest.total_bytes)
     capacity.ensure_filesystem_capacity(reserved_bytes)
-    release = _local_quick_pat_release(request)
-    validate_local_quick_pat_release(release)
+    release = _direct_path_release(request, payload.tool_code)
+    if payload.tool_code == LOCAL_QUICK_PAT_TOOL_CODE:
+        validate_local_quick_pat_release(release)
     session = quick_service(request).create(
         principal,
         NewQuickAnalysisSession(
             analysis_type="QUICK_PAT",
-            test_stage="FT",
-            factory_code="JIEQUN",
+            test_stage=str(contract["test_stage"]),
+            factory_code=str(contract["factory_code"]),
             # LOCAL_AGENT is retained as the SQL compatibility value for personal
             # direct-path results. No Local Agent process participates in this flow.
             source_root_code="LOCAL_AGENT",
@@ -326,7 +356,10 @@ def create_direct_path_pat(
                 trigger_type=TriggerType.MANUAL,
                 requested_by=principal.login_name,
                 requested_by_user_id=principal.user_id,
-                reason="直接读取当前 TMS 主机可访问目录并调用既有 FT PAT 工具",
+                reason=(
+                    "直接读取当前 TMS 主机可访问目录并调用既有 "
+                    f"{contract['test_stage']} PAT 工具"
+                ),
                 idempotency_key=f"direct-path-pat:{session.analysis_session_id}",
             ),
             principal,

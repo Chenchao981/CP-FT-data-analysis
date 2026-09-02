@@ -11,14 +11,14 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def test_v12_sql_e2e_database_guard_is_exact() -> None:
     verifier._assert_database_identity(
-        {"database": "TMS_G0_DEV", "schema_revision": "sql2014_0024"}
+        {"database": "TMS_G0_DEV", "schema_revision": "sql2014_0025"}
     )
 
-    with pytest.raises(RuntimeError, match="restricted to TMS_G0_DEV/sql2014_0024"):
+    with pytest.raises(RuntimeError, match="restricted to TMS_G0_DEV/sql2014_0025"):
         verifier._assert_database_identity(
-            {"database": "TMS_PROD", "schema_revision": "sql2014_0024"}
+            {"database": "TMS_PROD", "schema_revision": "sql2014_0025"}
         )
-    with pytest.raises(RuntimeError, match="restricted to TMS_G0_DEV/sql2014_0024"):
+    with pytest.raises(RuntimeError, match="restricted to TMS_G0_DEV/sql2014_0025"):
         verifier._assert_database_identity(
             {"database": "TMS_G0_DEV", "schema_revision": "sql2014_0018"}
         )
@@ -52,7 +52,7 @@ def test_v12_sql_e2e_is_rollback_only_and_uses_application_services() -> None:
     ).read_text(encoding="utf-8")
 
     assert 'EXPECTED_DATABASE = "TMS_G0_DEV"' in source
-    assert 'EXPECTED_SCHEMA_REVISION = "sql2014_0024"' in source
+    assert 'EXPECTED_SCHEMA_REVISION = "sql2014_0025"' in source
     assert "transaction.rollback()" in source
     assert ".commit(" not in source
     assert "_fixture_leak_count" in source

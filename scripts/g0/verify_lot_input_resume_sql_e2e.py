@@ -40,7 +40,7 @@ def main() -> None:
             )
             if identity != {
                 "database_name": "TMS_G0_DEV",
-                "revision": "sql2014_0024",
+                "revision": "sql2014_0025",
             }:
                 raise RuntimeError(f"unexpected development database: {identity}")
             owner = (

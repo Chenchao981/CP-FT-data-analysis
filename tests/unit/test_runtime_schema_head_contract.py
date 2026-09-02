@@ -7,7 +7,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 ROOT = Path(__file__).resolve().parents[2]
-CURRENT_SCHEMA_HEAD = "sql2014_0024"
+CURRENT_SCHEMA_HEAD = "sql2014_0025"
 
 
 def _read(relative_path: str) -> str:
@@ -26,99 +26,99 @@ def test_repository_has_the_expected_single_schema_head() -> None:
     [
         (
             "scripts/windows/start_tms_local_test.ps1",
-            "$expectedSchemaRevision = 'sql2014_0024'",
+            "$expectedSchemaRevision = 'sql2014_0025'",
         ),
         (
             "scripts/run_analytics_export_worker.py",
-            'schema_revision"] != "sql2014_0024"',
+            'schema_revision"] != "sql2014_0025"',
         ),
         (
             "scripts/run_analytics_export_cleanup.py",
-            'schema_revision"] != "sql2014_0024"',
+            'schema_revision"] != "sql2014_0025"',
         ),
         (
             "scripts/g0/smoke_analytics_export_content.py",
-            'schema_revision"] != "sql2014_0024"',
+            'schema_revision"] != "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_analytics_export_lifecycle_sql_e2e.py",
-            'database.get("schema_revision") != "sql2014_0024"',
+            'database.get("schema_revision") != "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_route_a_worker_foundation.py",
-            'assert revision == "sql2014_0024"',
+            'assert revision == "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_sql2014_schema.py",
-            'assert revision == "sql2014_0024"',
+            'assert revision == "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_v11_functional_sql_readonly.py",
-            'EXPECTED_SCHEMA_REVISION = "sql2014_0024"',
+            'EXPECTED_SCHEMA_REVISION = "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_v12_performance.py",
-            'EXPECTED_SCHEMA_REVISION = "sql2014_0024"',
+            'EXPECTED_SCHEMA_REVISION = "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_v12_duplicate_upload_concurrency_sql_e2e.py",
-            'EXPECTED_SCHEMA_REVISION = "sql2014_0024"',
+            'EXPECTED_SCHEMA_REVISION = "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_v12_duplicate_upload_to_current_sql_e2e.py",
-            'EXPECTED_SCHEMA_REVISION = "sql2014_0024"',
+            'EXPECTED_SCHEMA_REVISION = "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_v12_visibility_duplicate_sql_e2e.py",
-            'EXPECTED_SCHEMA_REVISION = "sql2014_0024"',
+            'EXPECTED_SCHEMA_REVISION = "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_v13_parameter_analysis.py",
-            'EXPECTED_SCHEMA_REVISION = "sql2014_0024"',
+            'EXPECTED_SCHEMA_REVISION = "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_v13_analytics_closure_performance.py",
-            'EXPECTED_SCHEMA_REVISION = "sql2014_0024"',
+            'EXPECTED_SCHEMA_REVISION = "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_quick_cleanup_sql_e2e.py",
-            'revision != "sql2014_0024"',
+            'revision != "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_quick_pat_sql_e2e.py",
-            'revision != "sql2014_0024"',
+            'revision != "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_a5_archive_sql_e2e.py",
-            'schema_revision"] != "sql2014_0024"',
+            'schema_revision"] != "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_a5_lifecycle_concurrency_sql_e2e.py",
-            'schema_revision"] != "sql2014_0024"',
+            'schema_revision"] != "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_a5_reprocess_sql_e2e.py",
-            'schema_revision"] != "sql2014_0024"',
+            'schema_revision"] != "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_atomic_finalize_sql_e2e.py",
-            'identity["revision"] != "sql2014_0024"',
+            'identity["revision"] != "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_initial_import_state_consistency.py",
-            'revision != "sql2014_0024"',
+            'revision != "sql2014_0025"',
         ),
         (
             "scripts/g0/verify_lot_input_resume_sql_e2e.py",
-            '"revision": "sql2014_0024"',
+            '"revision": "sql2014_0025"',
         ),
         (
             "scripts/g0/bootstrap_existing_cleaner_releases.py",
-            'revision != "sql2014_0024"',
+            'revision != "sql2014_0025"',
         ),
         (
             "scripts/g0/repair_processing_run_current.py",
-            'default="sql2014_0024"',
+            'default="sql2014_0025"',
         ),
     ],
 )

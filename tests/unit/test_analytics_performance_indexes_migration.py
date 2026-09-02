@@ -16,7 +16,7 @@ def test_personal_domain_access_migration_is_the_single_head() -> None:
     config = Config(str(ROOT / "db" / "alembic" / "alembic.ini"))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == ["sql2014_0024"]
+    assert script.get_heads() == ["sql2014_0025"]
     revision = script.get_revision("sql2014_0023")
     assert revision is not None
     assert revision.down_revision == "sql2014_0022"

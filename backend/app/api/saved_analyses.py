@@ -22,7 +22,7 @@ def service(request: Request) -> SavedAnalysisService:
     if instance is None:
         raise DomainError(
             "DATABASE_NOT_CONFIGURED",
-            "Saved Analysis operations require TMS_DATABASE_URL/sql2014_0024",
+            "Saved Analysis operations require TMS_DATABASE_URL/sql2014_0025",
             503,
         )
     return instance

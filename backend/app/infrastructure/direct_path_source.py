@@ -126,7 +126,7 @@ def build_direct_path_manifest(
     files.sort(key=lambda item: item.relative_path.casefold())
     if not files:
         raise DomainError(
-            "DIRECT_PATH_EMPTY", "所选目录没有符合当前工具要求的 CSV 文件", 422
+            "DIRECT_PATH_EMPTY", "所选目录没有符合当前工具要求的源文件", 422
         )
     payload = {
         "mode": DIRECT_PATH_MANIFEST_MODE,

@@ -96,7 +96,8 @@ class QuickPatHandler:
                         409,
                     )
                 source, current_manifest = build_direct_path_manifest(
-                    session.source_relative_path
+                    session.source_relative_path,
+                    allowed_suffixes=_direct_path_suffixes(release.adapter_code),
                 )
             else:
                 root = self._source_catalog.require_scope(
@@ -143,7 +144,8 @@ class QuickPatHandler:
             )
             if is_direct_path:
                 _completed_source, completed_manifest = build_direct_path_manifest(
-                    session.source_relative_path
+                    session.source_relative_path,
+                    allowed_suffixes=_direct_path_suffixes(release.adapter_code),
                 )
                 binding_changed = False
             else:
@@ -186,6 +188,16 @@ class QuickPatHandler:
                 session.analysis_session_id, "QUICK_PAT_FAILED", str(exc)
             )
             raise
+
+
+def _direct_path_suffixes(adapter_code: str) -> tuple[str, ...]:
+    if adapter_code == "JIEQUN_FT_QUICK_PAT_PYZ":
+        return (".csv",)
+    if adapter_code == "HUAHONG_CP_PYZ":
+        return (".txt",)
+    if adapter_code in {"JETECH_CP_PYZ", "LION_CP_PYZ", "GUOYU_CP_PYZ"}:
+        return (".xls", ".xlsx")
+    raise ValueError(f"unsupported direct-path PAT adapter: {adapter_code}")
 
 
 class RouteAInitialImportHandler:

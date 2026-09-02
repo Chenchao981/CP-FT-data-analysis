@@ -32,7 +32,7 @@ from app.infrastructure.sql_m2_query_service import SqlM2QueryService
 from app.infrastructure.sql_management_service import SqlManagementService
 
 EXPECTED_DATABASE = "TMS_G0_DEV"
-EXPECTED_SCHEMA_REVISION = "sql2014_0024"
+EXPECTED_SCHEMA_REVISION = "sql2014_0025"
 DEFAULT_WARM_RUNS = 5
 PAGE_SIZE = 50
 MAX_CANDIDATES = 256

@@ -22,31 +22,23 @@ from fastapi.testclient import TestClient
 
 class StubRegistry:
     def latest_released_for_contract(self, **contract: str) -> CleanerRelease:
-        assert contract == {
-            "test_stage": "FT",
-            "factory_code": "JIEQUN",
-            "format_code": "JIEQUN_FT_QUICK_PAT_EXISTING",
-            "cleaner_code": "JIEQUN_FT_QUICK_PAT_EXISTING",
-            "adapter_code": "JIEQUN_FT_QUICK_PAT_PYZ",
-            "input_contract_version": "JIEQUN_UNIFIED_CSV_DIRECTORY_V1",
-            "output_contract_version": "FT_PAT_RESULT_V1",
-        }
+        assert contract["test_stage"] in {"CP", "FT"}
         return CleanerRelease(
             21,
             8,
-            "FT",
-            "JIEQUN",
-            "JIEQUN_FT_QUICK_PAT_EXISTING",
+            contract["test_stage"],
+            contract["factory_code"],
+            contract["format_code"],
             "route-a-v1",
-            "JIEQUN_FT_QUICK_PAT_EXISTING",
+            contract["cleaner_code"],
             "v1",
             "0" * 64,
             "unused.pyz",
             "python.exe",
             "entrypoint",
-            "JIEQUN_FT_QUICK_PAT_PYZ",
-            "JIEQUN_UNIFIED_CSV_DIRECTORY_V1",
-            "FT_PAT_RESULT_V1",
+            contract["adapter_code"],
+            contract["input_contract_version"],
+            contract["output_contract_version"],
             None,
             3600,
             10_000_000,
@@ -251,6 +243,42 @@ def test_direct_path_api_previews_and_queues_personal_pat(tmp_path: Path) -> Non
     assert body["source_relative_path"] == str(source.resolve())
     assert body["status"] == "QUEUED"
     assert body["job_id"] == 1
+
+
+def test_direct_path_api_previews_and_queues_cp_factory_pat(tmp_path: Path) -> None:
+    source = tmp_path / "cp" / "JETECH_LOT"
+    source.mkdir(parents=True)
+    (source / "wafer.xlsx").write_bytes(b"xlsx-fixture")
+    app = create_app()
+    app.state.cleaner_registry = StubRegistry()
+    app.state.quick_analysis_service = InMemoryQuickAnalysisService()
+    client = TestClient(app)
+    tool_code = "JETECH_CP_QUICK_PAT_EXISTING"
+
+    preview = client.post(
+        "/api/v1/quick-analysis/direct-path/preview",
+        json={"path": str(source), "tool_code": tool_code},
+    )
+    assert preview.status_code == 200, preview.text
+    manifest = preview.json()
+    assert manifest["test_stage"] == "CP"
+    assert manifest["factory_code"] == "JETECH"
+    assert manifest["allowed_suffixes"] == [".xls", ".xlsx"]
+
+    created = client.post(
+        "/api/v1/quick-analysis/direct-path/pat",
+        json={
+            "path": str(source),
+            "tool_code": tool_code,
+            "source_manifest_mode": manifest["mode"],
+            "source_manifest_sha256": manifest["sha"],
+        },
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["test_stage"] == "CP"
+    assert body["factory_code"] == "JETECH"
+    assert body["access_scope"] == "PERSONAL"
 
 
 def test_direct_path_api_rejects_changed_preview(tmp_path: Path) -> None:

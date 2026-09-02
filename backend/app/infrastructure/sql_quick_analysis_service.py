@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from sqlalchemy import Engine, text
+from sqlalchemy.exc import DBAPIError
 
 from app.core.errors import DomainError
 from app.domain.auth import Principal
@@ -361,27 +363,34 @@ class SqlQuickAnalysisService:
             parameters["to_utc"] = _sql_utc(to_utc)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         scoped = " FROM (" + SESSION_SELECT + ") scoped"
-        with self._engine.connect() as connection:
-            total = int(
-                connection.execute(
-                    text("SELECT COUNT_BIG(*)" + scoped + where), parameters
-                ).scalar_one()
-            )
-            rows = (
-                connection.execute(
-                    text(
-                        "SELECT scoped.*"
-                        + scoped
-                        + where
-                        + " ORDER BY scoped.created_at_utc DESC,"
-                        "scoped.analysis_session_id DESC "
-                        "OFFSET :offset ROWS FETCH NEXT :page_size ROWS ONLY"
-                    ),
-                    parameters,
-                )
-                .mappings()
-                .all()
-            )
+        for attempt in range(3):
+            try:
+                with self._engine.connect() as connection:
+                    total = int(
+                        connection.execute(
+                            text("SELECT COUNT_BIG(*)" + scoped + where), parameters
+                        ).scalar_one()
+                    )
+                    rows = (
+                        connection.execute(
+                            text(
+                                "SELECT scoped.*"
+                                + scoped
+                                + where
+                                + " ORDER BY scoped.created_at_utc DESC,"
+                                "scoped.analysis_session_id DESC "
+                                "OFFSET :offset ROWS FETCH NEXT :page_size ROWS ONLY"
+                            ),
+                            parameters,
+                        )
+                        .mappings()
+                        .all()
+                    )
+                break
+            except DBAPIError as exc:
+                if attempt >= 2 or not _is_sql_server_deadlock(exc):
+                    raise
+                time.sleep(0.05 * (attempt + 1))
         return QuickAnalysisPage(
             items=tuple(_to_session(row) for row in rows),
             total=total,
@@ -701,3 +710,7 @@ class SqlQuickAnalysisService:
             int(row["file_size"]),
             str(row["sha256"]),
         )
+
+
+def _is_sql_server_deadlock(exc: DBAPIError) -> bool:
+    return "1205" in str(exc.orig) or "1205" in str(exc)

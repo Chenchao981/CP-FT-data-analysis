@@ -5,6 +5,10 @@ import subprocess
 from pathlib import Path
 
 from app.domain.cleaner_registry import CleanerRelease
+from app.infrastructure.existing_cleaner_runner import (
+    CleanerArtifact,
+    ExistingCleanerRunResult,
+)
 from app.infrastructure.quick_pat_runner import QuickPatRunner
 from app.infrastructure.source_catalog import SourceCatalog, SourceRoot
 from openpyxl import Workbook
@@ -93,3 +97,74 @@ def test_runner_invokes_released_package_and_builds_auditable_artifacts(
     }
     assert result.summary["parameters"][1]["parameter"] == "RDON"
     assert all(len(item.sha256) == 64 for item in result.artifacts)
+
+
+def test_runner_uses_cp_release_for_cleaning_and_package_owned_pat(tmp_path: Path) -> None:
+    package = tmp_path / "app.pyz"
+    runtime = tmp_path / "python.exe"
+    package.write_bytes(b"released-cp")
+    runtime.touch()
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "wafer.xlsx").write_bytes(b"source")
+    manifest_payload = (
+        '{"file_count":1,"files":[],"mode":"LOCAL_PATH_SIZE_MTIME_V1",'
+        '"source_label":"source","total_bytes":6}'
+    )
+    manifest_sha = hashlib.sha256(manifest_payload.encode("utf-8")).hexdigest()
+    output = tmp_path / "output"
+    release = CleanerRelease(
+        31, 9, "CP", "JETECH", "JETECH_CP_EXISTING", "route-a-v1",
+        "JETECH_CP_EXISTING", "v1", hashlib.sha256(package.read_bytes()).hexdigest(),
+        str(package), str(runtime), "cleaner + quick_pat", "JETECH_CP_PYZ",
+        "CP_EXCEL_OR_ZIP_V1", "CP_STANDARD_CSV_TRIPLET_V1", None, 30, 10_000_000,
+    )
+
+    class StubCleanerRunner:
+        def run_release(self, **kwargs):
+            assert kwargs["release"] == release
+            assert kwargs["inputs"] == (source.resolve(),)
+            intermediate = Path(kwargs["output_root"])
+            intermediate.mkdir(parents=True)
+            cleaned = intermediate / "LOT_cleaned_1.csv"
+            spec = intermediate / "LOT_spec_1.csv"
+            cleaned.write_text("Lot_ID,VTH\nLOT,1\n", encoding="utf-8")
+            spec.write_text("Parameter,Unit\nVTH,V\n", encoding="utf-8")
+            artifacts = (
+                CleanerArtifact("cleaned", str(cleaned), cleaned.stat().st_size, "a" * 64),
+                CleanerArtifact("spec", str(spec), spec.stat().st_size, "b" * 64),
+            )
+            return ExistingCleanerRunResult("CP", "jetech", str(intermediate), artifacts, "cleaned")
+
+    def fake_run(command, **kwargs):
+        assert command[:2] == [str(runtime), "-c"]
+        assert "generate_cleaned_csv_pat" in command[2]
+        report = output / "PAT_CP_20260902_120000.xlsx"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["CP PAT", "contract"])
+        sheet.append(["parameter", "count", "mean", "stddev"])
+        sheet.append(["VTH", 10, 4.1, 0.2])
+        workbook.save(report)
+        stdout = (
+            'TMS_CP_PAT_SUMMARY={"source_files":1,"record_count":10,'
+            '"parameter_count":1,"formula_contract":"AEC_Q101_MEDIAN_IQR_5SIGMA_VDMOS_V5_6",'
+            f'"report":"{report.as_posix()}"}}\n'
+        )
+        return subprocess.CompletedProcess(command, 0, stdout=stdout, stderr="")
+
+    result = QuickPatRunner(
+        process_runner=fake_run, cleaner_runner=StubCleanerRunner()
+    ).run_release(
+        release=release,
+        input_directory=source,
+        output_root=output,
+        source_manifest_json=manifest_payload,
+        source_manifest_sha256=manifest_sha,
+    )
+    assert result.parameter_count == 1
+    assert result.record_count == 10
+    assert result.summary["test_stage"] == "CP"
+    assert result.summary["factory_code"] == "JETECH"
+    assert not (output / "cp_cleaner_intermediate").exists()

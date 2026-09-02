@@ -55,7 +55,7 @@ class IdentityConnection:
         self,
         *,
         database: str = "TMS_G0_DEV",
-        revision: str = "sql2014_0024",
+        revision: str = "sql2014_0025",
         version: str = "12.0.6449.1",
         edition: int = 3,
         banner: str = "Microsoft SQL Server 2014",
@@ -251,14 +251,14 @@ def test_read_only_connection_blocks_before_database_execution() -> None:
 def test_identity_requires_exact_database_revision_and_sql_server() -> None:
     assert _identity(IdentityConnection()) == {
         "database": "TMS_G0_DEV",
-        "schema_revision": "sql2014_0024",
+        "schema_revision": "sql2014_0025",
         "database_engine": "Microsoft SQL Server",
         "product_major": 12,
         "engine_edition": 3,
     }
     with pytest.raises(VerificationError, match="TMS_G0_DEV"):
         _identity(IdentityConnection(database="TMS_PROD"))
-    with pytest.raises(VerificationError, match="sql2014_0024"):
+    with pytest.raises(VerificationError, match="sql2014_0025"):
         _identity(IdentityConnection(revision="sql2014_0018"))
     with pytest.raises(VerificationError, match="Microsoft SQL Server"):
         _identity(IdentityConnection(banner="PostgreSQL"))

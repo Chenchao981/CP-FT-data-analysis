@@ -37,7 +37,7 @@ def test_full_chain_verifier_has_exact_database_and_filesystem_cleanup_guards() 
     source = SCRIPT.read_text(encoding="utf-8")
 
     assert 'EXPECTED_DATABASE = "TMS_G0_DEV"' in source
-    assert 'EXPECTED_SCHEMA_REVISION = "sql2014_0024"' in source
+    assert 'EXPECTED_SCHEMA_REVISION = "sql2014_0025"' in source
     assert "INITIAL_IMPORT queue must be idle" in source
     assert "expected_owner_ids" in source
     assert "refused unsafe upload-root cleanup" in source

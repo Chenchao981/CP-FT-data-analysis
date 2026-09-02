@@ -41,9 +41,9 @@ def main() -> None:
                     text("SELECT version_num FROM alembic_version")
                 ).scalar_one()
             )
-            if database != "TMS_G0_DEV" or revision != "sql2014_0024":
+            if database != "TMS_G0_DEV" or revision != "sql2014_0025":
                 raise RuntimeError(
-                    f"expected TMS_G0_DEV/sql2014_0024, got {database}/{revision}"
+                    f"expected TMS_G0_DEV/sql2014_0025, got {database}/{revision}"
                 )
             owner_id = int(
                 connection.execute(
@@ -256,7 +256,7 @@ def main() -> None:
                 {
                     "verification": "PASS",
                     "database": "TMS_G0_DEV",
-                    "revision": "sql2014_0024",
+                    "revision": "sql2014_0025",
                     "dry_run_file_count": preview_item.discovered_file_count,
                     "stale_cleaning_recovery": "PASS",
                     "cleanup_status": result.cleanup_status,
