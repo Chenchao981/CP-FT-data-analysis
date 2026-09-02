@@ -39,6 +39,7 @@ import {
   type QuickAnalysisSession,
   type QuickSourceDirectory,
 } from "../../api/quickAnalysis";
+import { MetricStrip } from "../../components/MetricStrip";
 import {
   formatUtcDateTime,
   recentShanghaiDayRange,
@@ -168,8 +169,7 @@ export function QuickAnalysisWorkbench() {
       <div><Typography.Text type="secondary">快速计算 / 复用 CP 与 FT 个人工具</Typography.Text><Typography.Title level={2}>快速分析</Typography.Title><Typography.Text type="secondary">输入目录先预览，再选择工具计算；源文件无需通过浏览器逐个上传，快速结果不写入正式 Canonical 明细。</Typography.Text></div>
       <Button icon={<ReloadOutlined />} onClick={() => void Promise.all([roots.refetch(), directories.refetch(), manifest.refetch(), sessions.refetch()])}>刷新</Button>
     </div>
-    <Alert className="quick-analysis-alert" showIcon type="info" message="当前可运行：CP / FT 原始目录 → 厂商工具 PAT Excel" description="FT 直接复用杰群、日月新、日月光、电基和集佳工具的统一低内存 PAT；CP 先调用华虹、积塔、立昂微或国宇的已发布 Cleaner，再由同一 CP 工具包执行 PAT。系统只保存结果，不写入正式 Canonical，默认 7 天后过期。" />
-    <Row gutter={16} className="production-stats"><Col span={6}><Card><Statistic title="筛选结果" value={metrics.total} /></Card></Col><Col span={6}><Card><Statistic title="本页排队/计算" value={metrics.running} valueStyle={{ color: "#1677ff" }} /></Card></Col><Col span={6}><Card><Statistic title="本页已完成" value={metrics.success} valueStyle={{ color: "#3f8600" }} /></Card></Col><Col span={6}><Card><Statistic title="本页失败" value={metrics.failed} valueStyle={{ color: metrics.failed ? "#cf1322" : undefined }} /></Card></Col></Row>
+    <Alert className="compact-info-alert" showIcon type="info" message="源文件不上传、不写入正式 Canonical；结果默认保留 7 天。FT 五家共用统一 PAT，CP 调用各厂已发布 Cleaner。" />
     <Tabs
       defaultActiveKey="local"
       className="quick-source-tabs"
@@ -206,6 +206,12 @@ export function QuickAnalysisWorkbench() {
         },
       ]}
     />
+    <MetricStrip ariaLabel="快速分析任务状态" items={[
+      { label: "筛选结果", value: metrics.total },
+      { label: "排队 / 计算", value: metrics.running, tone: "primary" },
+      { label: "已完成", value: metrics.success, tone: "success" },
+      { label: "失败", value: metrics.failed, tone: metrics.failed ? "danger" : "default" },
+    ]} />
     <Card title="快速分析记录" className="production-table-card quick-session-card" extra={<Typography.Text type="secondary">个人结果仅本人；数据域结果仅当前有效成员</Typography.Text>}>
       <Space wrap style={{ marginBottom: 12 }}>
         <Typography.Text strong>状态</Typography.Text>

@@ -10,6 +10,7 @@ import {
   shanghaiLocalInputToUtc,
   utcToShanghaiLocalInput,
 } from "../../utils/dateTime";
+import { MetricStrip } from "../../components/MetricStrip";
 import { useAuth } from "../auth/AuthContext";
 import { factoryInputs, factoryNames, formalFactoryOptions, isFormalFactory } from "../capabilities/capabilityCatalog";
 import { LotEnrichmentModal } from "./LotEnrichmentModal";
@@ -99,6 +100,10 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
   const searchKey = (searchParams ?? localSearchParams).toString();
   const currentSearchParams = useMemo(() => new URLSearchParams(searchKey), [searchKey]);
   const filters = useMemo(() => stageFiltersFromSearch(currentSearchParams), [currentSearchParams]);
+  const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(() => Boolean(filters.upload_status || filters.from_utc || filters.to_utc));
+  useEffect(() => {
+    if (filters.upload_status || filters.from_utc || filters.to_utc) setAdvancedFiltersOpen(true);
+  }, [filters.from_utc, filters.to_utc, filters.upload_status]);
   const uploadPage = useMemo(() => ({
     page: positiveQueryInt(currentSearchParams, "upload_page", 1),
     pageSize: positiveQueryInt(currentSearchParams, "upload_page_size", 20, 100),
@@ -375,8 +380,14 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
   return <div className="workbench production-workbench">
     {contextHolder}
     <div className="page-heading"><div><Typography.Text type="secondary">{testStage} 统一数据入口</Typography.Text><Typography.Title level={2}>{testStage}数据</Typography.Title><Typography.Text type="secondary">{stageDescription[testStage]}</Typography.Text></div><Space><Button icon={<ReloadOutlined />} onClick={() => void refresh()}>刷新</Button>{can("TASK_CREATE") && <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => { setFiles([]); setInputMode("UPLOAD"); setSourceRootCode(undefined); setSourceRelativePath("."); setOpen(true); }}>上传数据</Button>}</Space></div>
-    <Alert showIcon type="info" className="review-alert" message={visibilityDescription[businessDomain].message} description={visibilityDescription[businessDomain].description} />
-    <Row gutter={[16, 16]} className="production-stats"><Col flex="1 1 170px"><Card><Statistic title="查询上传记录" value={metrics.total} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="当前页处理中" value={metrics.processing} valueStyle={{ color: "#1677ff" }} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="查询清洗结果" value={metrics.processed} valueStyle={{ color: "#3f8600" }} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="当前页待补录" value={metrics.needsInput} valueStyle={{ color: metrics.needsInput ? "#d46b08" : undefined }} /></Card></Col><Col flex="1 1 170px"><Card><Statistic title="当前页失败" value={metrics.failed} valueStyle={{ color: metrics.failed ? "#cf1322" : undefined }} /></Card></Col></Row>
+    <Alert showIcon type="info" className="compact-info-alert" message={visibilityDescription[businessDomain].message} description={visibilityDescription[businessDomain].description} />
+    <MetricStrip ariaLabel={`${testStage} 数据处理状态`} items={[
+      { label: "查询上传记录", value: metrics.total },
+      { label: "当前页处理中", value: metrics.processing, tone: "primary" },
+      { label: "查询清洗结果", value: metrics.processed, tone: "success" },
+      { label: "当前页待补录", value: metrics.needsInput, tone: metrics.needsInput ? "warning" : "default" },
+      { label: "当前页失败", value: metrics.failed, tone: metrics.failed ? "danger" : "default" },
+    ]} />
     <Card className="review-filter-card">
       <Form<StageFilterFormValues> form={filterForm} layout="vertical" onFinish={(values) => updateSearchParams((next) => {
         for (const key of stageFilterKeys) next.delete(key);
@@ -392,15 +403,20 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
         next.set("result_page", "1");
       })}>
         <Row gutter={[12, 0]}>
-          <Col xs={24} sm={12} lg={4}><Form.Item label={testStage === "CP" ? "晶圆厂" : "封测厂"} name="factory_code"><Select allowClear options={formalFactoryOptions[testStage]} /></Form.Item></Col>
-          <Col xs={24} sm={12} lg={4}><Form.Item label="上传状态" name="upload_status"><Select allowClear options={["RECEIVED", "QUEUED", "PROCESSING", "NEEDS_INPUT", "PROCESSED", "FAILED", "CANCELLED"].map((value) => ({ value, label: statusName[value] }))} /></Form.Item></Col>
-          <Col xs={24} sm={12} lg={4}><Form.Item label="结果状态" name="result_status"><Select allowClear options={["PROCESSED", "FAILED", "ARCHIVED"].map((value) => ({ value, label: statusName[value] }))} /></Form.Item></Col>
-          <Col xs={24} sm={12} lg={4}><Form.Item label="产品" name="product_name"><Input allowClear /></Form.Item></Col>
-          <Col xs={24} sm={12} lg={4}><Form.Item label="Lot" name="lot_id"><Input allowClear /></Form.Item></Col>
-          <Col xs={24} sm={12} lg={4}><Form.Item label="开始时间（上海，含）" name="from_local"><Input type="datetime-local" allowClear /></Form.Item></Col>
-          <Col xs={24} sm={12} lg={4}><Form.Item label="结束时间（上海，不含）" name="to_local"><Input type="datetime-local" allowClear /></Form.Item></Col>
-          <Col span={24}><Space><Button type="primary" htmlType="submit" icon={<FilterOutlined />}>服务端检索</Button><Button onClick={() => { filterForm.resetFields(); updateSearchParams((next) => { for (const key of stageFilterKeys) next.delete(key); next.set("upload_page", "1"); next.set("result_page", "1"); }); }}>清空</Button><Typography.Text type="secondary">结果由服务端按权限、筛选和页码返回，页面不加载全表。</Typography.Text></Space></Col>
+          <Col xs={24} sm={12} lg={6}><Form.Item label={testStage === "CP" ? "晶圆厂" : "封测厂"} name="factory_code"><Select allowClear options={formalFactoryOptions[testStage]} /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={6}><Form.Item label="产品" name="product_name"><Input allowClear /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={6}><Form.Item label="Lot" name="lot_id"><Input allowClear /></Form.Item></Col>
+          <Col xs={24} sm={12} lg={6}><Form.Item label="结果状态" name="result_status"><Select allowClear options={["PROCESSED", "FAILED", "ARCHIVED"].map((value) => ({ value, label: statusName[value] }))} /></Form.Item></Col>
         </Row>
+        <details className="advanced-filter-details" open={advancedFiltersOpen} onToggle={(event) => setAdvancedFiltersOpen(event.currentTarget.open)}>
+          <summary>更多筛选（上传状态、时间范围）</summary>
+          <Row gutter={[12, 0]}>
+            <Col xs={24} sm={12} lg={6}><Form.Item label="上传状态" name="upload_status"><Select allowClear options={["RECEIVED", "QUEUED", "PROCESSING", "NEEDS_INPUT", "PROCESSED", "FAILED", "CANCELLED"].map((value) => ({ value, label: statusName[value] }))} /></Form.Item></Col>
+            <Col xs={24} sm={12} lg={6}><Form.Item label="开始时间（上海，含）" name="from_local"><Input type="datetime-local" allowClear /></Form.Item></Col>
+            <Col xs={24} sm={12} lg={6}><Form.Item label="结束时间（上海，不含）" name="to_local"><Input type="datetime-local" allowClear /></Form.Item></Col>
+          </Row>
+        </details>
+        <Space wrap className="filter-actions"><Button type="primary" htmlType="submit" icon={<FilterOutlined />}>服务端检索</Button><Button onClick={() => { setAdvancedFiltersOpen(false); filterForm.resetFields(); updateSearchParams((next) => { for (const key of stageFilterKeys) next.delete(key); next.set("upload_page", "1"); next.set("result_page", "1"); }); }}>清空</Button><Typography.Text type="secondary">服务端按权限、筛选和页码返回，不加载全表。</Typography.Text></Space>
       </Form>
     </Card>
     {oldestQueueAge != null && <Alert type="info" showIcon message="队列等待观测（当前页）" description={`当前页最长已等待 ${oldestQueueAge} 秒。该值不代表 Worker 在线或离线；请由具备 AUDIT_READ 权限的人员在“运行一致性”查看后端运维观测。`} className="review-alert" />}

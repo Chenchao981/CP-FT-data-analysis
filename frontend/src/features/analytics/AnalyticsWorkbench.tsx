@@ -1,4 +1,4 @@
-import { ArrowLeftOutlined, ReloadOutlined } from "@ant-design/icons";
+import { ArrowLeftOutlined, DownOutlined, ReloadOutlined, UpOutlined } from "@ant-design/icons";
 import { useIsFetching, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, Card, Col, Empty, Row, Select, Space, Spin, Tabs, Tag, Typography } from "antd";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
@@ -79,6 +79,18 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
     .filter((item, index, items) => items.findIndex((candidate) => candidate.datasetId === item.datasetId) === index)
     .slice(0, 8), [datasets]);
   const viewState = parseAnalysisViewState(searchParams);
+  const advancedFilterCount = [
+    viewState.filters.binCodes,
+    viewState.filters.overallResults,
+    viewState.filters.sourceIds,
+    viewState.filters.testerIds,
+    viewState.filters.programVersions,
+    viewState.filters.testConditions,
+  ].filter((values) => values.length > 0).length;
+  const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(advancedFilterCount > 0);
+  useEffect(() => {
+    if (advancedFilterCount > 0) setAdvancedFiltersOpen(true);
+  }, [advancedFilterCount]);
   const requestedFocusKey = searchParams.get("detail_dataset");
   const focusDataset = selectedDatasets.find((item) => datasetKey(item) === requestedFocusKey) ?? selectedDatasets[0];
   const featureQuery = useQuery({
@@ -303,7 +315,7 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
       </Space>
     </div>
 
-    <Card className="analytics-filter-card" title="统一分析 Context">
+    <Card className="analytics-filter-card" title="分析范围" extra={<Typography.Text type="secondary">所有筛选共享同一服务端 Context</Typography.Text>}>
       <Row gutter={[12, 12]}>
         <Col xs={24} sm={12} lg={8} xl={6}>
           <Typography.Text strong>当前 Dataset</Typography.Text>
@@ -311,30 +323,37 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
         </Col>
         {multiFilter("Lot", "Lot 筛选", "lotIds", viewState.filters.lotIds, options?.lot_ids, "全部 Lot", 50)}
         {multiFilter("Wafer", "Wafer 筛选", "waferIds", viewState.filters.waferIds, options?.wafer_ids, "全部 Wafer", 100)}
-        {multiFilter("Bin", "Bin 筛选", "binCodes", viewState.filters.binCodes, options?.bin_codes, "全部 Bin", 50)}
-        <Col xs={24} sm={12} lg={8} xl={6}>
-          <Typography.Text strong>Overall Result</Typography.Text>
-          <Select
-            aria-label="Overall Result 筛选"
-            mode="multiple"
-            allowClear
-            maxCount={4}
-            value={[...viewState.filters.overallResults]}
-            options={ANALYSIS_OVERALL_RESULTS.map((value) => ({ label: value, value }))}
-            onChange={(values) => updateFilter("overallResults", values as AnalyticsOverallResult[])}
-            className="full-width"
-            placeholder="全部结果"
-          />
-        </Col>
-        {multiFilter("Source", "Source 筛选", "sourceIds", viewState.filters.sourceIds, options?.source_ids, "全部 Source", 50)}
-        {multiFilter("Tester", "Tester 筛选", "testerIds", viewState.filters.testerIds, options?.tester_ids, "全部 Tester", 50)}
-        {multiFilter("Program", "Program 筛选", "programVersions", viewState.filters.programVersions, options?.program_versions, "全部 Program", 50)}
-        {multiFilter("Test Condition", "Test Condition 筛选", "testConditions", viewState.filters.testConditions, options?.test_conditions, "全部 Condition", 50)}
         {multiFilter("参数（最多 20 个）", "参数筛选", "parameters", viewState.filters.parameters, options?.parameters, "选择参数", 20)}
       </Row>
-      <Space wrap style={{ marginTop: 12 }}>
+      {advancedFiltersOpen && <div className="analytics-advanced-filters">
+        <Row gutter={[12, 12]}>
+          {multiFilter("Bin", "Bin 筛选", "binCodes", viewState.filters.binCodes, options?.bin_codes, "全部 Bin", 50)}
+          <Col xs={24} sm={12} lg={8} xl={6}>
+            <Typography.Text strong>Overall Result</Typography.Text>
+            <Select
+              aria-label="Overall Result 筛选"
+              mode="multiple"
+              allowClear
+              maxCount={4}
+              value={[...viewState.filters.overallResults]}
+              options={ANALYSIS_OVERALL_RESULTS.map((value) => ({ label: value, value }))}
+              onChange={(values) => updateFilter("overallResults", values as AnalyticsOverallResult[])}
+              className="full-width"
+              placeholder="全部结果"
+            />
+          </Col>
+          {multiFilter("Source", "Source 筛选", "sourceIds", viewState.filters.sourceIds, options?.source_ids, "全部 Source", 50)}
+          {multiFilter("Tester", "Tester 筛选", "testerIds", viewState.filters.testerIds, options?.tester_ids, "全部 Tester", 50)}
+          {multiFilter("Program", "Program 筛选", "programVersions", viewState.filters.programVersions, options?.program_versions, "全部 Program", 50)}
+          {multiFilter("Test Condition", "Test Condition 筛选", "testConditions", viewState.filters.testConditions, options?.test_conditions, "全部 Condition", 50)}
+        </Row>
+      </div>}
+      <Space wrap className="analytics-filter-actions">
+        <Button aria-expanded={advancedFiltersOpen} icon={advancedFiltersOpen ? <UpOutlined /> : <DownOutlined />} onClick={() => setAdvancedFiltersOpen((open) => !open)}>
+          更多筛选{advancedFilterCount ? `（已启用 ${advancedFilterCount} 类）` : ""}
+        </Button>
         <Button onClick={clearFilters}>清空筛选</Button>
-        <Typography.Text type="secondary">Lot / Wafer / Bin / Result / Source / Tester / Program / Condition / Parameter 始终作为一个请求 Context，不使用首项替代多选。</Typography.Text>
+        <Typography.Text type="secondary">多选条件始终完整传入，不使用首项替代。</Typography.Text>
       </Space>
     </Card>
 

@@ -1,15 +1,13 @@
 import {
   ArrowRightOutlined,
   CloudServerOutlined,
-  DatabaseOutlined,
   ExperimentOutlined,
   RadarChartOutlined,
-  SafetyCertificateOutlined,
   ThunderboltOutlined,
   UserOutlined,
 } from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
-import { Alert, Button, Card, Col, Empty, Row, Select, Space, Spin, Statistic, Table, Tabs, Tag, Typography } from "antd";
+import { Alert, Button, Card, Col, Empty, Row, Select, Space, Spin, Table, Tabs, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { EChartsOption } from "echarts";
 import { useEffect, useMemo, useState } from "react";
@@ -22,6 +20,7 @@ import {
 } from "../../api/management";
 import { listQuickAnalysisSessions, type QuickAnalysisSession } from "../../api/quickAnalysis";
 import { EChart } from "../../components/EChart";
+import { MetricStrip } from "../../components/MetricStrip";
 import { formatShanghaiDate, formatUtcDateTime } from "../../utils/dateTime";
 
 export interface PersonalDashboardProps {
@@ -38,14 +37,14 @@ const count = (value: number | null | undefined) => value == null ? "—" : valu
 
 function SummaryView({ data, scope }: { data: QualityManagementSummary; scope: DashboardScope }) {
   const trendOption = useMemo<EChartsOption>(() => ({
-    color: ["#42d7c5", "#5a9cff", "#786cff"],
-    tooltip: { trigger: "axis", backgroundColor: "rgba(8,22,43,.94)", borderColor: "#294865", textStyle: { color: "#eef8ff" } },
-    legend: { data: ["已知良率", "UNKNOWN 占比", "总单元"], textStyle: { color: "#91abc0" }, right: 4 },
+    color: ["#1677ff", "#d46b08", "#91a4b7"],
+    tooltip: { trigger: "axis" },
+    legend: { data: ["已知良率", "UNKNOWN 占比", "总单元"], textStyle: { color: "#5c6b78" }, right: 4 },
     grid: { left: 58, right: 64, top: 58, bottom: 44 },
-    xAxis: { type: "category", data: data.trends.map((item) => formatShanghaiDate(item.period_start_utc)), axisLine: { lineStyle: { color: "#29445c" } }, axisLabel: { color: "#7894aa", rotate: 25 } },
+    xAxis: { type: "category", data: data.trends.map((item) => formatShanghaiDate(item.period_start_utc)), axisLine: { lineStyle: { color: "#d9e2ea" } }, axisLabel: { color: "#667786", rotate: 25 } },
     yAxis: [
-      { type: "value", min: 0, max: 100, axisLabel: { color: "#7894aa", formatter: "{value}%" }, splitLine: { lineStyle: { color: "rgba(91,126,151,.16)" } } },
-      { type: "value", min: 0, axisLabel: { color: "#7894aa" }, splitLine: { show: false } },
+      { type: "value", min: 0, max: 100, axisLabel: { color: "#667786", formatter: "{value}%" }, splitLine: { lineStyle: { color: "#edf1f5" } } },
+      { type: "value", min: 0, axisLabel: { color: "#667786" }, splitLine: { show: false } },
     ],
     series: [
       { name: "已知良率", type: "line", connectNulls: false, smooth: true, data: data.trends.map((item) => item.yield_rate == null ? null : Number((item.yield_rate * 100).toFixed(4))) },
@@ -68,30 +67,30 @@ function SummaryView({ data, scope }: { data: QualityManagementSummary; scope: D
   }
 
   return <div className="dashboard-summary">
-    <Row gutter={[16, 16]} className="dashboard-kpis">
-      <Col xs={24} sm={12} xl={6}><Card className="cockpit-card"><Statistic title="当前正式数据集" value={count(data.kpis.dataset_count)} prefix={<DatabaseOutlined />} /></Card></Col>
-      <Col xs={24} sm={12} xl={6}><Card className="cockpit-card"><Statistic title="单元数" value={count(data.kpis.total_units)} prefix={<ThunderboltOutlined />} /></Card></Col>
-      <Col xs={24} sm={12} xl={6}><Card className="cockpit-card"><Statistic title="已知良率 PASS/(PASS+FAIL)" value={percent(data.kpis.yield_rate)} prefix={<SafetyCertificateOutlined />} /></Card></Col>
-      <Col xs={24} sm={12} xl={6}><Card className="cockpit-card"><Statistic title="UNKNOWN 占比" value={percent(data.kpis.unknown_rate)} prefix={<RadarChartOutlined />} /></Card></Col>
-    </Row>
+    <MetricStrip ariaLabel="近30天正式数据指标" items={[
+      { label: "当前正式数据集", value: count(data.kpis.dataset_count) },
+      { label: "单元数", value: count(data.kpis.total_units) },
+      { label: "已知良率", value: percent(data.kpis.yield_rate), tone: "success", note: "PASS / (PASS + FAIL)" },
+      { label: "UNKNOWN 占比", value: percent(data.kpis.unknown_rate), tone: data.kpis.unknown_rate ? "warning" : "default" },
+    ]} />
     <Row gutter={[16, 16]}>
       <Col xs={24} xl={15}>
-        <Card className="cockpit-card chart-panel" title="近30天趋势" extra={<Tag>{scope === "PERSONAL" ? "仅本人" : "仅当前数据域"}</Tag>}>
+        <Card className="dashboard-panel chart-panel" title="近30天良率与数据覆盖趋势" extra={<Tag>{scope === "PERSONAL" ? "仅本人" : "仅当前数据域"}</Tag>}>
           <EChart option={trendOption} className="dashboard-trend-chart" ariaLabel={`${scope === "PERSONAL" ? "我的数据" : "数据域"}近30天已知良率与单元趋势`} />
         </Card>
       </Col>
       <Col xs={24} xl={9}>
-        <Card className="cockpit-card" title="统计口径">
+        <Card className="dashboard-panel" title="需要关注">
           <Space direction="vertical" size="middle">
             <Typography.Text>产品 {count(data.kpis.product_count)} 个，Lot {count(data.kpis.lot_count)} 个</Typography.Text>
             <Typography.Text>PASS {count(data.kpis.pass_units)} / FAIL {count(data.kpis.fail_units)} / UNKNOWN {count(data.kpis.unknown_units)}</Typography.Text>
-            <Typography.Text>失败 Job：{count(data.kpis.failed_job_count)}</Typography.Text>
+            <Typography.Text type={data.kpis.failed_job_count ? "danger" : undefined}>失败 Job：{count(data.kpis.failed_job_count)}</Typography.Text>
             <Typography.Text type="secondary">只统计已发布且当前生效的正式数据；未知 PASS/FAIL 不补零。</Typography.Text>
           </Space>
         </Card>
       </Col>
     </Row>
-    <Card className="cockpit-card" title="最近正式数据集">
+    <Card className="dashboard-panel" title="最近正式数据集">
       <Table rowKey={(row) => `${row.dataset_id}-${row.version_no}`} columns={columns} dataSource={data.recent_datasets} pagination={false} size="small" scroll={{ x: 850 }} />
     </Card>
   </div>;
@@ -161,32 +160,28 @@ export function PersonalDashboard({
             : summary.data ? <SummaryView data={summary.data} scope={scope} /> : null;
 
   return <div className="personal-dashboard workbench">
-    <section className="dashboard-hero">
-      <div className="dashboard-hero-copy">
-        <Space size={8} wrap><Tag color="cyan">TMS DATA COCKPIT</Tag><Tag>实时权限口径</Tag></Space>
-        <Typography.Title level={1}>你好，{userName}</Typography.Title>
-        <p className="dashboard-hero-description">个人数据只属于本人；数据域数据只在有效授权范围内统计，两种口径不混合。</p>
-        <Space wrap>
-          <Button type="primary" size="large" icon={<RadarChartOutlined />} disabled={!canOpenQuality} onClick={() => onNavigate("/management/quality")}>进入质量总览</Button>
-          <Button ghost size="large" onClick={() => onNavigate("/datasets/current")}>查看正式数据 <ArrowRightOutlined /></Button>
-        </Space>
+    <div className="page-heading dashboard-page-heading">
+      <div>
+        <Typography.Text type="secondary">个人工作台 · 近30天</Typography.Text>
+        <Typography.Title level={2}>个人驾驶舱</Typography.Title>
+        <Typography.Text type="secondary">{userName} · 仅展示当前权限范围内可执行、可追溯的数据。</Typography.Text>
       </div>
-      <div className="dashboard-wafer" aria-label="TMS 数据权限范围">
-        <div className="wafer-orbit orbit-one" /><div className="wafer-orbit orbit-two" />
-        <div className="wafer-core"><span>权限</span><small>DATA SCOPE</small></div>
-      </div>
-    </section>
+      <Space wrap>
+        <Button type="primary" icon={<RadarChartOutlined />} disabled={!canOpenQuality} onClick={() => onNavigate("/management/quality")}>进入质量总览</Button>
+        <Button onClick={() => onNavigate("/datasets/current")}>查看正式数据 <ArrowRightOutlined /></Button>
+      </Space>
+    </div>
 
-    <Card className="cockpit-card" title="我可见的正式数据" extra={<Typography.Text type="secondary">近30天 · 按正式发布时间</Typography.Text>}>
+    <Card className="dashboard-panel dashboard-main-panel" title="我可见的正式数据" extra={<Typography.Text type="secondary">近30天 · 按正式发布时间</Typography.Text>}>
       <Tabs activeKey={scope} onChange={(key) => setScope(key as DashboardScope)} items={[
-        { key: "PERSONAL", label: <span><UserOutlined /> 我的数据</span>, children: <Alert type="info" showIcon message="只统计归属于当前登录人的个人数据；即使启用紧急数据访问，也不会混入他人数据。" /> },
+        { key: "PERSONAL", label: <span><UserOutlined /> 我的数据</span>, children: <Typography.Text type="secondary">只统计归属于当前登录人的个人数据，不混入他人数据。</Typography.Text> },
         { key: "DOMAIN", label: <span><CloudServerOutlined /> 数据域</span>, children: <Space wrap><Select aria-label="选择数据域" loading={domains.isPending} placeholder="选择已授权数据域" value={dataDomainId} onChange={setDataDomainId} style={{ minWidth: 280 }} options={(domains.data ?? []).map((item: DataDomain) => ({ value: item.data_domain_id, label: `${item.domain_name} (${item.test_stage})` }))} />{selectedDomain && <><Tag color="blue">{selectedDomain.test_stage}</Tag>{selectedDomain.factory_code && <Tag>{selectedDomain.factory_code}</Tag>}</>}</Space> },
       ]} />
       {scopeContent}
     </Card>
 
-    {canRunQuickAnalysis && <Card className="cockpit-card" title="我的 Quick" extra={<Button type="link" onClick={() => onNavigate("/quick-analysis")}>查看全部 <ArrowRightOutlined /></Button>}>
-      <Alert type="info" showIcon message="这里只显示本人 PERSONAL 快速分析；数据域 Quick 不混入个人看板。" style={{ marginBottom: 12 }} />
+    {canRunQuickAnalysis && <Card className="dashboard-panel" title="我的快速分析" extra={<Button type="link" onClick={() => onNavigate("/quick-analysis")}>查看全部 <ArrowRightOutlined /></Button>}>
+      <Typography.Paragraph type="secondary">仅显示本人快速分析；数据域任务不混入个人驾驶舱。</Typography.Paragraph>
       {personalQuick.isPending
         ? <div className="page-loading"><Spin /></div>
         : personalQuick.isError
@@ -196,7 +191,7 @@ export function PersonalDashboard({
             : <Table rowKey="analysis_session_id" columns={quickColumns} dataSource={personalQuickItems} pagination={false} size="small" scroll={{ x: 670 }} />}
     </Card>}
 
-    <Card className="cockpit-card quick-entry-panel" title="数据入口">
+    <Card className="dashboard-panel quick-entry-panel" title="常用入口">
       <Row gutter={[8, 8]}>
         {[
           ["/cp", "CP 数据", "统一 Wafer 清洗与分析", <ExperimentOutlined />],

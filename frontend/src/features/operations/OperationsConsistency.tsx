@@ -1,10 +1,11 @@
-import { PauseCircleOutlined, PlayCircleOutlined, ReloadOutlined, SafetyCertificateOutlined } from "@ant-design/icons";
+import { PauseCircleOutlined, PlayCircleOutlined, ReloadOutlined } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Alert, Button, Card, Col, Descriptions, Empty, Popconfirm, Row, Space, Spin, Statistic, Table, Tag, Typography, message } from "antd";
+import { Alert, Button, Card, Descriptions, Empty, Popconfirm, Space, Spin, Table, Tag, Typography, message } from "antd";
 import type { ColumnsType } from "antd/es/table";
 
 import { drainWorker, getOperationsConsistency, getWorkerFleetHealth, OperationalStatusCount, RecentFailedJob, resumeWorker, type WorkerHealth } from "../../api/operations";
 import { formatUtcDateTime } from "../../utils/dateTime";
+import { MetricStrip } from "../../components/MetricStrip";
 import { useAuth } from "../auth/AuthContext";
 
 const jobStatusName: Record<string, string> = {
@@ -144,42 +145,16 @@ export function OperationsConsistency() {
           : data.management_message}
       />
 
-      <Card title="运行身份（动态后端摘要）" className="review-filter-card">
-        <Descriptions bordered size="small" column={{ xs: 1, sm: 2, lg: 3 }}>
-          <Descriptions.Item label="API">{data ? <Tag color="success">已响应</Tag> : "—"}</Descriptions.Item>
-          <Descriptions.Item label="运行环境">{data.environment || "未提供"}</Descriptions.Item>
-          <Descriptions.Item label="数据库名称">{data.database_name || "未提供"}</Descriptions.Item>
-          <Descriptions.Item label="数据库服务身份">{data.database_server || "未提供"}</Descriptions.Item>
-          <Descriptions.Item label="数据库连接">{data.database_ready ? "已连接" : "未连接"}</Descriptions.Item>
-          <Descriptions.Item label="Schema Revision">{data.schema_revision || "未知"}</Descriptions.Item>
-        </Descriptions>
-      </Card>
-
-      <Row gutter={[16, 16]} className="production-stats">
-        <Col xs={24} sm={12} lg={6}><Card><Statistic title="数据库连接" value={data.database_ready ? "已连接" : "未连接"} valueStyle={{ color: data.database_ready ? "#3f8600" : "#cf1322" }} prefix={<SafetyCertificateOutlined />} /></Card></Col>
-        <Col xs={24} sm={12} lg={6}><Card><Statistic title="Schema Revision" value={data.schema_revision || "未知"} /></Card></Col>
-        <Col xs={24} sm={12} lg={6}><Card><Statistic title="0015 原子发布结构" value={data.atomic_schema_ready ? "已就绪" : "需要升级"} valueStyle={{ color: data.atomic_schema_ready ? "#3f8600" : "#d46b08" }} /></Card></Col>
-        <Col xs={24} sm={12} lg={6}><Card><Statistic title="当前原子入库任务" value={data.active_atomic_initial_import_count == null ? "待 0015 升级" : data.active_atomic_initial_import_count} /></Card></Col>
-        <Col xs={24} sm={12} lg={6}><Card><Statistic title="入库/Job/Intent 异常" value={issueValue(data.issue_counts.batch_job_intent)} valueStyle={{ color: data.issue_counts.batch_job_intent ? "#cf1322" : undefined }} /></Card></Col>
-        <Col xs={24} sm={12} lg={6}><Card><Statistic title="Dataset Current 异常" value={issueValue(data.issue_counts.dataset_current)} valueStyle={{ color: data.issue_counts.dataset_current ? "#cf1322" : undefined }} /></Card></Col>
-        <Col xs={24} sm={12} lg={6}><Card><Statistic title="一致性异常合计" value={schemaUpgradeRequired ? "待 0015 升级" : issueTotal} valueStyle={{ color: issueTotal ? "#cf1322" : undefined }} /></Card></Col>
-        <Col xs={24} sm={12} lg={6}><Card><Statistic title="Dataset Current 中 UNKNOWN 单元" value={data.current_unknown_result_count} valueStyle={{ color: data.current_unknown_result_count ? "#d46b08" : undefined }} /></Card></Col>
-      </Row>
-
-      <Row gutter={[16, 16]} style={{ marginBottom: 18 }}>
-        <Col xs={24} lg={12}>
-          <Card title="Job 状态">
-            <StatusCounts counts={data.job_status_counts} names={jobStatusName} />
-          </Card>
-        </Col>
-        <Col xs={24} lg={12}>
-          <Card title="原子发布 Intent 状态">
-            {data.intent_status_counts
-              ? <StatusCounts counts={data.intent_status_counts} names={intentStatusName} />
-              : <Typography.Text type="warning">待完成 0015 数据库升级后提供。</Typography.Text>}
-          </Card>
-        </Col>
-      </Row>
+      <MetricStrip ariaLabel="发布链路状态" items={[
+        { label: "数据库连接", value: data.database_ready ? "已连接" : "未连接", tone: data.database_ready ? "success" : "danger" },
+        { label: "Schema", value: data.schema_revision || "未知" },
+        { label: "原子发布结构", value: data.atomic_schema_ready ? "已就绪" : "需要升级", tone: data.atomic_schema_ready ? "success" : "warning" },
+        { label: "当前原子入库", value: data.active_atomic_initial_import_count == null ? "待升级" : data.active_atomic_initial_import_count },
+        { label: "入库链路异常", value: issueValue(data.issue_counts.batch_job_intent), tone: data.issue_counts.batch_job_intent ? "danger" : "default" },
+        { label: "Current 异常", value: issueValue(data.issue_counts.dataset_current), tone: data.issue_counts.dataset_current ? "danger" : "default" },
+        { label: "异常合计", value: schemaUpgradeRequired ? "待升级" : issueTotal, tone: issueTotal ? "danger" : "success" },
+        { label: "UNKNOWN 单元", value: data.current_unknown_result_count, tone: data.current_unknown_result_count ? "warning" : "default" },
+      ]} />
 
       <Card title="最近失败任务（脱敏）" extra={<Typography.Text type="secondary">快照时间：{formatUtcDateTime(data.observed_at_utc)}</Typography.Text>} className="production-table-card">
         <Table
@@ -192,6 +167,23 @@ export function OperationsConsistency() {
           locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="最近没有失败任务" /> }}
         />
       </Card>
+      <details className="operational-detail-panel">
+        <summary>运行身份与状态分布</summary>
+        <Descriptions bordered size="small" column={{ xs: 1, sm: 2, lg: 3 }}>
+          <Descriptions.Item label="API">{data ? <Tag color="success">已响应</Tag> : "—"}</Descriptions.Item>
+          <Descriptions.Item label="运行环境">{data.environment || "未提供"}</Descriptions.Item>
+          <Descriptions.Item label="数据库名称">{data.database_name || "未提供"}</Descriptions.Item>
+          <Descriptions.Item label="数据库服务身份">{data.database_server || "未提供"}</Descriptions.Item>
+          <Descriptions.Item label="数据库连接">{data.database_ready ? "已连接" : "未连接"}</Descriptions.Item>
+          <Descriptions.Item label="Schema Revision">{data.schema_revision || "未知"}</Descriptions.Item>
+        </Descriptions>
+        <div className="status-count-grid">
+          <section><Typography.Text strong>Job 状态</Typography.Text><StatusCounts counts={data.job_status_counts} names={jobStatusName} /></section>
+          <section><Typography.Text strong>原子发布 Intent 状态</Typography.Text>{data.intent_status_counts
+            ? <StatusCounts counts={data.intent_status_counts} names={intentStatusName} />
+            : <Typography.Text type="warning">待完成 0015 数据库升级后提供。</Typography.Text>}</section>
+        </div>
+      </details>
     </> : null}
 
     <div className="page-heading" style={{ marginTop: 28 }}>
@@ -202,16 +194,16 @@ export function OperationsConsistency() {
       <Alert showIcon type="error" message="Worker 运维摘要加载失败" description="本页不展示底层数据库、主机或连接详情；请稍后刷新或联系系统管理员。" />
     ) : fleet ? <>
       {fleet.alert_codes.length > 0 && <Alert type="warning" showIcon message="Worker 运维告警" description={<Space wrap>{fleet.alert_codes.map((code) => <Tag color="warning" key={code}>{code}</Tag>)}</Space>} className="review-alert" />}
-      <Row gutter={[16, 16]} className="production-stats">
-        <Col xs={24} sm={12} lg={6}><Card><Statistic title="活动 Worker" value={fleet.active_worker_count} /></Card></Col>
-        <Col xs={24} sm={12} lg={6}><Card><Statistic title="READY" value={fleet.ready_worker_count} valueStyle={{ color: fleet.ready_worker_count ? "#3f8600" : undefined }} /></Card></Col>
-        <Col xs={24} sm={12} lg={6}><Card><Statistic title="DRAINING" value={fleet.draining_worker_count} valueStyle={{ color: fleet.draining_worker_count ? "#d46b08" : undefined }} /></Card></Col>
-        <Col xs={24} sm={12} lg={6}><Card><Statistic title="STALE" value={fleet.stale_worker_count} valueStyle={{ color: fleet.stale_worker_count ? "#cf1322" : undefined }} /></Card></Col>
-        <Col xs={24} sm={12} lg={6}><Card><Statistic title="FAILED Worker" value={fleet.failed_worker_count} valueStyle={{ color: fleet.failed_worker_count ? "#cf1322" : undefined }} /></Card></Col>
-        <Col xs={24} sm={12} lg={6}><Card><Statistic title="排队 Job" value={fleet.queued_job_count} /></Card></Col>
-        <Col xs={24} sm={12} lg={6}><Card><Statistic title="最早排队等待" value={fleet.oldest_queued_seconds == null ? "—" : `${fleet.oldest_queued_seconds} 秒`} /></Card></Col>
-        <Col xs={24} sm={12} lg={6}><Card><Statistic title="最后心跳" value={formatUtcDateTime(fleet.last_heartbeat_at_utc)} /></Card></Col>
-      </Row>
+      <MetricStrip ariaLabel="Worker 与队列状态" items={[
+        { label: "活动 Worker", value: fleet.active_worker_count },
+        { label: "READY", value: fleet.ready_worker_count, tone: fleet.ready_worker_count ? "success" : "default" },
+        { label: "DRAINING", value: fleet.draining_worker_count, tone: fleet.draining_worker_count ? "warning" : "default" },
+        { label: "STALE", value: fleet.stale_worker_count, tone: fleet.stale_worker_count ? "danger" : "default" },
+        { label: "FAILED", value: fleet.failed_worker_count, tone: fleet.failed_worker_count ? "danger" : "default" },
+        { label: "排队 Job", value: fleet.queued_job_count, tone: fleet.queued_job_count ? "warning" : "default" },
+        { label: "最早等待", value: fleet.oldest_queued_seconds == null ? "—" : `${fleet.oldest_queued_seconds} 秒` },
+        { label: "最后心跳", value: formatUtcDateTime(fleet.last_heartbeat_at_utc) },
+      ]} />
       <Typography.Paragraph type="secondary">快照：{formatUtcDateTime(fleet.observed_at_utc)}；STALE 阈值：{fleet.stale_after_seconds} 秒。Drain/Resume 只改变后端期望状态，实际 READY/心跳状态仍以 Worker 后续上报为准。</Typography.Paragraph>
       <Card className="production-table-card">
         <Table rowKey="worker_id" columns={workerColumns} dataSource={fleet.workers} pagination={false} scroll={{ x: canOperateWorkers ? 1600 : 1400 }} locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无活动Worker" /> }} />

@@ -175,18 +175,18 @@ describe("StageDataWorkbench Lot input states", () => {
     expect(screen.getAllByRole("button", { name: /补录批次号/ })).toHaveLength(1);
     expect(screen.getAllByText("Job #1").length).toBeGreaterThan(0);
     expect(screen.getAllByRole("button", { name: /失败详情/ })).toHaveLength(1);
-    const cards = [
+    const metrics = [
       ["查询上传记录", "6"],
       ["当前页处理中", "1"],
       ["查询清洗结果", "2"],
       ["当前页待补录", "1"],
       ["当前页失败", "1"],
     ] as const;
-    for (const [title, value] of cards) {
-      const titleNode = screen.getAllByText(title).find((node) => node.classList.contains("ant-statistic-title"));
-      const card = (titleNode?.closest(".ant-card") ?? null) as HTMLElement | null;
-      expect(card).not.toBeNull();
-      expect(within(card!).getByText(value)).toBeInTheDocument();
+    for (const [title, value] of metrics) {
+      const titleNode = screen.getByText(title, { selector: ".metric-strip-label" });
+      const metric = titleNode.closest("[role='listitem']") as HTMLElement | null;
+      expect(metric).not.toBeNull();
+      expect(within(metric!).getByText(value)).toBeInTheDocument();
     }
   }, 30_000);
 
@@ -514,7 +514,7 @@ describe("StageDataWorkbench Lot input states", () => {
       cleaner_release: {
         cleaner_release_id: 29,
         cleaner_code: "DIANJI_FT_PYZ",
-        cleaner_version: "v2.19.0",
+        cleaner_version: "v2.20.0",
       },
     });
     const onOpenJob = vi.fn();
@@ -532,7 +532,7 @@ describe("StageDataWorkbench Lot input states", () => {
     fireEvent.click(factorySelector!);
     fireEvent.click(await screen.findByText("电基", { selector: ".ant-select-item-option-content" }));
 
-    expect(await within(dialog).findByText(/v2\.19\.0.*PowerTECH/)).toBeInTheDocument();
+    expect(await within(dialog).findByText(/v2\.20\.0.*PowerTECH/)).toBeInTheDocument();
     const fileInput = dialog.querySelector('input[type="file"]');
     expect(fileInput).not.toBeNull();
     expect(fileInput).toHaveAttribute("accept", ".xls,.xlsx");

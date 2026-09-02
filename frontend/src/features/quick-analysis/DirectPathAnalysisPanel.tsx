@@ -37,13 +37,12 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
 
   return <>
     {contextHolder}
-    <Alert
-      showIcon
-      type="info"
-      message="直接输入当前电脑可访问的目录"
-      description="开发环境的 TMS 后端就在本机，可直接读取 F:\\ 等本地目录；NAS 若已映射盘符或当前 Windows 账号可访问 UNC 路径，也可直接填写。无需上传 520 个源文件。"
-      style={{ marginBottom: 16 }}
-    />
+      <Alert
+        showIcon
+        type="info"
+        className="compact-info-alert"
+        message="可直接读取当前服务器可访问的本地盘、映射盘或 UNC 目录，无需上传源文件。"
+      />
     <Card title={<Space><FolderOpenOutlined />目录与分析工具</Space>}>
       <Space direction="vertical" size={12} style={{ width: "100%" }}>
         <Space.Compact style={{ width: "100%" }}>

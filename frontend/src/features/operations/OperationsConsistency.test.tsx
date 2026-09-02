@@ -163,9 +163,9 @@ describe("OperationsConsistency", () => {
     expect(screen.getAllByText("TMS_PROD").length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText("SQL-PRIMARY")).toBeInTheDocument();
 
-    const unknownTitle = screen.getByText("Dataset Current 中 UNKNOWN 单元");
-    const unknownCard = unknownTitle.closest(".ant-card") as HTMLElement;
-    expect(within(unknownCard).getByText("13")).toBeInTheDocument();
+    const unknownTitle = screen.getByText("UNKNOWN 单元");
+    const unknownMetric = unknownTitle.closest("[role='listitem']") as HTMLElement;
+    expect(within(unknownMetric).getByText("13")).toBeInTheDocument();
     expect(screen.queryByText(/password|source_path|error_message|login_name/i)).not.toBeInTheDocument();
     expect(await screen.findByText("WORKER_STALE")).toBeInTheDocument();
     expect(screen.getByText("route-a-01")).toBeInTheDocument();
@@ -189,7 +189,7 @@ describe("OperationsConsistency", () => {
 
     expect(await screen.findByText("数据库结构升级未完成（SCHEMA_UPGRADE_REQUIRED）")).toBeInTheDocument();
     expect(screen.getByText(/需要先完成 0015 数据库升级后/)).toBeInTheDocument();
-    expect(screen.getAllByText("待 0015 升级").length).toBeGreaterThanOrEqual(3);
+    expect(screen.getAllByText(/待升级|待 0015 升级/).length).toBeGreaterThanOrEqual(3);
     expect(screen.getByText("待完成 0015 数据库升级后提供。")).toBeInTheDocument();
   });
 

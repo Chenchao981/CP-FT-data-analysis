@@ -114,7 +114,8 @@ describe("PersonalDashboard data scopes", () => {
 
     renderDashboard();
 
-    expect(screen.getByText("你好，测试员")).toBeInTheDocument();
+    expect(screen.getByText("个人驾驶舱")).toBeInTheDocument();
+    expect(screen.getByText(/测试员 · 仅展示当前权限范围/)).toBeInTheDocument();
     expect(screen.queryByText(/Demo|演示数据/)).not.toBeInTheDocument();
     expect(screen.getByText(/归属于当前登录人/)).toBeInTheDocument();
     await waitFor(() => expect(getQualityManagementSummary).toHaveBeenCalledWith(expect.objectContaining({
