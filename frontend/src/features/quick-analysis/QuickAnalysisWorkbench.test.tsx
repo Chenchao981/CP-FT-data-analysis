@@ -24,6 +24,10 @@ vi.mock("./TemporaryFtpPanel", () => ({
   TemporaryFtpPanel: () => <div>temporary-ftp-panel</div>,
 }));
 
+vi.mock("../../components/EChart", () => ({
+  EChart: ({ ariaLabel }: { ariaLabel?: string }) => <div role="img" aria-label={ariaLabel} />,
+}));
+
 vi.mock("../../api/quickAnalysis", () => ({
   createQuickPat: vi.fn(),
   downloadQuickPat: vi.fn(),
@@ -77,7 +81,10 @@ const completed: QuickAnalysisSession = {
   job_status: "SUCCESS",
   parameter_count: 18,
   record_count: 6813800,
-  summary: { elapsed_seconds: 97.927 },
+  summary: {
+    elapsed_seconds: 97.927,
+    parameters: [{ parameter: "VTH", count: 6813800, q1: 3.9, median: 4.1, q3: 4.3, lcl_after: 2.8, ucl_after: 5.4, updated: true }],
+  },
   result_file_name: "PAT.xlsx",
   result_size_bytes: 2048,
   error_code: null,
@@ -182,5 +189,15 @@ describe("QuickAnalysisWorkbench", () => {
     fireEvent.click(button);
     expect(await screen.findByText("PAT 下载失败")).toBeInTheDocument();
     expect(document.body).toHaveTextContent("结果可能已过期或已清理");
+  }, 15_000);
+
+  it("expands a completed PAT session into the shared result chart and table", async () => {
+    renderWorkbench();
+    const expand = await screen.findByRole("button", { name: "Expand row" });
+    fireEvent.click(expand);
+    expect(await screen.findByRole("img", { name: "PAT 分析结果图表" })).toBeInTheDocument();
+    expect(screen.getByText("FT · JIEQUN · PAT分析结果")).toBeInTheDocument();
+    expect(screen.getAllByText("VTH").length).toBeGreaterThan(0);
+    expect(screen.getByText("2.8 / 5.4")).toBeInTheDocument();
   }, 15_000);
 });

@@ -47,6 +47,7 @@ import {
 } from "../../utils/dateTime";
 import { DirectPathAnalysisPanel } from "./DirectPathAnalysisPanel";
 import { TemporaryFtpPanel } from "./TemporaryFtpPanel";
+import { PatResultView } from "../analytics/PatResultView";
 
 const statusColor: Record<string, string> = {
   QUEUED: "gold",
@@ -269,6 +270,24 @@ export function QuickAnalysisWorkbench() {
         onChange={(pagination) => {
           setSessionPage(pagination.current ?? 1);
           setSessionPageSize(pagination.pageSize ?? 20);
+        }}
+        expandable={{
+          rowExpandable: (row) => row.status === "SUCCESS" && Boolean(row.summary?.parameters?.length),
+          expandedRowRender: (row) => <PatResultView
+            title={`${row.test_stage} · ${row.factory_code} · PAT分析结果`}
+            labelTitle="测试参数"
+            rows={(row.summary?.parameters ?? []).map((item) => ({
+              key: item.parameter,
+              label: item.parameter,
+              count: item.count,
+              q1: item.q1,
+              median: item.median,
+              q3: item.q3,
+              lowerLimit: item.lcl_after ?? item.lcl_calculated,
+              upperLimit: item.ucl_after ?? item.ucl_calculated,
+              status: item.updated === true || item.updated === "YES" ? "UPDATED" : "OK",
+            }))}
+          />,
         }}
       />
     </Card>

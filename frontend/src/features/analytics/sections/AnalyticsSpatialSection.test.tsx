@@ -107,6 +107,10 @@ async function selectValue(label: string, value: string) {
   fireEvent.click(await screen.findByTitle(value));
 }
 
+function openAdvancedRuleSettings() {
+  fireEvent.click(screen.getByRole("button", { name: /高级设置：查看或调试规则版本/ }));
+}
+
 describe("AnalyticsSpatialSection", () => {
   beforeEach(() => { vi.mocked(analyzeSpatial).mockResolvedValue(heatmap); });
   afterEach(() => { cleanup(); vi.clearAllMocks(); });
@@ -212,6 +216,7 @@ describe("AnalyticsSpatialSection", () => {
     vi.mocked(analyzeSpatial).mockRejectedValueOnce(new ApiError(409, { code: "ANALYSIS_RULE_NOT_APPROVED", message: "zone comparison requires an approved and active rule", retryable: false, recommended_action: "activate the approved rule" }, "request failed"));
     renderSpatial();
     await selectValue("Spatial Mode", "Zone Comparison");
+    openAdvancedRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Spatial Rule Code" }), { target: { value: "cp_wafer_zone" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Spatial Rule Version" }), { target: { value: "1.0.0" } });
     fireEvent.click(screen.getByRole("button", { name: "执行 Spatial 分析" }));
@@ -225,6 +230,7 @@ describe("AnalyticsSpatialSection", () => {
     vi.mocked(analyzeSpatial).mockResolvedValue(zoneResult);
     const { onOpenDrilldown } = renderSpatial();
     await selectValue("Spatial Mode", "Zone Comparison");
+    openAdvancedRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Spatial Rule Code" }), { target: { value: "cp_wafer_zone" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Spatial Rule Version" }), { target: { value: "1.0.0" } });
     fireEvent.click(screen.getByRole("button", { name: "执行 Spatial 分析" }));
@@ -250,6 +256,7 @@ describe("AnalyticsSpatialSection", () => {
     vi.mocked(analyzeSpatial).mockResolvedValue({ ...zoneResult, zone_geometry: null, points: zoneResult.points.map((point) => ({ ...point, zone: null })) });
     renderSpatial();
     await selectValue("Spatial Mode", "Zone Comparison");
+    openAdvancedRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Spatial Rule Code" }), { target: { value: "CP_WAFER_ZONE" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Spatial Rule Version" }), { target: { value: "1.0.0" } });
     fireEvent.click(screen.getByRole("button", { name: "执行 Spatial 分析" }));

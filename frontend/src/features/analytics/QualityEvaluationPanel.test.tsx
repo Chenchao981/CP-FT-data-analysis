@@ -59,19 +59,21 @@ async function select(label: string, option: string) {
 }
 
 describe("QualityEvaluationPanel", () => {
+  const openRuleSettings = () => fireEvent.click(screen.getByRole("button", { name: /高级设置：查看或调试规则版本/ }));
   beforeEach(() => { vi.mocked(evaluateQuality).mockResolvedValue(spcResult); });
   afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
   it("has no default rule or method and renders the server zero-approval gate", async () => {
     vi.mocked(evaluateQuality).mockRejectedValueOnce(new ApiError(409, { code: "ANALYSIS_RULE_NOT_APPROVED", message: "requested rule is not approved", retryable: false, recommended_action: "approve and activate exact version" }, "failed"));
     renderPanel();
-    expect(screen.getByText("当前 Context 未声明已批准 Quality Rule")).toBeInTheDocument();
+    expect(screen.getByText("当前数据还没有可自动使用的分析规则")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /执行 Quality 分析/ })).toBeDisabled();
     expect(evaluateQuality).not.toHaveBeenCalled();
 
     await select("Quality 方法", "PAT Robust IQR");
     await select("Quality Group By", "LOT");
     await select("Quality 参数", "VTH");
+    openRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Quality Rule Code" }), { target: { value: "CP_PAT" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Quality Rule Version" }), { target: { value: "V1" } });
     fireEvent.click(screen.getByRole("button", { name: /执行 Quality 分析/ }));
@@ -88,6 +90,7 @@ describe("QualityEvaluationPanel", () => {
     await select("Quality 方法", "SPC I-MR");
     await select("Quality Group By", "WAFER");
     await select("Quality 参数", "VTH");
+    openRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Quality Rule Code" }), { target: { value: "CP_SPC" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Quality Rule Version" }), { target: { value: "V1" } });
     expect(screen.getByRole("button", { name: /执行 Quality 分析/ })).toBeDisabled();
@@ -114,6 +117,7 @@ describe("QualityEvaluationPanel", () => {
     await select("Quality 方法", "Bin Co-occurrence");
     await select("Quality Group By", "DATASET");
     await select("Quality Bin Type", "CP_BIN");
+    openRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Quality Rule Code" }), { target: { value: "CP_BIN_COOCCURRENCE" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Quality Rule Version" }), { target: { value: "V1" } });
     fireEvent.click(screen.getByRole("button", { name: /执行 Quality 分析/ }));
@@ -132,6 +136,7 @@ describe("QualityEvaluationPanel", () => {
     renderPanel();
     await select("Quality 方法", "SYL Grouped Limit");
     await select("Quality Group By", "LOT");
+    openRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Quality Rule Code" }), { target: { value: "FT_SYL" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Quality Rule Version" }), { target: { value: "V1" } });
     fireEvent.click(screen.getByRole("button", { name: /执行 Quality 分析/ }));
@@ -153,6 +158,7 @@ describe("QualityEvaluationPanel", () => {
     await select("Quality 方法", "Pass / Fail Distribution");
     await select("Quality Group By", "LOT");
     await select("Quality 参数", "VTH");
+    openRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Quality Rule Code" }), { target: { value: "FT_PF_DIST" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Quality Rule Version" }), { target: { value: "V1" } });
     fireEvent.click(screen.getByRole("button", { name: /执行 Quality 分析/ }));
@@ -192,6 +198,7 @@ describe("QualityEvaluationPanel", () => {
     await select("Quality 方法", "Spec Margin / OOS");
     await select("Quality Group By", "LOT");
     await select("Quality 参数", "VTH");
+    openRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Quality Rule Code" }), { target: { value: "CP_MARGIN" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Quality Rule Version" }), { target: { value: "V1" } });
     fireEvent.click(screen.getByRole("button", { name: /执行 Quality 分析/ }));

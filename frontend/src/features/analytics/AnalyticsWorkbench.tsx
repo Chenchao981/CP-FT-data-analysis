@@ -1,6 +1,6 @@
 import { ArrowLeftOutlined, DownOutlined, ReloadOutlined, UpOutlined } from "@ant-design/icons";
 import { useIsFetching, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Alert, Button, Card, Col, Empty, Row, Select, Space, Spin, Tabs, Tag, Typography } from "antd";
+import { Alert, Button, Card, Col, Collapse, Empty, Row, Select, Space, Spin, Tabs, Tag, Typography } from "antd";
 import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
 
 import {
@@ -25,6 +25,7 @@ import {
   type AnalysisViewState,
 } from "./context/analysisViewState";
 import type { AnalysisComponentState } from "./context/analysisViewConfig";
+import { applyContextRuleDefaults } from "./context/analysisRuleDefaults";
 import { savedAnalysisRestoreParams } from "./savedAnalysisRestore";
 import type { AnalyticsAggregateDrilldown } from "./sections/sectionTypes";
 
@@ -53,14 +54,17 @@ const selectOptions = (selected: readonly string[], available: readonly string[]
   .sort(compareOrdinal)
   .map((value) => ({ label: value, value }));
 
-const SECTION_TABS: Array<{ key: AnalysisSection; label: string }> = [
-  { key: "overview", label: "Overview" },
-  { key: "detail", label: "Detail" },
-  { key: "parameter", label: "Parameter" },
-  { key: "spatial", label: "Spatial" },
-  { key: "quality", label: "Quality" },
-  { key: "delivery", label: "Delivery" },
+type AnalysisGroup = "summary" | "parameter" | "spatial" | "quality" | "report";
+
+const ANALYSIS_GROUPS: Array<{ key: AnalysisGroup; label: string; description: string; primarySection: AnalysisSection; sections: AnalysisSection[] }> = [
+  { key: "summary", label: "分析总览", description: "良率、Bin、帕累托和风险摘要", primarySection: "overview", sections: ["overview"] },
+  { key: "parameter", label: "参数图表", description: "分布、箱线、散点、趋势和能力", primarySection: "parameter", sections: ["parameter"] },
+  { key: "spatial", label: "晶圆空间", description: "Wafer Map、热力、叠加和区域", primarySection: "spatial", sections: ["spatial"] },
+  { key: "quality", label: "质量管控", description: "PAT、SPC、裕度、SBL和SYL", primarySection: "quality", sections: ["quality"] },
+  { key: "report", label: "报告与数据", description: "明细、晶圆汇总、保存和导出", primarySection: "delivery", sections: ["detail", "delivery"] },
 ];
+
+const groupForSection = (section: AnalysisSection): AnalysisGroup => ANALYSIS_GROUPS.find((item) => item.sections.includes(section))?.key ?? "summary";
 
 const SECTION_FEATURES: Record<AnalysisSection, AnalyticsFeatureGroupCode> = {
   overview: "OVERVIEW",
@@ -170,6 +174,22 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
     ...viewState,
     analysis: { ...viewState.analysis, [key]: { ...viewState.analysis[key], ...patch } } as AnalysisComponentState,
   });
+  const declaredRuleVersions = contextQuery.data?.rule_context.evaluation_rule_versions ?? [];
+  const declaredRuleSignature = declaredRuleVersions.join("|");
+  const analysisSignature = JSON.stringify(viewState.analysis);
+  useEffect(() => {
+    if (!declaredRuleVersions.length) return;
+    const nextAnalysis = applyContextRuleDefaults(viewState.analysis, declaredRuleVersions);
+    if (nextAnalysis === viewState.analysis) return;
+    emitState({ ...viewState, analysis: nextAnalysis });
+  // Signatures intentionally prevent a URL-state object from retriggering an equivalent default application.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analysisSignature, declaredRuleSignature]);
+  const resolvedStage = contextQuery.data?.dataset_context.test_stage;
+  useEffect(() => {
+    if (resolvedStage === "FT" && viewState.display.section === "spatial") updateSection("overview");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resolvedStage, viewState.display.section]);
   const openAggregateDrilldown = (target: AnalyticsAggregateDrilldown) => {
     const filters = target.filters;
     emitState({
@@ -240,7 +260,7 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
     overviewError: contextQuery.error,
   };
   const parameterOptions = selectOptions(viewState.filters.parameters, options?.parameters).map((item) => item.value);
-  const activeSection = viewState.display.section;
+  const activeSection = resolvedStage === "FT" && viewState.display.section === "spatial" ? "overview" : viewState.display.section;
   const activeFeature = featureFor(SECTION_FEATURES[activeSection]);
   const sectionContent = activeFeature?.enabled === false
     ? <Alert type="warning" showIcon message={`${activeFeature.code} 分析已被发布开关关闭`} description={activeFeature.message ?? activeFeature.reason_code ?? "ANALYSIS_FEATURE_DISABLED"} />
@@ -270,14 +290,19 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
           : activeSection === "quality"
             ? <QualitySection {...sectionContext} onOpenDrilldown={openDrilldown} config={viewState.analysis.quality} onConfigChange={(patch) => updateAnalysisComponent("quality", patch)} />
             : <DeliverySection {...sectionContext} page={viewState.display.page} pageSize={viewState.display.pageSize} viewState={viewState} onPaginationChange={updatePagination} onRestoreSavedAnalysis={restoreSavedAnalysis} onWaferSummaryConfigChange={(patch) => updateAnalysisComponent("waferSummary", patch)} onOpenAggregateDrilldown={openAggregateDrilldown} />;
-  const sectionTabs = SECTION_TABS.map((item) => {
-    const feature = featureFor(SECTION_FEATURES[item.key]);
+  const activeGroup = groupForSection(activeSection);
+  const groupTabs = ANALYSIS_GROUPS.filter((item) => item.key !== "spatial" || resolvedStage === "CP").map((item) => {
+    const disabled = item.sections.every((section) => featureFor(SECTION_FEATURES[section])?.enabled === false);
     return {
       ...item,
-      disabled: feature?.enabled === false,
-      label: feature?.enabled === false ? `${item.label}（已关闭）` : item.label,
+      disabled,
+      label: disabled ? `${item.label}（已关闭）` : item.label,
     };
   });
+  const updateGroup = (group: AnalysisGroup) => {
+    const item = ANALYSIS_GROUPS.find((candidate) => candidate.key === group)!;
+    updateSection(group === "report" && item.sections.includes(activeSection) ? activeSection : item.primarySection);
+  };
 
   const multiFilter = (
     label: string,
@@ -305,7 +330,7 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
   return <div className="workbench analytics-workbench">
     <div className="page-heading">
       <div>
-        <Typography.Text type="secondary">ANALYTICS_CONTEXT_V1 · 服务端权威结果</Typography.Text>
+        <Typography.Text type="secondary">清洗结果 · 服务端统一分析</Typography.Text>
         <Typography.Title level={2}>{contextQuery.data?.dataset_context.test_stage === "FT" ? "FT 数据分析" : contextQuery.data?.dataset_context.test_stage === "CP" ? "CP 数据分析" : "正式数据分析"}</Typography.Title>
         <Space wrap>{selectedDatasets.map((item) => <Tag color="blue" key={datasetKey(item)}>{datasetLabel(item)}</Tag>)}</Space>
       </div>
@@ -315,21 +340,21 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
       </Space>
     </div>
 
-    <Card className="analytics-filter-card" title="分析范围" extra={<Typography.Text type="secondary">所有筛选共享同一服务端 Context</Typography.Text>}>
+    <Card className="analytics-filter-card" title="分析范围" extra={<Typography.Text type="secondary">切换图表时自动沿用当前范围</Typography.Text>}>
       <Row gutter={[12, 12]}>
         <Col xs={24} sm={12} lg={8} xl={6}>
-          <Typography.Text strong>当前 Dataset</Typography.Text>
+          <Typography.Text strong>当前数据集</Typography.Text>
           <Select aria-label="当前 Dataset" value={datasetKey(focusDataset)} options={selectedDatasets.map((item) => ({ label: datasetLabel(item), value: datasetKey(item) }))} onChange={updateFocus} className="full-width" />
         </Col>
-        {multiFilter("Lot", "Lot 筛选", "lotIds", viewState.filters.lotIds, options?.lot_ids, "全部 Lot", 50)}
-        {multiFilter("Wafer", "Wafer 筛选", "waferIds", viewState.filters.waferIds, options?.wafer_ids, "全部 Wafer", 100)}
-        {multiFilter("参数（最多 20 个）", "参数筛选", "parameters", viewState.filters.parameters, options?.parameters, "选择参数", 20)}
+        {multiFilter("批次号", "Lot 筛选", "lotIds", viewState.filters.lotIds, options?.lot_ids, "全部批次", 50)}
+        {multiFilter("晶圆", "Wafer 筛选", "waferIds", viewState.filters.waferIds, options?.wafer_ids, "全部晶圆", 100)}
+        {multiFilter("测试参数（最多 20 个）", "参数筛选", "parameters", viewState.filters.parameters, options?.parameters, "选择参数", 20)}
       </Row>
       {advancedFiltersOpen && <div className="analytics-advanced-filters">
         <Row gutter={[12, 12]}>
-          {multiFilter("Bin", "Bin 筛选", "binCodes", viewState.filters.binCodes, options?.bin_codes, "全部 Bin", 50)}
+          {multiFilter("Bin 编码", "Bin 筛选", "binCodes", viewState.filters.binCodes, options?.bin_codes, "全部 Bin", 50)}
           <Col xs={24} sm={12} lg={8} xl={6}>
-            <Typography.Text strong>Overall Result</Typography.Text>
+            <Typography.Text strong>测试结果</Typography.Text>
             <Select
               aria-label="Overall Result 筛选"
               mode="multiple"
@@ -342,10 +367,10 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
               placeholder="全部结果"
             />
           </Col>
-          {multiFilter("Source", "Source 筛选", "sourceIds", viewState.filters.sourceIds, options?.source_ids, "全部 Source", 50)}
-          {multiFilter("Tester", "Tester 筛选", "testerIds", viewState.filters.testerIds, options?.tester_ids, "全部 Tester", 50)}
-          {multiFilter("Program", "Program 筛选", "programVersions", viewState.filters.programVersions, options?.program_versions, "全部 Program", 50)}
-          {multiFilter("Test Condition", "Test Condition 筛选", "testConditions", viewState.filters.testConditions, options?.test_conditions, "全部 Condition", 50)}
+          {multiFilter("数据源", "Source 筛选", "sourceIds", viewState.filters.sourceIds, options?.source_ids, "全部数据源", 50)}
+          {multiFilter("测试机", "Tester 筛选", "testerIds", viewState.filters.testerIds, options?.tester_ids, "全部测试机", 50)}
+          {multiFilter("程序版本", "Program 筛选", "programVersions", viewState.filters.programVersions, options?.program_versions, "全部程序", 50)}
+          {multiFilter("测试条件", "Test Condition 筛选", "testConditions", viewState.filters.testConditions, options?.test_conditions, "全部条件", 50)}
         </Row>
       </div>}
       <Space wrap className="analytics-filter-actions">
@@ -353,7 +378,7 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
           更多筛选{advancedFilterCount ? `（已启用 ${advancedFilterCount} 类）` : ""}
         </Button>
         <Button onClick={clearFilters}>清空筛选</Button>
-        <Typography.Text type="secondary">多选条件始终完整传入，不使用首项替代。</Typography.Text>
+        <Typography.Text type="secondary">所有图表、表格和导出使用同一分析范围。</Typography.Text>
       </Space>
     </Card>
 
@@ -361,19 +386,39 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
     {overviewQuery.isError && viewState.display.section === "overview" && <Alert type="error" showIcon message="Overview 加载失败" description={overviewQuery.error.message} className="review-alert" />}
     {featureQuery.isError && <Alert type="error" showIcon message="分析开关加载失败" description={featureQuery.error.message} className="review-alert" />}
     {viewState.warnings.map((warning) => <Alert key={warning} type="warning" showIcon message="分析视图配置已安全降级" description={warning} className="review-alert" />)}
-    {contextQuery.data && <Card size="small" className="production-table-card">
-      <Space wrap>
+    {contextQuery.data && <Collapse className="analytics-technical-details" items={[{
+      key: "technical",
+      label: "高级信息（数据版本、规则和计算范围）",
+      children: <Space wrap>
         <Tag>合同 {contextQuery.data.contract_version}</Tag>
         <Tag>Context {contextQuery.data.filter_summary.context_hash.slice(0, 12)}…</Tag>
         <Tag>Filter {contextQuery.data.filter_summary.filter_hash.slice(0, 12)}…</Tag>
         <Tag>纳入 / 排除 {contextQuery.data.counts.included_units} / {contextQuery.data.counts.excluded_units}</Tag>
-        <Tag color={contextQuery.data.dataset_context.current_published_verified ? "success" : "error"}>Current+PUBLISHED {contextQuery.data.dataset_context.current_published_verified ? "已验证" : "未验证"}</Tag>
+        <Tag color={contextQuery.data.dataset_context.current_published_verified ? "success" : "error"}>当前正式版本 {contextQuery.data.dataset_context.current_published_verified ? "已验证" : "未验证"}</Tag>
         {contextQuery.data.sampling_summary.sampled && <Tag color="warning">已采样 {contextQuery.data.sampling_summary.returned_points} / {contextQuery.data.sampling_summary.original_points}</Tag>}
-      </Space>
-    </Card>}
+        {declaredRuleVersions.map((rule) => <Tag color="purple" key={rule}>{rule}</Tag>)}
+      </Space>,
+    }]} />}
 
-    <Card className="production-table-card">
-      <Tabs activeKey={activeSection} onChange={(key) => updateSection(key as AnalysisSection)} items={sectionTabs} />
+    <Card className="production-table-card analytics-result-card">
+      <Tabs
+        className="analytics-primary-tabs"
+        activeKey={activeGroup}
+        onChange={(key) => updateGroup(key as AnalysisGroup)}
+        items={groupTabs.map((item) => ({ key: item.key, label: item.label, disabled: item.disabled }))}
+      />
+      <Typography.Paragraph type="secondary" className="analytics-group-description">
+        {ANALYSIS_GROUPS.find((item) => item.key === activeGroup)?.description}
+      </Typography.Paragraph>
+      {activeGroup === "report" && <Tabs
+        size="small"
+        activeKey={activeSection}
+        onChange={(key) => updateSection(key as AnalysisSection)}
+        items={[
+          { key: "detail", label: "数据明细", disabled: featureFor("DETAIL")?.enabled === false },
+          { key: "delivery", label: "汇总、保存与导出", disabled: featureFor("DELIVERY")?.enabled === false },
+        ]}
+      />}
       <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}>{sectionContent}</Suspense>
     </Card>
 

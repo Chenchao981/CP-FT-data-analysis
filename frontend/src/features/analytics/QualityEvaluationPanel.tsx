@@ -1,6 +1,6 @@
 import { PlayCircleOutlined } from "@ant-design/icons";
 import { useMutation } from "@tanstack/react-query";
-import { Alert, Button, Card, Col, Descriptions, Empty, Row, Select, Space, Statistic, Table, Tag, Typography, Input } from "antd";
+import { Alert, Button, Card, Col, Collapse, Descriptions, Empty, Row, Select, Space, Statistic, Table, Tag, Typography, Input } from "antd";
 import type { EChartsCoreOption } from "echarts/core";
 import { useMemo, useState } from "react";
 
@@ -16,6 +16,7 @@ import {
   type QualityMarginPoint,
 } from "../../api/qualityEvaluation";
 import { EChart, type EChartEventMap } from "../../components/EChart";
+import { PatResultView } from "./PatResultView";
 import { drilldownKeyFromChartEvent } from "./chartDrilldown";
 import { ANALYSIS_COMPONENT_DEFAULTS, type QualityAnalysisViewConfig } from "./context/analysisViewConfig";
 import {
@@ -203,23 +204,35 @@ export function QualityEvaluationPanel({ context, overview, overviewError, onOpe
 
   if (overviewError) return <Alert type="error" showIcon message="Quality Context 加载失败" description={overviewError.message} />;
   return <Space direction="vertical" size="large" style={{ width: "100%" }}>
-    <Card title="Quality Evaluation（批准规则 / 显式执行）">
+    <Card title="质量管控分析">
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-        <Alert type="info" showIcon message="前端不计算 Quality 算法" description="PAT / SPC / Margin / Bin / SBL / SYL / Pass-Fail Distribution 均由服务端按精确批准 Rule 执行；没有批准并激活的版本时必须失败关闭。" />
-        {noDeclaredRules && <Alert type="warning" showIcon message="当前 Context 未声明已批准 Quality Rule" description="规则字段保持空白且无默认值。显式执行后，服务端零审批环境会返回 ANALYSIS_RULE_NOT_APPROVED；输入一个名称不会使规则变成已批准。" />}
+        <Alert type="info" showIcon message="选择方法和分析范围后开始计算" description="PAT、SPC、裕度、Bin、SBL和SYL均调用服务器中已确认的规则，页面只负责展示结果。" />
+        {noDeclaredRules && <Alert type="warning" showIcon message="当前数据还没有可自动使用的分析规则" description="请联系管理员在质量管理中配置并启用对应规则，然后返回本页刷新。" />}
         <Row gutter={[12, 12]}>
           <Col xs={24} sm={12} lg={8}><Typography.Text strong>方法</Typography.Text><Select aria-label="Quality 方法" allowClear value={analysis} onChange={changeAnalysis} options={analysisOptions} placeholder="显式选择方法" className="full-width" /></Col>
           <Col xs={24} sm={12} lg={8}><Typography.Text strong>Group By</Typography.Text><Select aria-label="Quality Group By" allowClear value={groupBy} onChange={(value) => onConfigChange({ groupBy: value ?? null })} options={groupOptions.map((item) => ({ ...item, disabled: (needsBin || analysis === "SYL_GROUPED_LIMIT") && item.value === "CONDITION" }))} placeholder="显式选择分组" className="full-width" /></Col>
           {needsParameter && <Col xs={24} sm={12} lg={8}><Typography.Text strong>精确参数</Typography.Text><Select aria-label="Quality 参数" allowClear showSearch value={parameter} onChange={(value) => onConfigChange({ parameter: value ?? "" })} options={parameterOptions} placeholder="恰好选择一个参数" className="full-width" /></Col>}
-          <Col xs={24} sm={12} lg={8}><Typography.Text strong>Rule Code</Typography.Text><Input aria-label="Quality Rule Code" value={ruleCode} onChange={(event) => onConfigChange({ rule: { ...config.rule, ruleCode: event.target.value.toUpperCase() } })} placeholder="不提供默认规则" maxLength={128} /></Col>
-          <Col xs={24} sm={12} lg={8}><Typography.Text strong>Rule Version</Typography.Text><Input aria-label="Quality Rule Version" value={ruleVersion} onChange={(event) => onConfigChange({ rule: { ...config.rule, versionCode: event.target.value } })} placeholder="精确版本" maxLength={64} /></Col>
           {analysis === "SPC_I_MR" && <>
             <Col xs={24} sm={12} lg={8}><Typography.Text strong>Order</Typography.Text><Select aria-label="SPC Order" allowClear value={spcOrder} onChange={(value) => onConfigChange({ spcOrder: value ?? null })} options={[{ label: "UNIT_SEQUENCE", value: "UNIT_SEQUENCE" }]} placeholder="显式选择" className="full-width" /></Col>
             <Col xs={24} sm={12} lg={8}><Typography.Text strong>Phase</Typography.Text><Select aria-label="SPC Phase" allowClear value={spcPhase} onChange={(value) => onConfigChange({ spcPhase: value ?? null })} options={[{ label: "PHASE_I_BASELINE", value: "PHASE_I_BASELINE" }]} placeholder="显式选择" className="full-width" /></Col>
           </>}
           {needsBin && <Col xs={24} sm={12} lg={8}><Typography.Text strong>Bin Type</Typography.Text><Select aria-label="Quality Bin Type" allowClear value={binType} onChange={(value) => onConfigChange({ binType: value ?? null })} options={binOptions.map((item) => ({ ...item, disabled: analysis === "SBL_GROUPED_LIMIT" && item.value === "ALL_MAPPED_FAILURE" }))} placeholder="显式选择物理 Bin" className="full-width" /></Col>}
         </Row>
-        <Space wrap><Button type="primary" icon={<PlayCircleOutlined />} disabled={!inputValid} loading={mutation.isPending} onClick={run}>执行 Quality 分析</Button><Typography.Text type="secondary">所有筛选仍来自统一 Context；Quality 参数是该方法的唯一参数身份。</Typography.Text></Space>
+        {analysis && <Alert
+          type={ruleCodePattern.test(ruleCode) && versionPattern.test(ruleVersion) ? "success" : "warning"}
+          showIcon
+          message={ruleCode && ruleVersion ? `当前分析规则：${ruleCode}@${ruleVersion}` : "没有找到唯一可用规则"}
+          description={ruleCode && ruleVersion ? "执行时服务器仍会核对该规则是否在当前厂家、产品和参数范围有效。" : "管理员启用规则后刷新即可，普通用户不需要填写规则编号。"}
+        />}
+        <Collapse size="small" items={[{
+          key: "rule",
+          label: "高级设置：查看或调试规则版本",
+          children: <Row gutter={[12, 12]}>
+            <Col xs={24} sm={12}><Typography.Text strong>规则编号</Typography.Text><Input aria-label="Quality Rule Code" value={ruleCode} onChange={(event) => onConfigChange({ rule: { ...config.rule, ruleCode: event.target.value.toUpperCase() } })} placeholder="系统自动匹配" maxLength={128} /></Col>
+            <Col xs={24} sm={12}><Typography.Text strong>规则版本</Typography.Text><Input aria-label="Quality Rule Version" value={ruleVersion} onChange={(event) => onConfigChange({ rule: { ...config.rule, versionCode: event.target.value } })} placeholder="系统自动匹配" maxLength={64} /></Col>
+          </Row>,
+        }]} />
+        <Space wrap><Button type="primary" aria-label="执行 Quality 分析" icon={<PlayCircleOutlined />} disabled={!inputValid} loading={mutation.isPending} onClick={run}>开始质量分析</Button><Typography.Text type="secondary">使用页面顶部选定的批次、晶圆、参数和测试条件。</Typography.Text></Space>
         {stale && <Alert type="warning" showIcon message="输入已改变，旧 Quality 结果已隐藏" description="请重新显式执行；前端不会把旧规则/旧分组结果套到新 Context。" />}
         {approvalGate && <Alert type="error" showIcon message="Quality Rule 未批准或未激活" description={<Space direction="vertical"><Typography.Text>错误码：ANALYSIS_RULE_NOT_APPROVED</Typography.Text><Typography.Text>{apiError?.message}</Typography.Text>{apiError?.recommendedAction && <Typography.Text>建议：{apiError.recommendedAction}</Typography.Text>}</Space>} />}
         {mutation.isError && !approvalGate && <Alert type="error" showIcon message="Quality 分析失败" description={<Space direction="vertical"><Typography.Text>{mutation.error.message}</Typography.Text>{apiError?.code && <Typography.Text>错误码：{apiError.code}</Typography.Text>}</Space>} />}
@@ -252,16 +265,24 @@ export function QualityEvaluationPanel({ context, overview, overviewError, onOpe
         </Space>
       </Card>
 
-      {result.analysis === "PAT_ROBUST_IQR" && <Card title="PAT Robust IQR Groups"><Table rowKey={(row) => `${row.dataset_id}:${row.version_no}:${row.group_key}`} pagination={false} scroll={{ x: 1400 }} dataSource={result.pat} columns={[
-        { title: "Group", dataIndex: "group_key", key: "group", fixed: "left", width: 260 },
-        { title: "Valid / Missing", key: "n", render: (_, row) => `${row.valid_n} / ${row.missing_n}` },
-        { title: "Q1 / Median / Q3", key: "quartiles", render: (_, row) => `${numeric(row.q1)} / ${numeric(row.median)} / ${numeric(row.q3)}` },
-        { title: "IQR / Robust Sigma", key: "spread", render: (_, row) => `${numeric(row.iqr)} / ${numeric(row.robust_sigma)}` },
-        { title: "Lower / Upper", key: "limits", render: (_, row) => `${numeric(row.lower_limit)} / ${numeric(row.upper_limit)}` },
-        { title: "Outlier", key: "outlier", render: (_, row) => `${row.outlier_count} / ${percent(row.outlier_rate)}` },
-        { title: "Status", dataIndex: "status", key: "status", render: (value) => <Tag>{value}</Tag> },
-        { title: "Evidence", key: "evidence", render: (_, row) => drillButtons(row.evidence.map((item) => item.drilldown_key)) },
-      ]} /></Card>}
+      {result.analysis === "PAT_ROBUST_IQR" && <PatResultView
+        title="PAT 分析结果"
+        labelTitle="数据集 / 分组"
+        rows={result.pat.map((row) => ({
+          key: `${row.dataset_id}:${row.version_no}:${row.group_key}`,
+          label: `Dataset #${row.dataset_id} / V${row.version_no} / ${row.group_key}`,
+          count: row.valid_n,
+          missingCount: row.missing_n,
+          q1: row.q1,
+          median: row.median,
+          q3: row.q3,
+          lowerLimit: row.lower_limit,
+          upperLimit: row.upper_limit,
+          outlierCount: row.outlier_count,
+          status: row.status,
+          actions: drillButtons(row.evidence.map((item) => item.drilldown_key)),
+        }))}
+      />}
 
       {result.analysis === "SPC_I_MR" && <Card title="SPC I-MR Groups"><Space direction="vertical" style={{ width: "100%" }}>
         <Table rowKey={(row) => `${row.dataset_id}:${row.version_no}:${row.group_key}`} pagination={false} scroll={{ x: 1200 }} dataSource={result.spc} columns={[

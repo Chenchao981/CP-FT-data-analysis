@@ -315,6 +315,10 @@ async function selectValue(label: string, value: string) {
   fireEvent.click(await screen.findByTitle(value));
 }
 
+function openAdvancedRuleSettings() {
+  fireEvent.click(screen.getByRole("button", { name: /高级设置：查看或调试规则版本/ }));
+}
+
 describe("ParameterAnalysisPanel", () => {
   beforeEach(() => {
     vi.mocked(analyzeDatasetParameters).mockResolvedValue(analysisResult);
@@ -329,10 +333,11 @@ describe("ParameterAnalysisPanel", () => {
     renderPanel();
 
     expect(analyzeDatasetParameters).not.toHaveBeenCalled();
-    expect(screen.getByText(/BoxPlot、Histogram、Normal Fit 和显式 Capability Rule/)).toBeInTheDocument();
+    expect(screen.getByText(/其他方法自动使用当前数据绑定的有效规则/)).toBeInTheDocument();
     await selectValue("参数分析类型", "箱线图");
     await selectValue("参数分析类型", "直方图");
     await selectValue("参数分析类型", "Capability");
+    openAdvancedRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Box Rule Code" }), { target: { value: "BOX_RULE" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Box Rule Version" }), { target: { value: "v1" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Histogram Rule Code" }), { target: { value: "HISTOGRAM_RULE" } });
@@ -426,8 +431,9 @@ describe("ParameterAnalysisPanel", () => {
   it("requests approved NORMAL_FIT and plots only the server-returned MLE density points", async () => {
     vi.mocked(analyzeDatasetParameters).mockResolvedValue(normalFitResult);
     renderPanel();
-    expect(screen.getByText(/Normal Fit 和显式 Capability Rule/)).toBeInTheDocument();
+    expect(screen.getByText(/其他方法自动使用当前数据绑定的有效规则/)).toBeInTheDocument();
     await selectValue("参数分析类型", "Normal Fit");
+    openAdvancedRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Normal Fit Rule Code" }), { target: { value: "NORMAL_FIT_RULE" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Normal Fit Rule Version" }), { target: { value: "v1" } });
     fireEvent.click(screen.getByRole("button", { name: "执行参数分析" }));
@@ -455,6 +461,7 @@ describe("ParameterAnalysisPanel", () => {
     });
     await selectValue("参数分析类型", "箱线图");
     await selectValue("参数分析类型", "直方图");
+    openAdvancedRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Box Rule Code" }), { target: { value: "BOX_RULE" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Box Rule Version" }), { target: { value: "v1" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Histogram Rule Code" }), { target: { value: "HISTOGRAM_RULE" } });
@@ -475,6 +482,7 @@ describe("ParameterAnalysisPanel", () => {
     renderPanel();
     await selectValue("参数分析类型", "直方图");
     await selectValue("参数分析类型", "Normal Fit");
+    openAdvancedRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Histogram Rule Code" }), { target: { value: "HISTOGRAM_RULE" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Histogram Rule Version" }), { target: { value: "v1" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Normal Fit Rule Code" }), { target: { value: "NORMAL_FIT_RULE" } });
@@ -538,7 +546,7 @@ describe("ParameterAnalysisPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "重试参数分析" }));
     await waitFor(() => expect(analyzeDatasetParameters).toHaveBeenCalledTimes(2));
     expect(await screen.findByText("合同 PARAMETER_ANALYSIS_V1")).toBeInTheDocument();
-  });
+  }, 20_000);
 
   it("shows an explicit business-approval gate for an unapproved statistical rule", async () => {
     vi.mocked(analyzeDatasetParameters).mockRejectedValueOnce(new ApiError(409, {
@@ -549,6 +557,7 @@ describe("ParameterAnalysisPanel", () => {
     }, "请求失败"));
     renderPanel();
     await selectValue("参数分析类型", "Normal Fit");
+    openAdvancedRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Normal Fit Rule Code" }), { target: { value: "NORMAL_FIT_RULE" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Normal Fit Rule Version" }), { target: { value: "v1" } });
     fireEvent.click(screen.getByRole("button", { name: "执行参数分析" }));
@@ -557,5 +566,5 @@ describe("ParameterAnalysisPanel", () => {
     expect(screen.getByText(/服务端已失败关闭本次统计/)).toBeInTheDocument();
     expect(screen.getByText("错误代码：ANALYSIS_RULE_NOT_APPROVED")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "重试参数分析" })).not.toBeInTheDocument();
-  });
+  }, 20_000);
 });

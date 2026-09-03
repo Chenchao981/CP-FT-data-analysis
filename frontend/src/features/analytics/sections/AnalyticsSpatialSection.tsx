@@ -1,5 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
-import { Alert, Button, Card, Checkbox, Col, Empty, Input, InputNumber, Row, Segmented, Select, Space, Statistic, Table, Tag, Typography } from "antd";
+import { Alert, Button, Card, Checkbox, Col, Collapse, Empty, Input, InputNumber, Row, Segmented, Select, Space, Statistic, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { EChartsCoreOption } from "echarts/core";
 import { useMemo, useState } from "react";
@@ -342,21 +342,24 @@ export function AnalyticsSpatialSection({ context, focusDatasetId, overview, ove
   const parameterOptions = selectOptions([...(overview?.options.parameters ?? []), ...context.parameters, parameter]);
   return <Space direction="vertical" size="large" style={{ width: "100%" }}>
     {!isCp && overview && <Alert type="info" showIcon message="Spatial 只适用于 CP Dataset" description={`当前测试阶段为 ${overview.dataset_context.test_stage}，后端会以 ANALYSIS_STAGE_INCOMPATIBLE 失败关闭。`} />}
-    <Card title="Spatial Analysis" extra={<Tag color="blue">ANALYTICS_SPATIAL_V1 · 显式执行</Tag>}>
+    <Card title="晶圆空间分析" extra={<Tag color="blue">CP 数据</Tag>}>
       <Row gutter={[12, 12]}>
         <Col xs={24} md={12} xl={6}><Typography.Text strong>Mode</Typography.Text><Select aria-label="Spatial Mode" value={mode} options={modeOptions} onChange={(value) => onConfigChange({ mode: value })} className="full-width" /></Col>
         {(needsParameter || acceptsOptionalParameter) && <Col xs={24} md={12} xl={6}><Typography.Text strong>{needsParameter ? "参数（必选 1 个）" : "参数（可选 0–1 个）"}</Typography.Text><Select aria-label="Spatial 参数" allowClear showSearch value={parameter || undefined} options={parameterOptions} onChange={(value) => onConfigChange({ parameter: value ?? "" })} className="full-width" /></Col>}
         <Col xs={24} md={12} xl={6}><Typography.Text strong>Max Response Items（100–50000）</Typography.Text><InputNumber aria-label="Spatial 最大点数" min={100} max={50_000} precision={0} step={100} value={maxPoints} onChange={(value) => onConfigChange({ maxPoints: value ?? 20_000 })} className="full-width" /></Col>
-        {mode === "ZONE_COMPARISON" && <>
-          <Col xs={24} md={12} xl={6}><Typography.Text strong>Rule Code</Typography.Text><Input aria-label="Spatial Rule Code" value={ruleCode} onChange={(event) => onConfigChange({ rule: { ...config.rule, ruleCode: event.target.value.trim().toUpperCase() } })} placeholder="已批准规则码" /></Col>
-          <Col xs={24} md={12} xl={6}><Typography.Text strong>Rule Version</Typography.Text><Input aria-label="Spatial Rule Version" value={ruleVersion} onChange={(event) => onConfigChange({ rule: { ...config.rule, versionCode: event.target.value.trim() } })} placeholder="例如 1.0.0" /></Col>
-        </>}
       </Row>
+      {mode === "ZONE_COMPARISON" && <>
+        <Alert style={{ marginTop: 12 }} type={ruleCode && ruleVersion ? "success" : "warning"} showIcon message={ruleCode && ruleVersion ? `当前区域规则：${ruleCode}@${ruleVersion}` : "没有找到唯一可用的区域规则"} description={ruleCode && ruleVersion ? "执行时服务器会再次核对当前产品和参数适用范围。" : "请联系管理员启用区域规则后刷新。"} />
+        <Collapse style={{ marginTop: 12 }} size="small" items={[{ key: "rule", label: "高级设置：查看或调试规则版本", children: <Row gutter={[12, 12]}>
+          <Col xs={24} md={12}><Typography.Text strong>规则编号</Typography.Text><Input aria-label="Spatial Rule Code" value={ruleCode} onChange={(event) => onConfigChange({ rule: { ...config.rule, ruleCode: event.target.value.trim().toUpperCase() } })} placeholder="系统自动匹配" /></Col>
+          <Col xs={24} md={12}><Typography.Text strong>规则版本</Typography.Text><Input aria-label="Spatial Rule Version" value={ruleVersion} onChange={(event) => onConfigChange({ rule: { ...config.rule, versionCode: event.target.value.trim() } })} placeholder="系统自动匹配" /></Col>
+        </Row> }]} />
+      </>}
       <Space wrap style={{ marginTop: 12 }}><Button type="primary" aria-label="执行 Spatial 分析" disabled={!canRun} loading={mutation.isPending} onClick={execute}>执行 Spatial 分析</Button><Typography.Text type="secondary">以当前 Dataset 和全部权威筛选请求后端；前端显示设置不改变事实。</Typography.Text></Space>
       {singleWaferModes.has(mode) && !explicitSingleWafer && <Alert type="warning" showIcon message="该 Mode 要求明确的单 Wafer" description="请在统一 Context 中各选择 1 个 Lot 和 1 个 Wafer；前端不猜测空筛选最终会命中几片 Wafer。" style={{ marginTop: 12 }} />}
       {mode === "COMPOSITE_FAILURE" && !explicitMultiWafer && <Alert type="warning" showIcon message="Composite Failure 要求多 Wafer" description="请在统一 Context 中明确选择至少 2 个 Wafer。" style={{ marginTop: 12 }} />}
       {needsBinMapping && !hasBinMapping && <Alert type="warning" showIcon message="Bin Mapping 尚未就绪" description="BIN_MAP 和 PARAMETER_FAIL_OVERLAY 要求当前 Dataset 绑定版本化 Bin Mapping。当前 rule_context.bin_mapping_versions 为空，前端失败关闭，不使用原始 Bin 冒充批准映射。" style={{ marginTop: 12 }} />}
-      {mode === "ZONE_COMPARISON" && <Alert type="warning" showIcon message="Zone Comparison 受 Rule Gate 控制" description="必须显式提供已批准且已激活的 Rule Code / Version；新请求仅接受 WAFER_ZONE_GEOMETRY_V2。Radial Zone、轴旋转、Y 方向和四个 CCW 标签全部由批准 Rule 返回，前端不定义业务象限。" style={{ marginTop: 12 }} />}
+      {mode === "ZONE_COMPARISON" && <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>区域布局、方向和标签均由服务器中的已批准规则返回，页面不会自行推断。</Typography.Paragraph>}
       {isStale && <Alert type="warning" showIcon message="Spatial 结果已过期" description="Context、Mode、参数、Max Points 或 Rule 已变化；需手动重新执行。" style={{ marginTop: 12 }} />}
       {mutation.isError && <Alert type="error" showIcon message={binMappingGate ? "Spatial Bin Mapping 未绑定" : ruleGate ? "Spatial Rule 未批准或合同无效" : "Spatial 分析失败"} description={<Space direction="vertical" size={2}><Typography.Text>{mutation.error instanceof Error ? mutation.error.message : "未知错误"}</Typography.Text><Typography.Text>错误码：{apiError?.code ?? "UNKNOWN_ERROR"}</Typography.Text><Typography.Text>建议操作：{apiError?.recommendedAction ?? (binMappingGate ? "先为 Dataset 绑定已批准的版本化 Bin Mapping" : "请核对 CP/Wafer/Coordinate/Rule 合同")}</Typography.Text></Space>} style={{ marginTop: 12 }} />}
     </Card>

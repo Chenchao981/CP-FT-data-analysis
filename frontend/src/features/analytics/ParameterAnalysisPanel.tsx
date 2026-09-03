@@ -1,6 +1,6 @@
 import { ReloadOutlined } from "@ant-design/icons";
 import { useMutation } from "@tanstack/react-query";
-import { Alert, Button, Card, Col, Empty, Input, InputNumber, Row, Select, Space, Table, Tag, Typography } from "antd";
+import { Alert, Button, Card, Col, Collapse, Empty, Input, InputNumber, Row, Select, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { EChartsOption } from "echarts";
 import { useMemo, useState } from "react";
@@ -491,13 +491,13 @@ export function ParameterAnalysisPanel({
   const nonEligibleCapabilities = capabilityRows.filter((row) => row.analysis.capability?.status !== "ELIGIBLE");
 
   return <Card
-    title="参数分析（显式执行）"
-    extra={<Tag color="blue">当前 {datasets.length} 个 Dataset · 最多 5 个参数</Tag>}
+    title="参数统计与分布"
+    extra={<Tag color="blue">当前 {datasets.length} 个数据集 · 最多 5 个参数</Tag>}
     className="production-table-card"
   >
     <Row gutter={[12, 12]}>
       <Col xs={24} xl={9}>
-        <Typography.Text strong>共享 Context 参数（执行分析时最多 5 个）</Typography.Text>
+        <Typography.Text strong>测试参数（执行时最多 5 个）</Typography.Text>
         <Select
           aria-label="参数分析参数"
           mode="multiple"
@@ -511,7 +511,7 @@ export function ParameterAnalysisPanel({
         />
       </Col>
       <Col xs={24} sm={12} xl={7}>
-        <Typography.Text strong>Unit 总体结果</Typography.Text>
+        <Typography.Text strong>测试结果</Typography.Text>
         <Select
           aria-label="参数分析总体结果"
           mode="multiple"
@@ -537,22 +537,31 @@ export function ParameterAnalysisPanel({
           placeholder="至少选择一种分析"
           className="full-width"
         />
-        <Typography.Text type="secondary">描述统计可直接执行；BoxPlot、Histogram、Normal Fit 和显式 Capability Rule 必须由服务端 Rule Owner 批准，未批准时失败关闭。</Typography.Text>
+        <Typography.Text type="secondary">描述统计可直接执行；其他方法自动使用当前数据绑定的有效规则。</Typography.Text>
       </Col>
     </Row>
-    {analyses.some((analysis) => analysis !== "DESCRIPTIVE") && <Card size="small" title="精确 Rule Registry 版本" style={{ marginTop: 12 }}>
-      <Row gutter={[12, 12]}>
+    {analyses.some((analysis) => analysis !== "DESCRIPTIVE") && <>
+      <Alert
+        style={{ marginTop: 12 }}
+        type={exactRulesComplete ? "success" : "warning"}
+        showIcon
+        message={exactRulesComplete ? "所选方法已具备分析规则" : "部分方法没有找到唯一可用规则"}
+        description={exactRulesComplete ? "执行时服务器会再次核对厂家、产品和参数适用范围。" : "请联系管理员启用对应规则；普通用户不需要填写规则编号。"}
+      />
+      <Collapse style={{ marginTop: 12 }} size="small" items={[{ key: "rules", label: "高级设置：查看或调试规则版本", children: <>
+        <Row gutter={[12, 12]}>
         {analyses.includes("BOX_PLOT") && <><Col xs={24} md={12}><Typography.Text strong>Box Rule Code</Typography.Text><Input aria-label="Box Rule Code" value={boxRuleCode} onChange={(event) => onConfigChange({ boxPlot: { ...config.boxPlot, ruleCode: event.target.value.toUpperCase() } })} placeholder="例如 CP_BOX_STANDARD" /></Col><Col xs={24} md={12}><Typography.Text strong>Box Version</Typography.Text><Input aria-label="Box Rule Version" value={boxRuleVersion} onChange={(event) => onConfigChange({ boxPlot: { ...config.boxPlot, versionCode: event.target.value } })} placeholder="例如 v1" /></Col></>}
         {analyses.includes("HISTOGRAM") && <><Col xs={24} md={12}><Typography.Text strong>Histogram Rule Code</Typography.Text><Input aria-label="Histogram Rule Code" value={histogramRuleCode} onChange={(event) => onConfigChange({ histogram: { ...config.histogram, ruleCode: event.target.value.toUpperCase() } })} /></Col><Col xs={24} md={12}><Typography.Text strong>Histogram Version</Typography.Text><Input aria-label="Histogram Rule Version" value={histogramRuleVersion} onChange={(event) => onConfigChange({ histogram: { ...config.histogram, versionCode: event.target.value } })} /></Col></>}
         {analyses.includes("NORMAL_FIT") && <><Col xs={24} md={12}><Typography.Text strong>Normal Fit Rule Code</Typography.Text><Input aria-label="Normal Fit Rule Code" value={normalFitRuleCode} onChange={(event) => onConfigChange({ normalFit: { ...config.normalFit, ruleCode: event.target.value.toUpperCase() } })} /></Col><Col xs={24} md={12}><Typography.Text strong>Normal Fit Version</Typography.Text><Input aria-label="Normal Fit Rule Version" value={normalFitRuleVersion} onChange={(event) => onConfigChange({ normalFit: { ...config.normalFit, versionCode: event.target.value } })} /></Col></>}
         {analyses.includes("CAPABILITY") && <><Col xs={24} md={8}><Typography.Text strong>Capability Method</Typography.Text><Select aria-label="Capability Method" value={capabilityMethod} options={[{ value: "CPK_POOLED_WITHIN_RUN_V1", label: "Pooled within Run" }, { value: "CPK_POOLED_WITHIN_LOT_WAFER_V1", label: "Pooled within Lot-Wafer" }]} onChange={(value) => onConfigChange({ capability: { ...config.capability, method: value } })} className="full-width" /></Col><Col xs={24} md={8}><Typography.Text strong>Capability Rule Code</Typography.Text><Input aria-label="Capability Rule Code" value={capabilityRuleCode} onChange={(event) => onConfigChange({ capability: { ...config.capability, ruleCode: event.target.value.toUpperCase() } })} /></Col><Col xs={24} md={8}><Typography.Text strong>Capability Version</Typography.Text><Input aria-label="Capability Rule Version" value={capabilityRuleVersion} onChange={(event) => onConfigChange({ capability: { ...config.capability, versionCode: event.target.value } })} /></Col></>}
-      </Row>
-      <Typography.Text type="secondary">Rule Code 与 Version 必须精确对应 Registry 中已三方批准并在当前 Dataset / Supplier / Product / Parameter 范围激活的版本。算法参数由该版本提供，前端不能覆盖。</Typography.Text>
-    </Card>}
+        </Row>
+        <Typography.Text type="secondary">规则编号和版本仅供管理员调试；算法参数由服务器中的已批准版本提供。</Typography.Text>
+      </> }]} />
+    </>}
     <Space wrap style={{ marginTop: 12 }}>
       <Button type="primary" aria-label="执行参数分析" loading={mutation.isPending} disabled={!canRun} onClick={execute}>执行参数分析</Button>
       <Typography.Text type="secondary">
-        沿用统一 Context 的 Lot、Wafer、Bin、Result、Source、Tester、Program、Test Condition 筛选；进入页面和顶部“刷新”均不会执行本分析。
+        沿用页面顶部的批次、晶圆、Bin、结果、数据源、测试机、程序和测试条件；切换页面不会自动执行高成本计算。
       </Typography.Text>
     </Space>
     <Card size="small" title="纯显示控制（不改变后端分析请求）" style={{ marginTop: 12 }}>
@@ -585,7 +594,7 @@ export function ParameterAnalysisPanel({
     {!parameters.length && <Alert type="info" showIcon message="请选择 1–5 个分析参数后点击执行" style={{ marginTop: 12 }} />}
     {parameters.length > 5 && <Alert type="warning" showIcon message="参数分析最多执行 5 个参数" description="共享 Context 可保留 20 个参数供 Detail 使用；请缩减到 5 个后再执行本分析。" style={{ marginTop: 12 }} />}
     {!analyses.length && <Alert type="warning" showIcon message="至少选择一种分析类型" style={{ marginTop: 12 }} />}
-    {!exactRulesComplete && <Alert type="warning" showIcon message="请填写所有已选统计方法的精确 Rule Code 和 Version" description="未填写或未批准时系统失败关闭，不会使用前端默认统计参数。" style={{ marginTop: 12 }} />}
+    {!exactRulesComplete && <Alert type="warning" showIcon message="所选统计方法还没有可用规则" description="请联系管理员在质量管理中启用对应规则后刷新。" style={{ marginTop: 12 }} />}
     {isStale && <Alert
       type="warning"
       showIcon

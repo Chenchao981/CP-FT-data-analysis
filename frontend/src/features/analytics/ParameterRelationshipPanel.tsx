@@ -1,6 +1,6 @@
 import { ReloadOutlined } from "@ant-design/icons";
 import { useMutation } from "@tanstack/react-query";
-import { Alert, Button, Card, Checkbox, Col, Empty, Input, InputNumber, Row, Select, Space, Table, Tag, Typography } from "antd";
+import { Alert, Button, Card, Checkbox, Col, Collapse, Empty, Input, InputNumber, Row, Select, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { EChartsCoreOption } from "echarts/core";
 import { useEffect, useMemo, useState } from "react";
@@ -460,7 +460,7 @@ export function ParameterRelationshipPanel({
   const parameterChoices = selectOptions([...parameterOptions, ...suggestedParameters, xParameter, ...yParameters].filter(Boolean));
 
   return <Card
-    title="参数关系（精确身份 / 显式执行）"
+    title="参数关系与趋势"
     extra={<Tag color="blue">X 1 个 · Y 1–5 个 · 后端权威计算</Tag>}
     className="production-table-card"
   >
@@ -469,7 +469,6 @@ export function ParameterRelationshipPanel({
         <Typography.Text strong>X 参数（精确身份）</Typography.Text>
         <Select aria-label="关系分析 X 参数" showSearch value={xParameter || undefined} options={parameterChoices} onChange={(value) => onConfigChange({ xParameter: value, scatterDataset: "", yParameters: yParameters.filter((item) => item !== value) })} className="full-width" placeholder="选择 X" />
       </Col>
-      {correlationRequested && <><Col xs={24} md={12} xl={6}><Typography.Text strong>Correlation Rule Code</Typography.Text><Input aria-label="Correlation Rule Code" value={correlationRuleCode} onChange={(event) => onConfigChange({ correlation: { ...config.correlation, ruleCode: event.target.value.toUpperCase() } })} placeholder="Registry 中的精确 Rule Code" /></Col><Col xs={24} md={12} xl={6}><Typography.Text strong>Correlation Rule Version</Typography.Text><Input aria-label="Correlation Rule Version" value={correlationRuleVersion} onChange={(event) => onConfigChange({ correlation: { ...config.correlation, versionCode: event.target.value } })} placeholder="例如 v1" /></Col></>}
       <Col xs={24} md={12} xl={6}>
         <Typography.Text strong>Y 参数（1–5 个）</Typography.Text>
         <Select aria-label="关系分析 Y 参数" mode="multiple" allowClear maxCount={5} value={yParameters} options={parameterChoices.filter((item) => item.value !== xParameter)} onChange={(values) => onConfigChange({ scatterDataset: "", yParameters: values.slice(0, 5) })} className="full-width" placeholder="选择 Y" />
@@ -487,19 +486,25 @@ export function ParameterRelationshipPanel({
         <InputNumber aria-label="关系分析最大点数" min={100} max={20_000} step={100} precision={0} value={maxPoints} onChange={(value) => onConfigChange({ maxPoints: value ?? 10_000 })} className="full-width" />
       </Col>
     </Row>
+    {correlationRequested && <>
+      <Alert
+        style={{ marginTop: 12 }}
+        type={correlationRuleCode && correlationRuleVersion ? "success" : "warning"}
+        showIcon
+        message={correlationRuleCode && correlationRuleVersion ? `当前相关性规则：${correlationRuleCode}@${correlationRuleVersion}` : "没有找到唯一可用的相关性规则"}
+        description={correlationRuleCode && correlationRuleVersion ? "服务器会在执行时核对当前厂家、产品和参数范围。" : "请联系管理员启用规则后刷新。"}
+      />
+      <Collapse style={{ marginTop: 12 }} size="small" items={[{ key: "rule", label: "高级设置：查看或调试规则版本", children: <Row gutter={[12, 12]}>
+        <Col xs={24} md={12}><Typography.Text strong>规则编号</Typography.Text><Input aria-label="Correlation Rule Code" value={correlationRuleCode} onChange={(event) => onConfigChange({ correlation: { ...config.correlation, ruleCode: event.target.value.toUpperCase() } })} placeholder="系统自动匹配" /></Col>
+        <Col xs={24} md={12}><Typography.Text strong>规则版本</Typography.Text><Input aria-label="Correlation Rule Version" value={correlationRuleVersion} onChange={(event) => onConfigChange({ correlation: { ...config.correlation, versionCode: event.target.value } })} placeholder="系统自动匹配" /></Col>
+      </Row> }]} />
+    </>}
     <Space wrap style={{ marginTop: 12 }}>
       <Button type="primary" aria-label="执行参数关系分析" loading={mutation.isPending} disabled={!canRun} onClick={execute}>执行参数关系分析</Button>
       <Typography.Text type="secondary">完整沿用统一 Context 的 8 组筛选；结果的配对、采样、OOS 保留和 Correlation 均由后端决定。</Typography.Text>
     </Space>
     {!xParameter && <Alert type="info" showIcon message="请选择 X 参数" style={{ marginTop: 12 }} />}
     {!yParameters.length && <Alert type="info" showIcon message="请选择至少 1 个 Y 参数" style={{ marginTop: 12 }} />}
-    {correlationRequested && <Alert
-      type="warning"
-      showIcon
-      message="Correlation 受版本化规则门禁控制"
-      description={`本次显式请求 ${correlationRuleCode || "待填写"} / ${correlationRuleVersion || "待填写"} / ${CORRELATION_METHOD}；只有 Registry 三方批准且在当前 Dataset / Supplier / Product / X-Y Parameter 范围激活时才会计算。`}
-      style={{ marginTop: 12 }}
-    />}
     {isStale && <Alert type="warning" showIcon message="当前参数关系结果已过期" description="Context、X/Y、分析类型、分组或 Max Points 已变化；旧结果保留供核对，需手动重新执行。" style={{ marginTop: 12 }} />}
     {mutation.isError && <Alert
       type="error"

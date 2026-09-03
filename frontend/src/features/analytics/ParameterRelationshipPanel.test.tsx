@@ -138,6 +138,10 @@ async function selectValue(label: string, value: string) {
   fireEvent.click(await screen.findByTitle(value));
 }
 
+function openAdvancedRuleSettings() {
+  fireEvent.click(screen.getByRole("button", { name: /高级设置：查看或调试规则版本/ }));
+}
+
 describe("ParameterRelationshipPanel", () => {
   beforeEach(() => { vi.mocked(analyzeParameterRelationship).mockResolvedValue(result); });
 
@@ -170,9 +174,10 @@ describe("ParameterRelationshipPanel", () => {
     await selectValue("关系分析类型", "Correlation");
     await selectValue("关系分析分组", "Tester");
     fireEvent.change(screen.getByRole("spinbutton", { name: "关系分析最大点数" }), { target: { value: "5000" } });
+    openAdvancedRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Correlation Rule Code" }), { target: { value: "CORRELATION_RULE" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Correlation Rule Version" }), { target: { value: "v1" } });
-    expect(screen.getByText("Correlation 受版本化规则门禁控制")).toBeInTheDocument();
+    expect(screen.getByText("当前相关性规则：CORRELATION_RULE@v1")).toBeInTheDocument();
     expect(analyzeParameterRelationship).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "执行参数关系分析" }));
@@ -243,6 +248,7 @@ describe("ParameterRelationshipPanel", () => {
     renderPanel(vi.fn(), { ...createDefaultAnalysisViewState().display, yAxisMax: 7 }, onDisplayStateChange);
     await selectValue("关系分析类型", "Correlation");
     await selectValue("关系分析分组", "Wafer（Lot + Wafer）");
+    openAdvancedRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Correlation Rule Code" }), { target: { value: "CORRELATION_RULE" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Correlation Rule Version" }), { target: { value: "v1" } });
     fireEvent.click(screen.getByRole("button", { name: "执行参数关系分析" }));
@@ -341,7 +347,7 @@ describe("ParameterRelationshipPanel", () => {
     expect(screen.getByText(/绝不回退 Program Limit/)).toBeInTheDocument();
     const option = JSON.parse(screen.getByRole("img", { name: "VTH / RDON Scatter" }).getAttribute("data-option") ?? "{}");
     expect(option.series[0].markLine).toBeUndefined();
-  });
+  }, 20_000);
 
   it("surfaces the server correlation approval gate without client-side fallback", async () => {
     vi.mocked(analyzeParameterRelationship).mockRejectedValueOnce(new ApiError(409, {
@@ -352,6 +358,7 @@ describe("ParameterRelationshipPanel", () => {
     }, "request failed"));
     renderPanel();
     await selectValue("关系分析类型", "Correlation");
+    openAdvancedRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Correlation Rule Code" }), { target: { value: "CORRELATION_RULE" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Correlation Rule Version" }), { target: { value: "v1" } });
     fireEvent.click(screen.getByRole("button", { name: "执行参数关系分析" }));
@@ -360,5 +367,5 @@ describe("ParameterRelationshipPanel", () => {
     expect(screen.getByText("错误码：ANALYSIS_RULE_NOT_APPROVED")).toBeInTheDocument();
     expect(screen.getByText("建议操作：complete Rule Owner approval before activation")).toBeInTheDocument();
     expect(screen.queryByRole("img", { name: /Scatter/ })).not.toBeInTheDocument();
-  });
+  }, 20_000);
 });

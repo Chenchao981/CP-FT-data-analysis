@@ -64,11 +64,20 @@ export interface QuickAnalysisSession {
   parameter_count: number | null;
   record_count: number | null;
   summary: {
+    schema_version?: number;
+    analysis_type?: "QUICK_PAT";
+    test_stage?: "CP" | "FT";
+    factory_code?: string;
+    input_contract?: string;
+    output_contract?: string;
+    formula_contract?: string;
     elapsed_seconds?: number;
     minimum_parameter_value_count?: number;
+    maximum_parameter_value_count?: number;
     execution_mode?: "SERVER_CATALOG" | "LOCAL_AGENT";
     tool_code?: string;
     exported_result_path?: string;
+    parameters?: QuickPatParameterSummary[];
   } | null;
   result_file_name: string | null;
   result_size_bytes: number | null;
@@ -78,6 +87,26 @@ export interface QuickAnalysisSession {
   created_at_utc: string;
   started_at_utc: string | null;
   finished_at_utc: string | null;
+}
+
+export interface QuickPatParameterSummary {
+  parameter: string;
+  count: number;
+  mean?: number | null;
+  stddev?: number | null;
+  minimum?: number | null;
+  q1?: number | null;
+  median?: number | null;
+  q3?: number | null;
+  maximum?: number | null;
+  sigma?: number | null;
+  lcl_calculated?: number | null;
+  ucl_calculated?: number | null;
+  lcl_before?: number | null;
+  ucl_before?: number | null;
+  lcl_after?: number | null;
+  ucl_after?: number | null;
+  updated?: boolean | string | null;
 }
 
 const base = "/api/v1/quick-analysis";

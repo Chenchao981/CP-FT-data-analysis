@@ -337,6 +337,16 @@ describe("AnalyticsWorkbench ANALYTICS_CONTEXT_V1 flow", () => {
     expect(await screen.findByText("FT-UNIT-501", {}, { timeout: 15_000 })).toBeInTheDocument();
   }, 20_000);
 
+  it("uses five Chinese business groups and hides wafer spatial analysis for FT", async () => {
+    renderAnalytics();
+    expect(await screen.findByText("FT 数据分析")).toBeInTheDocument();
+    expect(await screen.findByRole("tab", { name: "分析总览" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "参数图表" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "质量管控" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "报告与数据" })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "晶圆空间" })).not.toBeInTheDocument();
+  });
+
   it("writes KPI aggregate predicates into the shared Context before opening Detail", async () => {
     renderAnalytics();
     expect(await screen.findByText("Dataset Overview")).toBeInTheDocument();
@@ -421,7 +431,7 @@ describe("AnalyticsWorkbench ANALYTICS_CONTEXT_V1 flow", () => {
     expect(await screen.findByText("当前为持久化评价风险限定总体", {}, { timeout: 15_000 })).toBeInTheDocument();
     expect(screen.getByText(/PAT · CP_PAT@V2 · Result FAIL \/ NOT_EVALUATED/)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Delivery" }));
+    fireEvent.click(screen.getByRole("tab", { name: "汇总、保存与导出" }));
     await waitFor(() => {
       const params = new URLSearchParams(screen.getByTestId("analytics-search").textContent ?? "");
       expect(params.get("section")).toBe("delivery");
@@ -471,8 +481,8 @@ describe("AnalyticsWorkbench ANALYTICS_CONTEXT_V1 flow", () => {
   it("loads Parameter Relationship lazily without auto-running the expensive analysis", async () => {
     renderAnalytics({ initialSearch: "dataset=20%3A1&dataset=21%3A2&section=parameter&parameter=VTH&parameter=RDON" });
 
-    expect(await screen.findByText("参数关系（精确身份 / 显式执行）", {}, { timeout: 15_000 })).toBeInTheDocument();
-    expect(screen.getByText("参数分析（显式执行）")).toBeInTheDocument();
+    expect(await screen.findByText("参数关系与趋势", {}, { timeout: 15_000 })).toBeInTheDocument();
+    expect(screen.getByText("参数统计与分布")).toBeInTheDocument();
     expect(analyzeParameterRelationship).not.toHaveBeenCalled();
   }, 20_000);
 
@@ -521,10 +531,11 @@ describe("AnalyticsWorkbench ANALYTICS_CONTEXT_V1 flow", () => {
 
   it("shows the Quality gate and permission-aware Saved/Export Delivery controls", async () => {
     renderAnalytics({ initialSearch: "dataset=20%3A1&section=quality" });
-    expect(await screen.findByText("Quality Evaluation（批准规则 / 显式执行）", {}, { timeout: 15_000 })).toBeInTheDocument();
+    expect(await screen.findByText("质量管控分析", {}, { timeout: 15_000 })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /执行 Quality 分析/ })).toBeDisabled();
 
-    fireEvent.click(screen.getByRole("tab", { name: "Delivery" }));
+    fireEvent.click(screen.getByRole("tab", { name: "报告与数据" }));
+    fireEvent.click(screen.getByRole("tab", { name: "汇总、保存与导出" }));
     expect(await screen.findByText("Saved Analysis（版本化 Context）")).toBeInTheDocument();
     expect(screen.getByText("只读模式")).toBeInTheDocument();
     expect(screen.getByText("无导出权限")).toBeInTheDocument();
@@ -536,6 +547,7 @@ describe("AnalyticsWorkbench ANALYTICS_CONTEXT_V1 flow", () => {
       historySearch: "dataset=20%3A1&section=quality&view_contract=ANALYSIS_VIEW_STATE_V1&q_analysis=SPC_I_MR&q_parameter=VTH&q_group=RUN&q_rule=FT_SPC&q_rule_version=v1&q_spc_order=UNIT_SEQUENCE&q_spc_phase=PHASE_I_BASELINE&q_percent_axis=FIXED_0_100",
     });
     expect(await screen.findByRole("button", { name: /执行 Quality 分析/ }, { timeout: 15_000 })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: /高级设置：查看或调试规则版本/ }));
     expect(screen.getByRole("textbox", { name: "Quality Rule Code" })).toHaveValue("FT_SPC");
     expect(screen.getByRole("textbox", { name: "Quality Rule Version" })).toHaveValue("v1");
 
