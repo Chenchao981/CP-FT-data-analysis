@@ -883,7 +883,7 @@ def test_identical_parameter_analysis_requests_recheck_every_dataset_access() ->
         },
         {
             "datasets": [{"dataset_id": 1, "version_no": 1}],
-            "parameters": [f"P{index}" for index in range(6)],
+            "parameters": [f"P{index}" for index in range(21)],
         },
         {
             "datasets": [{"dataset_id": 1, "version_no": 1}],

@@ -204,7 +204,7 @@ class DatasetParameterAnalysisRequest(StrictRequest):
     filters: DatasetParameterAnalysisFilters = Field(
         default_factory=DatasetParameterAnalysisFilters
     )
-    parameters: list[str] = Field(min_length=1, max_length=5)
+    parameters: list[str] = Field(min_length=1, max_length=20)
     analyses: list[DatasetParameterAnalysisType] = Field(
         default_factory=lambda: [DatasetParameterAnalysisType.DESCRIPTIVE],
         min_length=1,

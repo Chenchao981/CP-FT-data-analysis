@@ -36,6 +36,7 @@ export interface StageUploadRow {
   completion_time_utc: string | null;
   uploader_login: string;
   uploader_name: string;
+  source_channel?: "WEB" | "SOURCE_CATALOG" | string;
   is_duplicate_receipt: boolean;
   can_manage: boolean;
   can_download_source: boolean;
@@ -85,6 +86,7 @@ export interface StageResultRow {
   business_domain?: BusinessDomain;
   uploader_login: string;
   uploader_name: string;
+  source_channel?: "WEB" | "SOURCE_CATALOG" | string;
   can_manage: boolean;
   test_item_count: number | null;
   unit_count: number | null;

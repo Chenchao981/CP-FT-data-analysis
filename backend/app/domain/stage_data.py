@@ -103,6 +103,7 @@ class StageResultRow:
     can_manage: bool = False
     uploader_login: str = ""
     uploader_name: str = ""
+    source_channel: str = ""
 
 
 class StageDataService(Protocol):

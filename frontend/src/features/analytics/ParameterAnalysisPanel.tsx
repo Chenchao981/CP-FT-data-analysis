@@ -3,7 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { Alert, Button, Card, Col, Collapse, Empty, Input, InputNumber, Row, Select, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { EChartsOption } from "echarts";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   analyzeDatasetParameters,
@@ -42,6 +42,7 @@ export interface ParameterAnalysisPanelProps {
   onDisplayStateChange: (patch: Partial<AnalysisDisplayState>) => void;
   config?: ParameterAnalysisViewConfig;
   onConfigChange?: (patch: Partial<ParameterAnalysisViewConfig>) => void;
+  autoRunKey?: string;
 }
 
 interface AnalysisRow {
@@ -119,6 +120,7 @@ export function ParameterAnalysisPanel({
   onDisplayStateChange,
   config: controlledConfig,
   onConfigChange: controlledOnConfigChange,
+  autoRunKey,
 }: ParameterAnalysisPanelProps) {
   const [localConfig, setLocalConfig] = useState<ParameterAnalysisViewConfig>(() => ({
     ...ANALYSIS_COMPONENT_DEFAULTS.parameterAnalysis,
@@ -175,7 +177,7 @@ export function ParameterAnalysisPanel({
     && (!analyses.includes("NORMAL_FIT") || Boolean(normalFitRuleCode && normalFitRuleVersion))
     && (!analyses.includes("CAPABILITY") || Boolean(capabilityRuleCode && capabilityRuleVersion));
   const canRun = datasets.length >= 1 && datasets.length <= 8
-    && parameters.length >= 1 && parameters.length <= 5
+    && parameters.length >= 1 && parameters.length <= 20
     && analyses.length >= 1 && analyses.length <= 5
     && exactRulesComplete;
 
@@ -191,6 +193,18 @@ export function ParameterAnalysisPanel({
     setSubmittedSignature(JSON.stringify(snapshot));
     mutation.mutate(snapshot);
   };
+  const handledAutoRun = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!autoRunKey || !canRun || handledAutoRun.current === autoRunKey) return;
+    const timeout = window.setTimeout(() => {
+      if (handledAutoRun.current === autoRunKey) return;
+      handledAutoRun.current = autoRunKey;
+      execute();
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  // execute is intentionally represented by the complete request signature.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRunKey, canRun, currentSignature]);
   const retrySubmitted = () => {
     if (submittedRequest) mutation.mutate(cloneRequest(submittedRequest));
   };
@@ -492,12 +506,12 @@ export function ParameterAnalysisPanel({
 
   return <Card
     title="参数统计与分布"
-    extra={<Tag color="blue">当前 {datasets.length} 个数据集 · 最多 5 个参数</Tag>}
+    extra={<Tag color="blue">当前 {datasets.length} 个数据集 · 最多 20 个参数</Tag>}
     className="production-table-card"
   >
     <Row gutter={[12, 12]}>
       <Col xs={24} xl={9}>
-        <Typography.Text strong>测试参数（执行时最多 5 个）</Typography.Text>
+        <Typography.Text strong>测试参数（执行时最多 20 个）</Typography.Text>
         <Select
           aria-label="参数分析参数"
           mode="multiple"
@@ -530,7 +544,7 @@ export function ParameterAnalysisPanel({
           aria-label="参数分析类型"
           mode="multiple"
           allowClear
-          maxCount={5}
+          maxCount={20}
           value={analyses}
           options={analysisOptions}
           onChange={(values) => onConfigChange({ analyses: values.slice(0, 5) })}
@@ -591,8 +605,7 @@ export function ParameterAnalysisPanel({
         </Col>
       </Row>
     </Card>
-    {!parameters.length && <Alert type="info" showIcon message="请选择 1–5 个分析参数后点击执行" style={{ marginTop: 12 }} />}
-    {parameters.length > 5 && <Alert type="warning" showIcon message="参数分析最多执行 5 个参数" description="共享 Context 可保留 20 个参数供 Detail 使用；请缩减到 5 个后再执行本分析。" style={{ marginTop: 12 }} />}
+    {!parameters.length && <Alert type="info" showIcon message="请选择 1–20 个分析参数后点击执行" style={{ marginTop: 12 }} />}
     {!analyses.length && <Alert type="warning" showIcon message="至少选择一种分析类型" style={{ marginTop: 12 }} />}
     {!exactRulesComplete && <Alert type="warning" showIcon message="所选统计方法还没有可用规则" description="请联系管理员在质量管理中启用对应规则后刷新。" style={{ marginTop: 12 }} />}
     {isStale && <Alert

@@ -3,6 +3,7 @@
 import "@testing-library/jest-dom/vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AnalyticsContextRequest } from "../../api/analytics";
@@ -148,6 +149,31 @@ describe("ParameterRelationshipPanel", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+  });
+
+  it("executes one deferred auto-run after the React StrictMode remount", async () => {
+    const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false }, queries: { retry: false } } });
+    const config = {
+      ...createDefaultAnalysisViewState().analysis.parameterRelationship,
+      xParameter: "VTH",
+      yParameters: ["RDON"],
+    };
+    render(<StrictMode><QueryClientProvider client={queryClient}>
+      <ParameterRelationshipPanel
+        context={context}
+        parameterOptions={["RDON", "VTH"]}
+        suggestedParameters={["VTH", "RDON"]}
+        onOpenDrilldown={vi.fn()}
+        displayState={createDefaultAnalysisViewState().display}
+        onDisplayStateChange={vi.fn()}
+        config={config}
+        onConfigChange={vi.fn()}
+        autoRunKey="draw-1"
+      />
+    </QueryClientProvider></StrictMode>);
+
+    await waitFor(() => expect(analyzeParameterRelationship).toHaveBeenCalledTimes(1));
+    expect(await screen.findByRole("img", { name: "VTH / RDON Scatter" })).toBeInTheDocument();
   });
 
   it("sends exact X/Y plus all Context filters, renders server charts/sampling/correlation, and drills by backend key", async () => {

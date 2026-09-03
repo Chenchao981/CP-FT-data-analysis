@@ -649,7 +649,7 @@ class SqlStageDataService:
             rows = (
                 connection.execute(
                     text(
-                        "SELECT s.*,u.login_name,u.display_name,CASE WHEN "
+                        "SELECT s.*,u.login_name,u.display_name,b.source_channel,CASE WHEN "
                         + can_manage_sql(owner_column="b.owner_user_id")
                         + " THEN 1 ELSE 0 END AS can_manage FROM ingestion.processing_result_summary s JOIN ingestion.import_batch b ON b.import_batch_id=s.import_batch_id "
                         "JOIN iam.app_user u ON u.user_id=b.owner_user_id "
@@ -691,6 +691,7 @@ class SqlStageDataService:
                 bool(r["can_manage"]),
                 str(r["login_name"]),
                 str(r["display_name"]),
+                str(r["source_channel"] or ""),
             )
             for r in rows
         )

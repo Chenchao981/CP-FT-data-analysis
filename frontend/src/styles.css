@@ -213,3 +213,45 @@ body { margin: 0; min-width: 320px; background: #f2f5f8; }
   .login-shell { grid-template-columns: 1fr minmax(390px, .85fr); }.login-story { padding-left: 42px; padding-right: 42px; }.login-brand { left: 42px; }.login-capabilities { display: none; }.login-story-copy h1.ant-typography { font-size: 42px; }
   .metric-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+.stage-analysis-launcher {
+  margin-bottom: 16px;
+  border-color: #cfe0f3;
+}
+
+.stage-analysis-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.stage-analysis-steps section {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.stage-analysis-section-title {
+  min-height: 30px;
+}
+
+.stage-analysis-checkbox-grid,
+.stage-chart-checkbox-grid {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 8px 12px;
+  padding: 12px;
+  border: 1px solid #e7edf4;
+  border-radius: 8px;
+  background: #fafcff;
+}
+
+.stage-analysis-checkbox-grid .ant-checkbox-wrapper,
+.stage-chart-checkbox-grid .ant-checkbox-wrapper {
+  margin-inline-start: 0;
+  min-width: 0;
+}
+
+.stage-analysis-actions {
+  margin-top: 20px;
+}

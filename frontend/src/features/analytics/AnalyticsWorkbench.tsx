@@ -284,6 +284,8 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
             onParameterAnalysisConfigChange={(patch) => updateAnalysisComponent("parameterAnalysis", patch)}
             relationshipConfig={viewState.analysis.parameterRelationship}
             onRelationshipConfigChange={(patch) => updateAnalysisComponent("parameterRelationship", patch)}
+            parameterAutoRunKey={searchParams.get("draw_parameter") === "1" ? searchParams.get("draw_request") ?? undefined : undefined}
+            relationshipAutoRunKey={searchParams.get("draw_relationship") === "1" ? searchParams.get("draw_request") ?? undefined : undefined}
           />
         : activeSection === "spatial"
           ? <SpatialSection {...sectionContext} onOpenDrilldown={openDrilldown} displayState={viewState.display} onDisplayStateChange={updateChartDisplay} config={viewState.analysis.spatial} onConfigChange={(patch) => updateAnalysisComponent("spatial", patch)} />

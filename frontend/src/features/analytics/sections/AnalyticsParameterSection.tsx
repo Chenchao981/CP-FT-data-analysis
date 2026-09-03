@@ -19,6 +19,8 @@ export interface AnalyticsParameterSectionProps extends AnalyticsSectionContext,
   onParameterAnalysisConfigChange: (patch: Partial<ParameterAnalysisViewConfig>) => void;
   relationshipConfig: ParameterRelationshipViewConfig;
   onRelationshipConfigChange: (patch: Partial<ParameterRelationshipViewConfig>) => void;
+  parameterAutoRunKey?: string;
+  relationshipAutoRunKey?: string;
 }
 
 export function AnalyticsParameterSection({
@@ -36,6 +38,8 @@ export function AnalyticsParameterSection({
   onParameterAnalysisConfigChange,
   relationshipConfig,
   onRelationshipConfigChange,
+  parameterAutoRunKey,
+  relationshipAutoRunKey,
 }: AnalyticsParameterSectionProps) {
   return <Space direction="vertical" size="large" style={{ width: "100%" }}>
     <ParameterRelationshipPanel
@@ -47,6 +51,7 @@ export function AnalyticsParameterSection({
       onDisplayStateChange={onDisplayStateChange}
       config={relationshipConfig}
       onConfigChange={onRelationshipConfigChange}
+      autoRunKey={relationshipAutoRunKey}
     />
     <ParameterAnalysisPanel
       datasets={context.datasets}
@@ -68,6 +73,7 @@ export function AnalyticsParameterSection({
       onDisplayStateChange={onDisplayStateChange}
       config={parameterAnalysisConfig}
       onConfigChange={onParameterAnalysisConfigChange}
+      autoRunKey={parameterAutoRunKey}
     />
   </Space>;
 }

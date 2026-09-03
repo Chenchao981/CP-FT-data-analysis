@@ -6,6 +6,7 @@ import { LoginPage } from "./features/auth/LoginPage";
 import { useAuth } from "./features/auth/AuthContext";
 import { UserManagement } from "./features/users/UserManagement";
 import { StageDataWorkbench } from "./features/stage/StageDataWorkbench";
+import type { StageConfiguredAnalysis, StageChartType } from "./features/stage/StageAnalysisLauncher";
 import { JobDetailsDrawer } from "./features/jobs/JobDetailsDrawer";
 import type { PermissionCode } from "./api/auth";
 import "./styles.css";
@@ -104,6 +105,27 @@ export default function App() {
     navigate("/analytics", analyticsSearch([{ datasetId, versionNo }]));
   };
   const openComparison = (datasets: AnalyticsDatasetSelection[]) => navigate("/analytics", analyticsSearch(datasets));
+  const openConfiguredAnalytics = (selection: StageConfiguredAnalysis) => {
+    const params = analyticsSearch(selection.datasets);
+    selection.lotIds.forEach((value) => params.append("lot_id", value));
+    selection.parameters.forEach((value) => params.append("parameter", value));
+    params.set("section", "parameter");
+    const parameterTypes: StageChartType[] = ["DESCRIPTIVE", "BOX_PLOT", "HISTOGRAM", "NORMAL_FIT", "CAPABILITY"];
+    const relationshipTypes: StageChartType[] = ["SCATTER", "TREND", "CORRELATION"];
+    const selectedParameterTypes = selection.chartTypes.filter((value) => parameterTypes.includes(value));
+    const selectedRelationshipTypes = selection.chartTypes.filter((value) => relationshipTypes.includes(value));
+    selectedParameterTypes.forEach((value) => params.append("pa_analysis", value));
+    selectedRelationshipTypes.forEach((value) => params.append("rel_analysis", value));
+    if (selectedRelationshipTypes.length) {
+      params.set("rel_x", selection.parameters[0]);
+      selection.parameters.slice(1, 2).forEach((value) => params.append("rel_y", value));
+      params.set("rel_max_points", "500");
+      params.set("draw_relationship", "1");
+    }
+    if (selectedParameterTypes.length) params.set("draw_parameter", "1");
+    params.set("draw_request", String(Date.now()));
+    navigate("/analytics", params);
+  };
   const openJob = (jobId: number) => {
     const next = new URLSearchParams(searchParams);
     next.set("job_id", String(jobId));
@@ -154,6 +176,6 @@ export default function App() {
     actionsRender={() => []}
     token={{ sider: { colorMenuBackground: "#082f52", colorTextMenu: "#c8d8e5", colorTextMenuSelected: "#ffffff", colorBgMenuItemSelected: "#1167a8" } }}
   ><PageContainer title={false} className="app-content">
-    {activePage === "/dashboard" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><PersonalDashboard userName={user.display_name} onNavigate={navigate} canOpenQuality={can("MANAGEMENT_READ") || can("RULE_GOVERN")} canRunQuickAnalysis={can("ANALYSIS_RUN")} /></Suspense> : activePage === "/cp" ? <StageDataWorkbench businessDomain="ALL" testStage="CP" searchParams={searchParams} onSearchParamsChange={(params) => navigate("/cp", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} /> : activePage === "/ft" ? <StageDataWorkbench businessDomain="ALL" testStage="FT" searchParams={searchParams} onSearchParamsChange={(params) => navigate("/ft", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} /> : activePage === "/quick-analysis" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><QuickAnalysisWorkbench /></Suspense> : activePage === "/datasets/current" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><DatasetCurrentCatalog searchParams={searchParams} onSearchParamsChange={(params) => navigate("/datasets/current", params)} onOpenAnalytics={openAnalytics} onOpenComparison={openComparison} onOpenJob={openJob} /></Suspense> : activePage === "/analytics" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><AnalyticsWorkbench datasets={analyticsDatasets} searchParams={searchParams} onSearchParamsChange={(params) => navigate("/analytics", params)} onOpenCatalog={() => navigate("/datasets/current")} /></Suspense> : activePage === "/management/quality" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><QualityManagementDashboard searchParams={searchParams} onSearchParamsChange={(params) => navigate("/management/quality", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} canOpenAnalytics={can("DATASET_READ")} canReadManagement={can("MANAGEMENT_READ")} canGovernRules={can("RULE_GOVERN")} /></Suspense> : activePage === "/master-data/product-crosswalks" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><ProductCrosswalkWorkbench searchParams={searchParams} onSearchParamsChange={(params) => navigate("/master-data/product-crosswalks", params)} /></Suspense> : activePage === "/operations" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><OperationsConsistency /></Suspense> : activePage === "/data-domains" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><DataDomainManagement /></Suspense> : activePage === "/users" ? <UserManagement /> : <Result status="403" title="无权访问" subTitle="当前 URL 对应的功能不存在，或当前账户没有访问权限。" />}
+    {activePage === "/dashboard" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><PersonalDashboard userName={user.display_name} onNavigate={navigate} canOpenQuality={can("MANAGEMENT_READ") || can("RULE_GOVERN")} canRunQuickAnalysis={can("ANALYSIS_RUN")} /></Suspense> : activePage === "/cp" ? <StageDataWorkbench businessDomain="ALL" testStage="CP" searchParams={searchParams} onSearchParamsChange={(params) => navigate("/cp", params)} onOpenAnalytics={openAnalytics} onOpenConfiguredAnalytics={openConfiguredAnalytics} onOpenJob={openJob} /> : activePage === "/ft" ? <StageDataWorkbench businessDomain="ALL" testStage="FT" searchParams={searchParams} onSearchParamsChange={(params) => navigate("/ft", params)} onOpenAnalytics={openAnalytics} onOpenConfiguredAnalytics={openConfiguredAnalytics} onOpenJob={openJob} /> : activePage === "/quick-analysis" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><QuickAnalysisWorkbench /></Suspense> : activePage === "/datasets/current" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><DatasetCurrentCatalog searchParams={searchParams} onSearchParamsChange={(params) => navigate("/datasets/current", params)} onOpenAnalytics={openAnalytics} onOpenComparison={openComparison} onOpenJob={openJob} /></Suspense> : activePage === "/analytics" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><AnalyticsWorkbench datasets={analyticsDatasets} searchParams={searchParams} onSearchParamsChange={(params) => navigate("/analytics", params)} onOpenCatalog={() => navigate("/datasets/current")} /></Suspense> : activePage === "/management/quality" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><QualityManagementDashboard searchParams={searchParams} onSearchParamsChange={(params) => navigate("/management/quality", params)} onOpenAnalytics={openAnalytics} onOpenJob={openJob} canOpenAnalytics={can("DATASET_READ")} canReadManagement={can("MANAGEMENT_READ")} canGovernRules={can("RULE_GOVERN")} /></Suspense> : activePage === "/master-data/product-crosswalks" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><ProductCrosswalkWorkbench searchParams={searchParams} onSearchParamsChange={(params) => navigate("/master-data/product-crosswalks", params)} /></Suspense> : activePage === "/operations" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><OperationsConsistency /></Suspense> : activePage === "/data-domains" ? <Suspense fallback={<div className="page-loading"><Spin size="large" /></div>}><DataDomainManagement /></Suspense> : activePage === "/users" ? <UserManagement /> : <Result status="403" title="无权访问" subTitle="当前 URL 对应的功能不存在，或当前账户没有访问权限。" />}
   </PageContainer><JobDetailsDrawer jobId={jobId} open={jobId !== undefined} onClose={closeJob} onSelectJob={openJob} onOpenAnalytics={openAnalytics} /></ProLayout>;
 }

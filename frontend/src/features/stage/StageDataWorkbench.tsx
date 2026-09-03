@@ -14,6 +14,7 @@ import { MetricStrip } from "../../components/MetricStrip";
 import { useAuth } from "../auth/AuthContext";
 import { factoryInputs, factoryNames, formalFactoryOptions, isFormalFactory } from "../capabilities/capabilityCatalog";
 import { LotEnrichmentModal } from "./LotEnrichmentModal";
+import { StageAnalysisLauncher, type StageConfiguredAnalysis } from "./StageAnalysisLauncher";
 
 const StageResultsChartPanel = lazy(() => import("./StageResultsChartPanel").then((module) => ({ default: module.StageResultsChartPanel })));
 
@@ -47,6 +48,7 @@ export interface StageDataWorkbenchProps {
   searchParams?: URLSearchParams;
   onSearchParamsChange?: (params: URLSearchParams) => void;
   onOpenAnalytics?: (datasetId: number, versionNo: number) => void;
+  onOpenConfiguredAnalytics?: (selection: StageConfiguredAnalysis) => void;
   onOpenJob?: (jobId: number) => void;
 }
 
@@ -86,7 +88,7 @@ const stageFiltersFromSearch = (params: URLSearchParams): StageFilterValues => O
   }),
 ) as StageFilterValues;
 
-export function StageDataWorkbench({ businessDomain, testStage, searchParams, onSearchParamsChange, onOpenAnalytics, onOpenJob }: StageDataWorkbenchProps) {
+export function StageDataWorkbench({ businessDomain, testStage, searchParams, onSearchParamsChange, onOpenAnalytics, onOpenConfiguredAnalytics, onOpenJob }: StageDataWorkbenchProps) {
   const { user, can } = useAuth();
   const operationalDomain: BusinessDomain = businessDomain === "ALL" ? "ENGINEERING" : businessDomain;
   const [open, setOpen] = useState(false);
@@ -381,7 +383,7 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
 
   return <div className="workbench production-workbench">
     {contextHolder}
-    <div className="page-heading"><div><Typography.Text type="secondary">{testStage} 统一数据入口</Typography.Text><Typography.Title level={2}>{testStage}数据</Typography.Title><Typography.Text type="secondary">{stageDescription[testStage]}</Typography.Text></div><Space wrap><Button icon={<ReloadOutlined />} onClick={() => void refresh()}>刷新</Button>{latestAnalyzableResult && can("DATASET_READ") && <Button type="primary" ghost icon={<BarChartOutlined />} onClick={() => onOpenAnalytics?.(latestAnalyzableResult.dataset_id!, latestAnalyzableResult.dataset_version_no!)}>查看最新图表</Button>}{can("TASK_CREATE") && <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => { setFiles([]); setInputMode("UPLOAD"); setSourceRootCode(undefined); setSourceRelativePath("."); setOpen(true); }}>上传数据</Button>}</Space></div>
+    <div className="page-heading"><div><Typography.Text type="secondary">{testStage} 统一数据入口</Typography.Text><Typography.Title level={2}>{testStage}数据</Typography.Title><Typography.Text type="secondary">{stageDescription[testStage]}</Typography.Text></div><Space wrap><Button icon={<ReloadOutlined />} onClick={() => void refresh()}>刷新</Button>{testStage === "FT" && latestAnalyzableResult && can("DATASET_READ") && <Button type="primary" ghost icon={<BarChartOutlined />} onClick={() => onOpenAnalytics?.(latestAnalyzableResult.dataset_id!, latestAnalyzableResult.dataset_version_no!)}>查看最新图表</Button>}{can("TASK_CREATE") && <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => { setFiles([]); setInputMode("UPLOAD"); setSourceRootCode(undefined); setSourceRelativePath("."); setOpen(true); }}>上传数据</Button>}</Space></div>
     <Alert showIcon type="info" className="compact-info-alert" message={visibilityDescription[businessDomain].message} description={visibilityDescription[businessDomain].description} />
     <MetricStrip ariaLabel={`${testStage} 数据处理状态`} items={[
       { label: "查询上传记录", value: metrics.total },
@@ -390,7 +392,8 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
       { label: "当前页待补录", value: metrics.needsInput, tone: metrics.needsInput ? "warning" : "default" },
       { label: "当前页失败", value: metrics.failed, tone: metrics.failed ? "danger" : "default" },
     ]} />
-    <Suspense fallback={<Card loading className="stage-results-chart-card" />}><StageResultsChartPanel testStage={testStage} rows={results.data?.items ?? []} loading={results.isLoading} canOpenAnalytics={can("DATASET_READ")} onOpenAnalytics={onOpenAnalytics} /></Suspense>
+    {can("DATASET_READ") && onOpenConfiguredAnalytics && <StageAnalysisLauncher testStage={testStage} rows={results.data?.items ?? []} loading={results.isLoading} currentLogin={user?.login_name} onDraw={onOpenConfiguredAnalytics} />}
+    {testStage === "FT" && <Suspense fallback={<Card loading className="stage-results-chart-card" />}><StageResultsChartPanel testStage={testStage} rows={results.data?.items ?? []} loading={results.isLoading} canOpenAnalytics={can("DATASET_READ")} onOpenAnalytics={onOpenAnalytics} /></Suspense>}
     <Card className="review-filter-card">
       <Form<StageFilterFormValues> form={filterForm} layout="vertical" onFinish={(values) => updateSearchParams((next) => {
         for (const key of stageFilterKeys) next.delete(key);

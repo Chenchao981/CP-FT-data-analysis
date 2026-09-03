@@ -3,7 +3,7 @@ import { useMutation } from "@tanstack/react-query";
 import { Alert, Button, Card, Checkbox, Col, Collapse, Empty, Input, InputNumber, Row, Select, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { EChartsCoreOption } from "echarts/core";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { AnalyticsContextRequest } from "../../api/analytics";
 import { ApiError } from "../../api/auth";
@@ -31,6 +31,7 @@ export interface ParameterRelationshipPanelProps {
   onDisplayStateChange: (patch: Partial<AnalysisDisplayState>) => void;
   config?: ParameterRelationshipViewConfig;
   onConfigChange?: (patch: Partial<ParameterRelationshipViewConfig>) => void;
+  autoRunKey?: string;
 }
 
 type PointVisibility = "IN_SPEC" | "OUT_OF_SPEC";
@@ -131,6 +132,7 @@ export function ParameterRelationshipPanel({
   onDisplayStateChange,
   config: controlledConfig,
   onConfigChange: controlledOnConfigChange,
+  autoRunKey,
 }: ParameterRelationshipPanelProps) {
   const initialParameters = suggestedParameters.filter((value, index, values) => value && values.indexOf(value) === index);
   const [localConfig, setLocalConfig] = useState<ParameterRelationshipViewConfig>(() => ({
@@ -200,14 +202,29 @@ export function ParameterRelationshipPanel({
     mutationFn: analyzeParameterRelationship,
     retry: false,
   });
-  const execute = () => {
+  const runCurrentRequest = (resetDisplay: boolean) => {
     if (!canRun) return;
     const snapshot = cloneRequest(currentRequest);
-    onConfigChange({ displayGroups: [], scatterDataset: "" });
+    if (resetDisplay) onConfigChange({ displayGroups: [], scatterDataset: "" });
     setSubmittedRequest(snapshot);
     setSubmittedSignature(JSON.stringify(snapshot));
     mutation.mutate(snapshot);
   };
+  const execute = () => runCurrentRequest(true);
+  const handledAutoRun = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!autoRunKey || !canRun || handledAutoRun.current === autoRunKey) return;
+    const timeout = window.setTimeout(() => {
+      if (handledAutoRun.current === autoRunKey) return;
+      handledAutoRun.current = autoRunKey;
+      // Avoid a parent URL-state update during auto-run. That update can replace
+      // the in-flight mutation state before its response is rendered.
+      runCurrentRequest(false);
+    }, 0);
+    return () => window.clearTimeout(timeout);
+  // execute is intentionally represented by the complete request signature.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRunKey, canRun, currentSignature]);
   const retrySubmitted = () => {
     if (submittedRequest) mutation.mutate(cloneRequest(submittedRequest));
   };
