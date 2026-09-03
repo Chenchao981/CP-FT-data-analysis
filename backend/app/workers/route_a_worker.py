@@ -26,6 +26,7 @@ from app.infrastructure.existing_cleaner_runner import (
 )
 from app.infrastructure.ft_xlsx_scatter_writer import FtXlsxScatterWriter
 from app.infrastructure.quick_pat_runner import QuickPatRunner
+from app.infrastructure.quick_result_export import QuickResultExportStore
 from app.infrastructure.source_catalog import SourceCatalog
 from app.infrastructure.sql_cleaner_registry import SqlCleanerRegistry
 from app.infrastructure.sql_stage_data_service import SqlStageDataService
@@ -56,6 +57,7 @@ class QuickPatHandler:
             work_root
             or os.getenv("TMS_QUICK_WORK_ROOT", r"F:\CP-FT数据分析\data\workspace")
         )
+        self._result_export = QuickResultExportStore(self._work_root)
 
     def __call__(self, job: Job) -> None:
         if job.analysis_session_id is None or job.cleaner_release_id is None:
@@ -178,12 +180,29 @@ class QuickPatHandler:
                 raise RuntimeError(
                     "Source directory changed while Quick PAT was running"
                 )
+            summary = dict(result.summary)
+            if is_direct_path:
+                report = next(
+                    (
+                        artifact.path
+                        for artifact in result.artifacts
+                        if artifact.role == "pat_report"
+                    ),
+                    None,
+                )
+                if report is None:
+                    raise RuntimeError("Quick PAT did not produce a report for export")
+                exported = self._result_export.export_report(
+                    session.analysis_session_id, report
+                )
+                if exported is not None:
+                    summary["exported_result_path"] = str(exported)
             self._quick_analysis.record_success(
                 session.analysis_session_id,
                 job.job_id,
                 parameter_count=result.parameter_count,
                 record_count=result.record_count,
-                summary=result.summary,
+                summary=summary,
                 artifacts=result.artifacts,
             )
         except DomainError as exc:
@@ -196,6 +215,8 @@ class QuickPatHandler:
                 session.analysis_session_id, "QUICK_PAT_FAILED", str(exc)
             )
             raise
+        finally:
+            self._result_export.discard(session.analysis_session_id)
 
 
 def _direct_path_suffixes(adapter_code: str) -> tuple[str, ...]:

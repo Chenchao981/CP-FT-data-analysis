@@ -68,7 +68,7 @@ describe("quick analysis api", () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({ analysis_session_id: 10 }), { status: 201 }));
 
     await previewDirectPath(preview.path, preview.tool_code);
-    await createDirectPathPat(preview);
+    await createDirectPathPat(preview, String.raw`F:\reports\PAT`);
 
     expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/quick-analysis/direct-path/preview");
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
@@ -81,6 +81,7 @@ describe("quick analysis api", () => {
       tool_code: preview.tool_code,
       source_manifest_mode: preview.mode,
       source_manifest_sha256: preview.sha,
+      output_directory: String.raw`F:\reports\PAT`,
     });
   });
 

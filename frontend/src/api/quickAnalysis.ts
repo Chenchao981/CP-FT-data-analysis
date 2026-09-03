@@ -68,6 +68,7 @@ export interface QuickAnalysisSession {
     minimum_parameter_value_count?: number;
     execution_mode?: "SERVER_CATALOG" | "LOCAL_AGENT";
     tool_code?: string;
+    exported_result_path?: string;
   } | null;
   result_file_name: string | null;
   result_size_bytes: number | null;
@@ -175,7 +176,10 @@ export const browseDirectPath = (path: string, toolCode: DirectPathToolCode) =>
     body: JSON.stringify({ path, tool_code: toolCode }),
   });
 
-export const createDirectPathPat = (preview: DirectPathPreview) =>
+export const createDirectPathPat = (
+  preview: DirectPathPreview,
+  outputDirectory?: string,
+) =>
   apiRequest<QuickAnalysisSession>(`${base}/direct-path/pat`, {
     method: "POST",
     body: JSON.stringify({
@@ -183,6 +187,7 @@ export const createDirectPathPat = (preview: DirectPathPreview) =>
       tool_code: preview.tool_code,
       source_manifest_mode: preview.mode,
       source_manifest_sha256: preview.sha,
+      output_directory: outputDirectory?.trim() || undefined,
     }),
   });
 

@@ -155,6 +155,7 @@ export function QuickAnalysisWorkbench() {
     { title: "参数", dataIndex: "parameter_count", width: 85, render: count },
     { title: "解析数据行", dataIndex: "record_count", width: 125, render: count },
     { title: "计算耗时", key: "elapsed", width: 105, render: (_, row) => row.summary?.elapsed_seconds == null ? "—" : `${row.summary.elapsed_seconds.toFixed(3)} 秒` },
+    { title: "指定输出", key: "exported_result_path", width: 300, ellipsis: true, render: (_, row) => row.summary?.exported_result_path || "—" },
     { title: "发起人", dataIndex: "owner_name", width: 100 },
     { title: "创建时间", dataIndex: "created_at_utc", width: 175, render: formatUtcDateTime },
     { title: "结果到期", dataIndex: "expires_at_utc", width: 175, render: formatUtcDateTime },
@@ -166,17 +167,17 @@ export function QuickAnalysisWorkbench() {
   return <div className="workbench quick-analysis-workbench">
     {contextHolder}
     <div className="page-heading">
-      <div><Typography.Text type="secondary">快速计算 / 复用 CP 与 FT 个人工具</Typography.Text><Typography.Title level={2}>快速分析</Typography.Title><Typography.Text type="secondary">输入目录先预览，再选择工具计算；源文件无需通过浏览器逐个上传，快速结果不写入正式 Canonical 明细。</Typography.Text></div>
+      <div><Typography.Text type="secondary">复用现有 CP 与 FT 桌面工具能力</Typography.Text><Typography.Title level={2}>CP / FT 个人工具</Typography.Title><Typography.Text type="secondary">先选 CP 或 FT、再选厂家和路径，最后选择清洗、图表、PAT 或 SBL&SYL；快速结果不写入正式 Canonical 明细。</Typography.Text></div>
       <Button icon={<ReloadOutlined />} onClick={() => void Promise.all([roots.refetch(), directories.refetch(), manifest.refetch(), sessions.refetch()])}>刷新</Button>
     </div>
-    <Alert className="compact-info-alert" showIcon type="info" message="源文件不上传、不写入正式 Canonical；结果默认保留 7 天。FT 五家共用统一 PAT，CP 调用各厂已发布 Cleaner。" />
+    <Alert className="compact-info-alert" showIcon type="info" message="本机路径模式直接读取当前 TMS 主机可访问目录；PAT 已接通后台执行和指定目录输出，其余桌面工具能力按厂家显示接入状态。" />
     <Tabs
       defaultActiveKey="local"
       className="quick-source-tabs"
       items={[
         {
           key: "local",
-          label: <Space><LaptopOutlined />本机 / NAS 路径</Space>,
+          label: <Space><LaptopOutlined />CP / FT 个人工具</Space>,
           children: <DirectPathAnalysisPanel onCreated={() => queryClient.invalidateQueries({ queryKey: ["quick-analysis", "sessions"] })} />,
         },
         {
@@ -256,7 +257,7 @@ export function QuickAnalysisWorkbench() {
         columns={sessionColumns}
         dataSource={sessions.data?.items ?? []}
         loading={sessions.isLoading}
-        scroll={{ x: 1900 }}
+        scroll={{ x: 2200 }}
         pagination={{
           current: sessions.data?.page ?? sessionPage,
           pageSize: sessions.data?.page_size ?? sessionPageSize,

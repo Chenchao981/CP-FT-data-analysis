@@ -70,6 +70,7 @@ class DirectPathBrowseRequest(BaseModel):
 class CreateDirectPathPatRequest(DirectPathPreviewRequest):
     source_manifest_mode: Literal["LOCAL_PATH_SIZE_MTIME_V1"]
     source_manifest_sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+    output_directory: str | None = Field(default=None, min_length=1, max_length=1000)
 
 
 class TemporaryFtpPreviewRequest(BaseModel):

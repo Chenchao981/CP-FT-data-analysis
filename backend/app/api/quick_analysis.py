@@ -50,6 +50,7 @@ from app.infrastructure.local_quick_result import (
     local_quick_pat_capability,
     validate_local_quick_pat_release,
 )
+from app.infrastructure.quick_result_export import QuickResultExportStore
 from app.infrastructure.temporary_ftp_source import preview_ftp_directory
 
 router = APIRouter(prefix="/quick-analysis")
@@ -391,8 +392,13 @@ def create_direct_path_pat(
             reserved_bytes=reserved_bytes,
         ),
     )
+    export_store = QuickResultExportStore(capacity.work_root)
     job = None
     try:
+        if payload.output_directory:
+            export_store.register(
+                session.analysis_session_id, payload.output_directory
+            )
         job = _create_quick_job(
             request,
             CreateJobRequest(
@@ -412,6 +418,7 @@ def create_direct_path_pat(
         )
         quick_service(request).attach_job(session.analysis_session_id, job.job_id)
     except Exception as exc:
+        export_store.discard(session.analysis_session_id)
         if job is None:
             quick_service(request).mark_failed_cleaned(
                 session.analysis_session_id, "QUEUE_CREATE_FAILED", str(exc)
