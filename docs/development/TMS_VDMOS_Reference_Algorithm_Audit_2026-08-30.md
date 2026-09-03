@@ -65,7 +65,7 @@ VDMOS v8.9 可以作为**最终用户交互和图表表现参考**，不能作�
 - Pass Bin 必须显式来自已批准合同，不能在公共层写死为 1；
 - 多 Lot Spec 不得任取第一份，必须按 Lot 绑定。
 
-本文与 `docs/development/TMS_Analytics_Closure_Development_Plan_v1.3_2026-08-30.md` 互补：开发计划定义目标能力和工作包，本文冻结 VDMOS 参考算法中哪些内容可借鉴、哪些内容必须拒绝。
+本文与归档的 `docs/archive/2026-08-24_to_2026-09-03_delivery-records/development/TMS_Analytics_Closure_Development_Plan_v1.3_2026-08-30.md` 互补：开发计划定义当时的目标能力和工作包，本文冻结 VDMOS 参考算法中哪些内容可借鉴、哪些内容必须拒绝。
 
 ## 3. 共性红线：以下行为全部禁止迁入 TMS
 

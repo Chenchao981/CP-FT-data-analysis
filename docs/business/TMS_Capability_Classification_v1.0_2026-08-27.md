@@ -59,5 +59,5 @@ TMS 从本版本开始将能力分为三条独立通道，页面、接口、Clea
 
 - 本阶段不宣称日月光 DVDS、RG、HTDC、TF 已接入正式数据库。
 - 本阶段不宣称电基、集佳、杰群正式 Route A 已完成。
-- **同日增量更新（取代本文件初版结论）**：Lot 人工补录闭环已经实现。当前正式开放的 FT Cleaner 在无法取得 Lot 时必须进入 `NEEDS_INPUT`，用户按源文件补录后形成审计记录并恢复原 Cleaner Release；成功重跑后才能发布 Dataset Current。实现与验收边界分别见 `docs/architecture/TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md` 和 `docs/development/TMS_Lot_Input_Recovery_Completion_Report_2026-08-27.md`。
+- **同日增量更新（取代本文件初版结论）**：Lot 人工补录闭环已经实现。当前正式开放的 FT Cleaner 在无法取得 Lot 时必须进入 `NEEDS_INPUT`，用户按源文件补录后形成审计记录并恢复原 Cleaner Release；成功重跑后才能发布 Dataset Current。实现与验收边界分别见 `docs/architecture/TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md` 和归档的 `docs/archive/2026-08-24_to_2026-09-03_delivery-records/development/TMS_Lot_Input_Recovery_Completion_Report_2026-08-27.md`。
 - 本阶段不删除或迁移已有历史正式数据。

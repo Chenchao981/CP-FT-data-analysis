@@ -1,6 +1,6 @@
 # TMS 业务需求规格 v0.2
 
-> **Lot 规则更新（2026-08-27）**：本文保留历史决策过程，但其中“FT Lot 可为空并直接正式入库”“缺 Lot 后置补录”“任务级 Lot 覆盖全部数据”和“沿用第一批次 Spec”等内容已失效。当前正式 Route A 要求每个适用源文件都有可验证 Lot；Cleaner 无法取得 Lot 时进入 `NEEDS_INPUT`，用户按文件确认后创建同 Cleaner Release 的子 Job 重跑，只有 Lot、Source 与 Spec 再校验通过才发布。现行合同与证据见 [`TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md`](../architecture/TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md) 和 [`TMS_Lot_Input_Recovery_Completion_Report_2026-08-27.md`](../development/TMS_Lot_Input_Recovery_Completion_Report_2026-08-27.md)。其余不冲突内容继续有效。
+> **Lot 规则更新（2026-08-27）**：本文保留历史决策过程，但其中“FT Lot 可为空并直接正式入库”“缺 Lot 后置补录”“任务级 Lot 覆盖全部数据”和“沿用第一批次 Spec”等内容已失效。当前正式 Route A 要求每个适用源文件都有可验证 Lot；Cleaner 无法取得 Lot 时进入 `NEEDS_INPUT`，用户按文件确认后创建同 Cleaner Release 的子 Job 重跑，只有 Lot、Source 与 Spec 再校验通过才发布。现行合同与证据见 [`TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md`](../architecture/TMS_Lot_Input_Recovery_Architecture_v0.1_2026-08-27.md) 和归档的 [`TMS_Lot_Input_Recovery_Completion_Report_2026-08-27.md`](../archive/2026-08-24_to_2026-09-03_delivery-records/development/TMS_Lot_Input_Recovery_Completion_Report_2026-08-27.md)。其余不冲突内容继续有效。
 
 状态：**业务基线候选，待文档评审确认**
 
@@ -17,7 +17,7 @@
 若本文件与以下旧文档冲突，以本文件为准：
 
 - `docs/business/CP_FT_Analysis_Business_Facts_v0.1.md`；
-- `docs/TMS_Development_Baseline_v0.6_Unified_Cleaning_Analytics/TMS_09_User_Workflow_and_Chart_Baseline.md`；
+- `docs/archive/2026-08-19_to_2026-08-24_legacy-baselines/TMS_Development_Baseline_v0.6_Unified_Cleaning_Analytics/TMS_09_User_Workflow_and_Chart_Baseline.md`；
 - 2026-08-21 交接文档中的路线 B 明细入库方案。
 
 ## 2. 产品定位

@@ -1,11 +1,11 @@
 # Reference projects and business data are local evidence, never source assets.
 /历史项目-参考用/
 
-# Superseded local planning snapshots; v0.6 is the repository baseline.
-/docs/0.1/
-/docs/TMS_Data_Model_Baseline_v0.2_SQLServer/
-/docs/TMS_Development_Baseline_v0.3_SQLServer_React_Wijmo/
-/docs/TMS_Development_Baseline_v0.5_SQLServer_React_AntD_Governance/
+# Superseded local planning snapshots retained only in the documentation archive.
+/docs/archive/2026-08-19_to_2026-08-24_legacy-baselines/0.1/
+/docs/archive/2026-08-19_to_2026-08-24_legacy-baselines/TMS_Data_Model_Baseline_v0.2_SQLServer/
+/docs/archive/2026-08-19_to_2026-08-24_legacy-baselines/TMS_Development_Baseline_v0.3_SQLServer_React_Wijmo/
+/docs/archive/2026-08-19_to_2026-08-24_legacy-baselines/TMS_Development_Baseline_v0.5_SQLServer_React_AntD_Governance/
 /evidence/private/
 /artifacts/
 

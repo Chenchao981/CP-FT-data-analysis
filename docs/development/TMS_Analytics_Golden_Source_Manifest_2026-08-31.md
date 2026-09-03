@@ -18,10 +18,10 @@
 
 | 证据 | SHA256 | 本文使用方式 |
 |---|---|---|
-| `docs/development/TMS_Analytics_Closure_Development_Plan_v1.3_2026-08-30.md` | `62cfe6ad3285efa2bf911462f37022e4abfc9d0cf56da7d35159f4dcdaca332c` | Golden 存放、覆盖矩阵、AC0 和 G0-G4 门禁 |
-| `docs/development/TMS_Route_A_A2_CP_Runnable_Completion_Report_2026-08-24.md` | `cde363d84a20b2ed317a62ca266b2f46233550241cc71dc333ee46b0d2de9f69` | CP Route A 真实样本历史验收 |
-| `docs/development/TMS_Route_A_A2_Riyuexin_FT_Completion_Report_2026-08-25.md` | `84db6e06d1914f4e64586c949f7bb680c8135b29a65976e503ead2439a34f668` | 日月新 DC、`FT_XLSX_SCATTER_V1` 和无 PASS/FAIL/Bin 语义 |
-| `docs/development/TMS_Capability_Split_and_Riyueguang_FT_Completion_Report_2026-08-27.md` | `060721b6759c94d941e9d7470db3e7b694ff52fcf19c4de89715d60ea258ea5e` | 当前通用/定制/快速分类与日月光 DC 验收 |
+| `docs/archive/2026-08-24_to_2026-09-03_delivery-records/development/TMS_Analytics_Closure_Development_Plan_v1.3_2026-08-30.md` | `62cfe6ad3285efa2bf911462f37022e4abfc9d0cf56da7d35159f4dcdaca332c` | Golden 存放、覆盖矩阵、AC0 和 G0-G4 门禁 |
+| `docs/archive/2026-08-24_to_2026-09-03_delivery-records/development/TMS_Route_A_A2_CP_Runnable_Completion_Report_2026-08-24.md` | `cde363d84a20b2ed317a62ca266b2f46233550241cc71dc333ee46b0d2de9f69` | CP Route A 真实样本历史验收 |
+| `docs/archive/2026-08-24_to_2026-09-03_delivery-records/development/TMS_Route_A_A2_Riyuexin_FT_Completion_Report_2026-08-25.md` | `84db6e06d1914f4e64586c949f7bb680c8135b29a65976e503ead2439a34f668` | 日月新 DC、`FT_XLSX_SCATTER_V1` 和无 PASS/FAIL/Bin 语义 |
+| `docs/archive/2026-08-24_to_2026-09-03_delivery-records/development/TMS_Capability_Split_and_Riyueguang_FT_Completion_Report_2026-08-27.md` | `060721b6759c94d941e9d7470db3e7b694ff52fcf19c4de89715d60ea258ea5e` | 当前通用/定制/快速分类与日月光 DC 验收 |
 | `backend/app/api/stage_data.py` | `905d8e8c2fa5197bf0f62b8fd2f4c9d9115ffa05e9e5d1292c542dce411eaece` | 当前后端工厂代码和别名白名单 |
 | `scripts/g0/inventory_v13_golden_sources.py` | `7c836e6ff6e9636730048e7afc8a8d955b86497716b2b0d10040df7fc5e9fc1c` | 本次只读聚合盘点合同 `TMS_GOLDEN_SOURCE_INVENTORY_V1` |
 
