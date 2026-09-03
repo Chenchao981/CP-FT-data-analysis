@@ -80,7 +80,7 @@ const resultRows = [1, 2].map((resultSummaryId) => ({
   result_summary_id: resultSummaryId,
   import_batch_id: 14,
   data_name: `result-${resultSummaryId}`,
-  product_name: "PRODUCT",
+  product_name: `PRODUCT-${resultSummaryId}`,
   lot_id: "LOT-DONE",
   wafer_count: null,
   factory_code: "riyuexin",
@@ -198,7 +198,9 @@ describe("StageDataWorkbench Lot input states", () => {
     expect(screen.getByText("相同内容已上传")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "清洗结果" }));
-    const resultRow = (await screen.findByText("result-1")).closest("tr")!;
+    expect(screen.getByRole("columnheader", { name: "产品名称" })).toBeInTheDocument();
+    expect(screen.queryByRole("columnheader", { name: "名称" })).not.toBeInTheDocument();
+    const resultRow = (await screen.findByText("PRODUCT-1")).closest("tr")!;
     expect(within(resultRow).getByText("#14")).toBeInTheDocument();
     expect(within(resultRow).getByText("操作员（operator）")).toBeInTheDocument();
   }, 30_000);
@@ -238,7 +240,7 @@ describe("StageDataWorkbench Lot input states", () => {
     expect(screen.queryByRole("button", { name: /重新处理/ })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "清洗结果" }));
-    const resultRow = (await screen.findByText("result-1")).closest("tr")!;
+    const resultRow = (await screen.findByText("PRODUCT-1")).closest("tr")!;
     expect(within(resultRow).queryByRole("button", { name: /重新处理/ })).not.toBeInTheDocument();
     expect(within(resultRow).getByRole("button", { name: /数据分析/ })).toBeInTheDocument();
   }, 30_000);
@@ -309,7 +311,7 @@ describe("StageDataWorkbench Lot input states", () => {
       onSearchParamsChange,
     });
 
-    expect(await screen.findByText("result-1", {}, { timeout: 15_000 })).toBeInTheDocument();
+    expect(await screen.findByText("PRODUCT-1", {}, { timeout: 15_000 })).toBeInTheDocument();
     expect(screen.getByLabelText("产品")).toHaveValue("NCE-IGBT");
     expect(screen.getByLabelText("Lot")).toHaveValue("LOT-URL");
     expect(listStageUploadsPage).toHaveBeenLastCalledWith("PRODUCTION", "FT", expect.objectContaining({ page: 2, page_size: 50, product_name: "NCE-IGBT", lot_id: "LOT-URL" }));
@@ -385,7 +387,7 @@ describe("StageDataWorkbench Lot input states", () => {
     expect(onOpenJob).toHaveBeenCalledWith(1);
 
     fireEvent.click(screen.getByRole("tab", { name: "清洗结果" }));
-    const resultCell = await screen.findByText("result-1");
+    const resultCell = await screen.findByText("PRODUCT-1");
     const resultRow = resultCell.closest("tr");
     expect(resultRow).not.toBeNull();
     expect(within(resultRow!).getAllByText("—").length).toBeGreaterThan(0);

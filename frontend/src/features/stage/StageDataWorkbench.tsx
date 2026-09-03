@@ -344,8 +344,7 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
   ];
   const resultColumns: ColumnsType<StageResultRow> = [
     { title: "Batch", dataIndex: "import_batch_id", width: 95, fixed: "left", render: (value) => `#${value}` },
-    { title: "名称", dataIndex: "data_name", width: 180, fixed: "left" },
-    { title: "产品名称", dataIndex: "product_name", width: 180, render: (v) => v || "—" },
+    { title: "产品名称", dataIndex: "product_name", width: 180, fixed: "left", render: (v) => v || "—" },
     { title: "批号", dataIndex: "lot_id", width: 160, render: (v) => v || "—" },
     ...(testStage === "CP" ? [{ title: "晶圆数", dataIndex: "wafer_count", width: 90 }] : []),
     { title: testStage === "CP" ? "晶圆厂" : "封测厂", dataIndex: "factory_code", width: 100, render: (v) => factoryNames[String(v).toLowerCase()] ?? v },
@@ -424,7 +423,7 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
     {downloadError && <Alert type="error" showIcon closable message="源文件下载失败" description={downloadError} onClose={() => setDownloadError(undefined)} style={{ marginBottom: 16 }} />}
     <Card className="production-table-card"><Tabs activeKey={activeTab} onChange={(tab) => updateSearchParams((next) => { if (tab === "result") next.set("tab", "result"); else next.delete("tab"); })} items={[
       { key: "source", label: "原始文件", children: <Table rowKey={(r) => `${r.import_batch_id}-${r.sequence_no}`} columns={uploadColumns} dataSource={uploads.data?.items ?? []} loading={uploads.isLoading} scroll={{ x: 1980 }} pagination={{ current: uploads.data?.page ?? uploadPage.page, pageSize: uploads.data?.page_size ?? uploadPage.pageSize, total: uploads.data?.total ?? 0, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (total) => `共 ${total} 条` }} onChange={(pagination) => updateSearchParams((next) => { next.set("upload_page", String(pagination.current ?? 1)); next.set("upload_page_size", String(pagination.pageSize ?? 20)); })} /> },
-      { key: "result", label: "清洗结果", children: <Table rowKey="result_summary_id" columns={resultColumns} dataSource={results.data?.items ?? []} loading={results.isLoading} scroll={{ x: 1900 }} pagination={{ current: results.data?.page ?? resultPage.page, pageSize: results.data?.page_size ?? resultPage.pageSize, total: results.data?.total ?? 0, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (total) => `共 ${total} 条` }} onChange={(pagination) => updateSearchParams((next) => { next.set("result_page", String(pagination.current ?? 1)); next.set("result_page_size", String(pagination.pageSize ?? 20)); })} /> },
+      { key: "result", label: "清洗结果", children: <Table rowKey="result_summary_id" columns={resultColumns} dataSource={results.data?.items ?? []} loading={results.isLoading} scroll={{ x: 1720 }} pagination={{ current: results.data?.page ?? resultPage.page, pageSize: results.data?.page_size ?? resultPage.pageSize, total: results.data?.total ?? 0, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (total) => `共 ${total} 条` }} onChange={(pagination) => updateSearchParams((next) => { next.set("result_page", String(pagination.current ?? 1)); next.set("result_page_size", String(pagination.pageSize ?? 20)); })} /> },
     ]} /></Card>
     <Modal title={`提交${testStage}数据`} open={open} width={820} onCancel={() => !mutation.isPending && setOpen(false)} onOk={() => form.submit()} okText="提交后台清洗" confirmLoading={mutation.isPending} okButtonProps={{ disabled: inputMode === "CATALOG" && (!sourceManifest.data || confirmedManifestSha !== sourceManifest.data.sha) }} destroyOnHidden>
       <Alert showIcon type="info" message={`上传身份：${user?.display_name}（${user?.login_name}）`} description="系统从当前登录账号自动记录上传人，无需填写。" />
