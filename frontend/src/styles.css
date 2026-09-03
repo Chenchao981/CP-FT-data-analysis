@@ -54,7 +54,12 @@ body { margin: 0; min-width: 320px; background: #f2f5f8; }
 .app-shell { min-height: 100vh; }
 .sidebar { background: #082f52 !important; }
 .brand { height: 74px; padding: 16px 20px; display: flex; gap: 12px; align-items: center; color: white; }
-.brand-mark { width: 38px; height: 38px; border-radius: 10px; background: #30a4df; display: grid; place-items: center; font-weight: 800; font-size: 20px; }
+.brand-logo-image {
+  width: 52px;
+  height: 42px;
+  display: block;
+  object-fit: contain;
+}
 .brand strong, .brand span { display: block; }
 .brand span { color: #a9c2d6; font-size: 12px; margin-top: 2px; }
 .topbar { height: 64px; padding: 0 28px; background: white; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e5eaf0; }

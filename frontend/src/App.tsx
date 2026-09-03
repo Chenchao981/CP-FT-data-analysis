@@ -162,7 +162,7 @@ export default function App() {
   const jobId = positiveQueryInt(searchParams, "job_id");
   return <ProLayout
     title="TMS"
-    logo={<div className="brand-mark">T</div>}
+    logo={<img className="brand-logo-image" src="/tms-logo.png" alt="新洁能 TMS" />}
     layout="mix"
     fixedHeader
     fixSiderbar
