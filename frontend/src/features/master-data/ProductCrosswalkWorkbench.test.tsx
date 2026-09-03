@@ -114,7 +114,8 @@ describe("ProductCrosswalkWorkbench", () => {
   it("keeps pending identities separate from approved SAP-B1 mappings for management readers", async () => {
     renderWorkbench(false);
 
-    expect(await screen.findByText("产品 Crosswalk")).toBeInTheDocument();
+    expect(await screen.findByText("产品映射")).toBeInTheDocument();
+    expect(screen.queryByText("企业映射边界")).not.toBeInTheDocument();
     expect(screen.getAllByText("来源产品标识(TMS)").length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText("SAP-B1物料编码(仅已审批)").length).toBeGreaterThanOrEqual(1);
     expect(await screen.findByText("SAP-MAT-1200V")).toBeInTheDocument();

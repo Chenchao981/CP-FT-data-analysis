@@ -35,7 +35,7 @@ const routes: AppRoute[] = [
   { path: "/quick-analysis", name: "快速分析", icon: <PlayCircleOutlined />, permission: "ANALYSIS_RUN" },
   { path: "/datasets/current", name: "历史正式数据", icon: <ProfileOutlined />, permission: "DATASET_READ" },
   { path: "/management/quality", name: "质量管理摘要", icon: <DashboardOutlined />, permission: ["MANAGEMENT_READ", "RULE_GOVERN"] },
-  { path: "/master-data/product-crosswalks", name: "产品 Crosswalk", icon: <LinkOutlined />, permission: ["MANAGEMENT_READ", "RULE_GOVERN"] },
+  { path: "/master-data/product-crosswalks", name: "产品映射", icon: <LinkOutlined />, permission: ["MANAGEMENT_READ", "RULE_GOVERN"] },
   { path: "/operations", name: "运行一致性", icon: <SafetyCertificateOutlined />, permission: "AUDIT_READ" },
   { path: "/data-domains", name: "数据域授权", icon: <SafetyCertificateOutlined />, permission: "DATA_DOMAIN_ADMIN" },
   { path: "/users", name: "用户与权限", icon: <UserOutlined />, permission: "USER_ADMIN" },

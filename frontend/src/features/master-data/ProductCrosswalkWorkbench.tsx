@@ -149,6 +149,7 @@ export function ProductCrosswalkWorkbench({ searchParams, onSearchParamsChange }
       title: "SAP-B1物料编码(仅已审批)",
       dataIndex: "enterprise_key",
       width: 260,
+      // 映射边界是数据合同：PENDING/REJECTED 只是来源产品身份，只有 APPROVED + ENTERPRISE_MAPPED 才展示 SAP-B1 物料。
       render: (value, row) => row.status === "APPROVED" && row.identity_class === "ENTERPRISE_MAPPED" && value
         ? <Space><Typography.Text strong>{value}</Typography.Text><Tag color="success">已审批企业映射</Tag></Space>
         : <Typography.Text type="warning">—（{statusName[row.status]}，不可视为企业映射）</Typography.Text>,
@@ -175,12 +176,11 @@ export function ProductCrosswalkWorkbench({ searchParams, onSearchParamsChange }
     <div className="page-heading">
       <div>
         <Typography.Text type="secondary">主数据治理 / 产品身份</Typography.Text>
-        <Typography.Title level={2}>产品 Crosswalk</Typography.Title>
+        <Typography.Title level={2}>产品映射</Typography.Title>
         <Typography.Text type="secondary">来源观测的 TMS 产品身份与 SAP Business One 企业物料映射严格分层，只有 APPROVED 记录才是企业映射。</Typography.Text>
       </div>
       <Button icon={<ReloadOutlined />} loading={query.isFetching} onClick={() => void query.refetch()}>刷新</Button>
     </div>
-    <Alert type="warning" showIcon message="企业映射边界" description="PENDING 和 REJECTED 仅表示来源产品身份，绝不显示成 SAP-B1 企业物料映射。" className="review-alert" />
     <Card className="review-filter-card">
       <Form<CrosswalkFilterValues> form={filterForm} layout="vertical" onFinish={(values) => updateSearch(values)}>
         <Row gutter={[12, 0]}>
@@ -192,7 +192,7 @@ export function ProductCrosswalkWorkbench({ searchParams, onSearchParamsChange }
         </Row>
       </Form>
     </Card>
-    {query.isError && <Alert type="error" showIcon message="产品 Crosswalk 加载失败" description="本页不展示底层连接或账号详情；请稍后刷新或联系管理员。" className="review-alert" />}
+    {query.isError && <Alert type="error" showIcon message="产品映射加载失败" description="本页不展示底层连接或账号详情；请稍后刷新或联系管理员。" className="review-alert" />}
     <Card className="production-table-card">
       <Table
         rowKey="crosswalk_id"

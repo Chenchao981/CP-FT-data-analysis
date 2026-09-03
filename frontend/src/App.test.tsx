@@ -298,7 +298,7 @@ describe("App navigation and deep links", () => {
 
     expect(await screen.findByText("quality:from_utc=2026-08-01T00%3A00%3A00Z&product_name=NCE-MOS:analytics-true")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "质量管理摘要" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "产品 Crosswalk" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "产品映射" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "运行一致性" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "quality-filter" }));
@@ -320,7 +320,7 @@ describe("App navigation and deep links", () => {
     render(<App />);
 
     expect(await screen.findByText("crosswalk:status=PENDING&page=1")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "产品 Crosswalk" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "产品映射" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "质量管理摘要" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "crosswalk-page" }));

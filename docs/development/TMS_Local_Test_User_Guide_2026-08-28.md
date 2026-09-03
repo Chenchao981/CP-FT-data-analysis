@@ -79,7 +79,7 @@
 - 趋势按上海业务日归集，不按 UTC 自然日切分。页面提供最近 7 天、30 天和 90 天快捷范围；开始时间包含、结束时间不包含。
 - “已知良率”口径为 `PASS / (PASS + FAIL)`。UNKNOWN 和 ABORT 单独呈现，不得补成 FAIL 或 0%；没有已知分母时，良率显示为未知。
 - “失败 Job（批次口径）”只能可靠按时间、工程/量产、CP/FT 和厂家统计。选择产品或 Lot 后，该指标应显示“不适用”，不能把无法关联的失败 Job 强行套入产品或 Lot 口径。
-- 产品 crosswalk 默认是 PENDING。读取权限不等于批准权限；只有治理角色在核实 SAP-B1 物料键和依据后才能批准或拒绝。
+- 产品映射（Crosswalk）默认是 PENDING。PENDING 和 REJECTED 只表示来源产品身份，只有 APPROVED 记录才是 SAP-B1 企业物料映射；读取权限不等于批准权限，只有治理角色在核实 SAP-B1 物料键和依据后才能批准或拒绝。
 - 有 `AUDIT_READ` 的运维角色可查看 Environment、Database、Server、Schema、一致性和 Worker 心跳；只有系统管理员可以 Drain/Resume Worker。
 - 没有权限的菜单应隐藏，直接访问路由或 API 仍应返回 Unauthorized/Forbidden。
 
