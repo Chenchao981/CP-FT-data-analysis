@@ -91,6 +91,8 @@ body { margin: 0; min-width: 320px; background: #f2f5f8; }
 .pat-result-metrics { margin-bottom: 12px; }
 .pat-result-view .echart-root { margin-bottom: 12px; }
 .pat-result-chart { width: 100%; height: 360px; margin-bottom: 12px; }
+.stage-results-chart-card { margin-bottom: 20px; }
+.stage-results-chart { width: 100%; height: 380px; }
 .chart-filter-row { margin-top: 16px; padding-top: 16px; border-top: 1px solid #edf0f3; width: 100%; }
 .analytics-stats { margin-bottom: 18px; }
 .chart-card { min-height: 440px; box-shadow: none; }

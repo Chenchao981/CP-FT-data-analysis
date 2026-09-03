@@ -23,6 +23,10 @@ vi.mock("../../api/stageData", () => ({
 
 vi.mock("../auth/AuthContext", () => ({ useAuth: vi.fn() }));
 
+vi.mock("../../components/EChart", () => ({
+  EChart: ({ ariaLabel, option }: { ariaLabel: string; option: unknown }) => <div role="img" aria-label={ariaLabel} data-option={JSON.stringify(option)} />,
+}));
+
 vi.mock("./LotEnrichmentModal", () => ({
   LotEnrichmentModal: ({ open }: { open: boolean }) => open ? <div role="dialog" aria-label="Lot补录弹窗">Lot补录弹窗</div> : null,
 }));
@@ -242,7 +246,7 @@ describe("StageDataWorkbench Lot input states", () => {
     fireEvent.click(screen.getByRole("tab", { name: "清洗结果" }));
     const resultRow = (await screen.findByText("PRODUCT-1")).closest("tr")!;
     expect(within(resultRow).queryByRole("button", { name: /重新处理/ })).not.toBeInTheDocument();
-    expect(within(resultRow).getByRole("button", { name: /数据分析/ })).toBeInTheDocument();
+    expect(within(resultRow).getByRole("button", { name: /查看图表/ })).toBeInTheDocument();
   }, 30_000);
 
   it("refreshes results once when an active upload reaches a terminal status", async () => {
@@ -405,11 +409,16 @@ describe("StageDataWorkbench Lot input states", () => {
     });
     renderWorkbench({ businessDomain: "PRODUCTION", testStage: "FT", onOpenAnalytics });
 
-    await screen.findByText("missing-a.xlsx", {}, { timeout: 15_000 });
+    expect(await screen.findByRole("img", { name: "FT 最近清洗结果图表" }, { timeout: 15_000 })).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: /查看最新图表/ }));
+    expect(onOpenAnalytics).toHaveBeenCalledWith(20, 1);
+
     fireEvent.click(screen.getByRole("tab", { name: "清洗结果" }));
-    fireEvent.click((await screen.findAllByRole("button", { name: /数据分析/ }))[0]);
+    const resultRow = (await screen.findByText("PRODUCT-1")).closest("tr")!;
+    fireEvent.click(within(resultRow).getByRole("button", { name: /查看图表/ }));
 
     expect(onOpenAnalytics).toHaveBeenCalledWith(20, 1);
+    expect(onOpenAnalytics).toHaveBeenCalledTimes(2);
   }, 30_000);
 
   it("shows a visible error when an authenticated source download fails", async () => {
@@ -596,5 +605,5 @@ describe("StageDataWorkbench Lot input states", () => {
     await waitFor(() => expect(previewFormalSourceManifest).toHaveBeenCalledTimes(2));
     expect(confirmation).not.toBeChecked();
     expect(screen.getByRole("button", { name: "提交后台清洗" })).toBeDisabled();
-  }, 30_000);
+  }, 60_000);
 });

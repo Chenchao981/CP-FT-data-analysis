@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, Card, Checkbox, Col, Empty, Form, Input, Modal, Popconfirm, Radio, Row, Select, Space, Statistic, Table, Tabs, Tag, Typography, Upload, message } from "antd";
 import type { UploadFile } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { BusinessDomain, FormalSourceDirectory, StageScope, TestStage, downloadStageUploadFile, listFormalSourceDirectories, listFormalSourceRoots, listStageResultsPage, listStageUploadsPage, previewFormalSourceManifest, reprocessStageBatch, StageResultRow, StageUploadRow, uploadStageData } from "../../api/stageData";
 import {
   formatUtcDateTime,
@@ -14,6 +14,8 @@ import { MetricStrip } from "../../components/MetricStrip";
 import { useAuth } from "../auth/AuthContext";
 import { factoryInputs, factoryNames, formalFactoryOptions, isFormalFactory } from "../capabilities/capabilityCatalog";
 import { LotEnrichmentModal } from "./LotEnrichmentModal";
+
+const StageResultsChartPanel = lazy(() => import("./StageResultsChartPanel").then((module) => ({ default: module.StageResultsChartPanel })));
 
 const statusColor: Record<string, string> = { RECEIVED: "blue", QUEUED: "gold", PROCESSING: "processing", PROCESSED: "success", NEEDS_INPUT: "orange", FAILED: "error" };
 const statusName: Record<string, string> = { RECEIVED: "已接收", QUEUED: "排队中", PROCESSING: "处理中", PROCESSED: "已处理", NEEDS_INPUT: "待补录", FAILED: "失败", CANCELLED: "已取消", ARCHIVED: "已归档" };
@@ -357,7 +359,7 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
     { title: "上传人", key: "uploader", width: 170, ellipsis: true, render: (_, row) => `${row.uploader_name}（${row.uploader_login}）` },
     { title: "处理时间", dataIndex: "created_at_utc", width: 175, render: formatUtcDateTime },
     { title: "操作", key: "actions", width: 270, fixed: "right", render: (_, row) => <Space size={0}>
-      {row.dataset_id && row.dataset_version_no && can("DATASET_READ") && <Button type="link" size="small" icon={<BarChartOutlined />} onClick={() => onOpenAnalytics?.(row.dataset_id!, row.dataset_version_no!)}>数据分析</Button>}
+      {row.dataset_id && row.dataset_version_no && can("DATASET_READ") && <Button type="primary" size="small" icon={<BarChartOutlined />} onClick={() => onOpenAnalytics?.(row.dataset_id!, row.dataset_version_no!)}>查看图表</Button>}
       {row.job_id && <Button type="link" size="small" icon={<UnorderedListOutlined />} onClick={() => onOpenJob?.(row.job_id!)}>Job详情</Button>}
       {row.can_manage && isFormalFactory(testStage, row.factory_code) && <Popconfirm title="重新处理该批次？" description="将重跑现有清洗程序并归档旧结果。" onConfirm={() => reprocessMutation.mutate(row)}><Button type="link" size="small" icon={<RedoOutlined />} loading={reprocessMutation.isPending && reprocessMutation.variables?.import_batch_id === row.import_batch_id}>重新处理</Button></Popconfirm>}
     </Space> },
@@ -369,6 +371,7 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
     needsInput: batchRows.filter(needsLotInput).length,
     failed: batchRows.filter((row) => row.status === "FAILED" && !needsLotInput(row)).length,
   }), [batchRows, results.data?.total, uploads.data?.total]);
+  const latestAnalyzableResult = results.data?.items.find((row) => row.dataset_id != null && row.dataset_version_no != null);
   const oldestQueueAge = useMemo(() => {
     const ages = (uploads.data?.items ?? [])
       .filter((row) => row.status === "QUEUED" && row.queue_age_seconds != null)
@@ -378,7 +381,7 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
 
   return <div className="workbench production-workbench">
     {contextHolder}
-    <div className="page-heading"><div><Typography.Text type="secondary">{testStage} 统一数据入口</Typography.Text><Typography.Title level={2}>{testStage}数据</Typography.Title><Typography.Text type="secondary">{stageDescription[testStage]}</Typography.Text></div><Space><Button icon={<ReloadOutlined />} onClick={() => void refresh()}>刷新</Button>{can("TASK_CREATE") && <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => { setFiles([]); setInputMode("UPLOAD"); setSourceRootCode(undefined); setSourceRelativePath("."); setOpen(true); }}>上传数据</Button>}</Space></div>
+    <div className="page-heading"><div><Typography.Text type="secondary">{testStage} 统一数据入口</Typography.Text><Typography.Title level={2}>{testStage}数据</Typography.Title><Typography.Text type="secondary">{stageDescription[testStage]}</Typography.Text></div><Space wrap><Button icon={<ReloadOutlined />} onClick={() => void refresh()}>刷新</Button>{latestAnalyzableResult && can("DATASET_READ") && <Button type="primary" ghost icon={<BarChartOutlined />} onClick={() => onOpenAnalytics?.(latestAnalyzableResult.dataset_id!, latestAnalyzableResult.dataset_version_no!)}>查看最新图表</Button>}{can("TASK_CREATE") && <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => { setFiles([]); setInputMode("UPLOAD"); setSourceRootCode(undefined); setSourceRelativePath("."); setOpen(true); }}>上传数据</Button>}</Space></div>
     <Alert showIcon type="info" className="compact-info-alert" message={visibilityDescription[businessDomain].message} description={visibilityDescription[businessDomain].description} />
     <MetricStrip ariaLabel={`${testStage} 数据处理状态`} items={[
       { label: "查询上传记录", value: metrics.total },
@@ -387,6 +390,7 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
       { label: "当前页待补录", value: metrics.needsInput, tone: metrics.needsInput ? "warning" : "default" },
       { label: "当前页失败", value: metrics.failed, tone: metrics.failed ? "danger" : "default" },
     ]} />
+    <Suspense fallback={<Card loading className="stage-results-chart-card" />}><StageResultsChartPanel testStage={testStage} rows={results.data?.items ?? []} loading={results.isLoading} canOpenAnalytics={can("DATASET_READ")} onOpenAnalytics={onOpenAnalytics} /></Suspense>
     <Card className="review-filter-card">
       <Form<StageFilterFormValues> form={filterForm} layout="vertical" onFinish={(values) => updateSearchParams((next) => {
         for (const key of stageFilterKeys) next.delete(key);
