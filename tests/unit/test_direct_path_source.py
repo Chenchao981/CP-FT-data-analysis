@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.infrastructure.direct_path_source import build_direct_path_manifest
+import pytest
+from app.core.errors import DomainError
+from app.infrastructure.direct_path_source import (
+    browse_direct_path,
+    build_direct_path_manifest,
+)
 
 
 def _write(path: Path, content: bytes = b"raw") -> None:
@@ -82,3 +87,71 @@ def test_dianji_manifest_excludes_prior_output_and_pat_runs(tmp_path: Path) -> N
         "raw.xls",
         "nested/raw.csv",
     }
+
+
+def test_direct_path_manifest_accepts_one_supported_source_file(tmp_path: Path) -> None:
+    source = tmp_path / "one.csv"
+    _write(source, b"value\n1\n")
+
+    resolved, manifest = build_direct_path_manifest(
+        source,
+        allowed_suffixes=(".csv",),
+    )
+
+    assert resolved == source.resolve()
+    assert manifest.source_label == "one.csv"
+    assert manifest.file_count == 1
+    assert manifest.files[0].relative_path == "one.csv"
+
+
+def test_direct_path_browser_lists_folders_source_files_and_archives(tmp_path: Path) -> None:
+    (tmp_path / "lot-a").mkdir()
+    _write(tmp_path / "wafer.xlsx", b"xlsx")
+    _write(tmp_path / "lot.zip", b"zip")
+    _write(tmp_path / "ignored.txt", b"txt")
+
+    listing = browse_direct_path(
+        tmp_path,
+        allowed_suffixes=(".xlsx", ".zip"),
+    )
+
+    assert listing["path"] == str(tmp_path.resolve())
+    assert listing["parent_path"] == str(tmp_path.parent.resolve())
+    assert [item["name"] for item in listing["items"]] == [
+        "lot-a",
+        "lot.zip",
+        "wafer.xlsx",
+    ]
+    assert listing["items"][1]["is_archive"] is True
+
+
+def test_direct_path_browser_marks_identity_dependent_file_as_folder_only(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "wafer.txt"
+    _write(source, b"raw")
+
+    listing = browse_direct_path(
+        tmp_path,
+        allowed_suffixes=(".txt", ".zip"),
+        selectable_file_suffixes=(".zip",),
+    )
+
+    assert listing["items"][0]["selectable"] is False
+    assert listing["items"][0]["selection_hint"] == "请选择该源文件所在的文件夹"
+
+
+def test_direct_path_manifest_rejects_identity_dependent_single_file(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "wafer.txt"
+    _write(source, b"raw")
+
+    with pytest.raises(DomainError) as captured:
+        build_direct_path_manifest(
+            source,
+            allowed_suffixes=(".txt", ".zip"),
+            allowed_single_file_suffixes=(".zip",),
+        )
+
+    assert captured.value.code == "DIRECT_PATH_FILE_REQUIRES_DIRECTORY"

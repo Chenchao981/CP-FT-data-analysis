@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import string
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -19,6 +20,7 @@ DIRECT_PATH_MANIFEST_POLICIES = frozenset(
     }
 )
 _FT_TYPED_RAW_TYPES = frozenset({"DC", "DVDS", "RG"})
+_ARCHIVE_SUFFIXES = frozenset({".zip", ".7z"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,14 +66,133 @@ class DirectPathManifest:
         return self.mode == mode and self.sha256 == sha256.lower()
 
 
+@dataclass(frozen=True, slots=True)
+class DirectPathBrowseItem:
+    name: str
+    path: str
+    kind: str
+    size_bytes: int | None
+    suffix: str | None
+    is_archive: bool
+    selectable: bool
+    selection_hint: str | None
+
+
+def browse_direct_path(
+    source_path: str | Path | None,
+    *,
+    allowed_suffixes: tuple[str, ...],
+    selectable_file_suffixes: tuple[str, ...] | None = None,
+) -> dict[str, object]:
+    """List one local directory for the web path picker without uploading data."""
+
+    suffixes = {item.lower() for item in allowed_suffixes}
+    selectable_suffixes = {
+        item.lower() for item in (selectable_file_suffixes or allowed_suffixes)
+    }
+    raw_text = str(source_path or "").strip().strip('"')
+    if not raw_text:
+        roots = _available_roots()
+        return {
+            "path": None,
+            "parent_path": None,
+            "items": [
+                asdict(
+                    DirectPathBrowseItem(
+                        name=str(root),
+                        path=str(root),
+                        kind="DIRECTORY",
+                        size_bytes=None,
+                        suffix=None,
+                        is_archive=False,
+                        selectable=True,
+                        selection_hint=None,
+                    )
+                )
+                for root in roots
+            ],
+            "allowed_suffixes": sorted(suffixes),
+            "truncated": False,
+        }
+
+    raw_source = Path(raw_text).expanduser().absolute()
+    if _is_link_or_junction(raw_source):
+        raise DomainError(
+            "DIRECT_PATH_LINK_UNSUPPORTED",
+            "所选路径不能是符号链接或联接点",
+            422,
+        )
+    source = raw_source.resolve()
+    if source.is_file():
+        source = source.parent
+    if not source.is_dir():
+        raise DomainError("DIRECT_PATH_NOT_FOUND", "所选路径不存在", 404)
+
+    limit = int(os.getenv("TMS_QUICK_BROWSE_MAX_ITEMS", "2000"))
+    items: list[DirectPathBrowseItem] = []
+    truncated = False
+    try:
+        children = sorted(
+            source.iterdir(),
+            key=lambda item: (not item.is_dir(), item.name.casefold()),
+        )
+        for child in children:
+            if _is_link_or_junction(child):
+                continue
+            if child.is_dir():
+                item = DirectPathBrowseItem(
+                    child.name,
+                    str(child.resolve()),
+                    "DIRECTORY",
+                    None,
+                    None,
+                    False,
+                    True,
+                    None,
+                )
+            elif child.is_file() and child.suffix.lower() in suffixes:
+                suffix = child.suffix.lower()
+                selectable = suffix in selectable_suffixes
+                item = DirectPathBrowseItem(
+                    child.name,
+                    str(child.resolve()),
+                    "FILE",
+                    child.stat().st_size,
+                    suffix,
+                    suffix in _ARCHIVE_SUFFIXES,
+                    selectable,
+                    None if selectable else "请选择该源文件所在的文件夹",
+                )
+            else:
+                continue
+            if len(items) >= limit:
+                truncated = True
+                break
+            items.append(item)
+    except OSError as exc:
+        raise DomainError(
+            "DIRECT_PATH_UNREADABLE", "所选目录无法读取", 422
+        ) from exc
+
+    parent = source.parent
+    return {
+        "path": str(source),
+        "parent_path": str(parent) if parent != source else None,
+        "items": [asdict(item) for item in items],
+        "allowed_suffixes": sorted(suffixes),
+        "truncated": truncated,
+    }
+
+
 def build_direct_path_manifest(
     source_path: str | Path,
     *,
     allowed_suffixes: tuple[str, ...] = (".csv",),
+    allowed_single_file_suffixes: tuple[str, ...] | None = None,
     max_files: int | None = None,
     path_policy: str = "ALL_MATCHING_SUFFIXES_V1",
 ) -> tuple[Path, DirectPathManifest]:
-    """Preview a directory visible to the current TMS backend host."""
+    """Preview one file or directory visible to the current TMS backend host."""
 
     raw_source = Path(source_path).expanduser().absolute()
     if _is_link_or_junction(raw_source):
@@ -81,30 +202,53 @@ def build_direct_path_manifest(
             422,
         )
     source = raw_source.resolve()
-    if not source.is_dir():
-        raise DomainError("DIRECT_PATH_NOT_FOUND", "所选目录不存在", 404)
     suffixes = {item.lower() for item in allowed_suffixes}
+    single_file_suffixes = {
+        item.lower() for item in (allowed_single_file_suffixes or allowed_suffixes)
+    }
     normalized_policy = path_policy.strip().upper()
     if normalized_policy not in DIRECT_PATH_MANIFEST_POLICIES:
         raise ValueError(f"unsupported direct-path Manifest policy: {path_policy}")
     file_limit = max_files or int(os.getenv("TMS_QUICK_MAX_SOURCE_FILES", "100000"))
+    if not source.exists() or not (source.is_dir() or source.is_file()):
+        raise DomainError("DIRECT_PATH_NOT_FOUND", "所选路径不存在", 404)
     files: list[DirectPathFile] = []
     seen: set[str] = set()
     total_bytes = 0
     try:
+        if source.is_file():
+            suffix = source.suffix.lower()
+            if suffix not in suffixes:
+                raise DomainError(
+                    "DIRECT_PATH_FILE_UNSUPPORTED",
+                    "所选文件不符合当前工具支持的格式",
+                    422,
+                )
+            if suffix not in single_file_suffixes:
+                raise DomainError(
+                    "DIRECT_PATH_FILE_REQUIRES_DIRECTORY",
+                    "当前格式需要保留产品/批次目录信息，请选择该文件所在的文件夹",
+                    422,
+                )
+            stat = source.stat()
+            files.append(DirectPathFile(source.name, stat.st_size, stat.st_mtime_ns))
+            total_bytes = stat.st_size
         typed_raw_directories = (
             {
                 child.name.upper()
                 for child in source.iterdir()
                 if child.is_dir() and child.name.upper() in _FT_TYPED_RAW_TYPES
             }
-            if normalized_policy
+            if source.is_dir()
+            and normalized_policy
             in {"RIYUEXIN_RAW_DIRECTORY_V1", "RIYUEGUANG_RAW_DIRECTORY_V1"}
             and source.name.upper() not in _FT_TYPED_RAW_TYPES
             else set()
         )
-        for current_name, directory_names, file_names in os.walk(
-            source, topdown=True, followlinks=False
+        for current_name, directory_names, file_names in (
+            os.walk(source, topdown=True, followlinks=False)
+            if source.is_dir()
+            else ()
         ):
             current = Path(current_name)
             for directory_name in tuple(directory_names):
@@ -177,6 +321,16 @@ def build_direct_path_manifest(
         total_bytes,
         hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
     )
+
+
+def _available_roots() -> tuple[Path, ...]:
+    if os.name == "nt":
+        return tuple(
+            root
+            for letter in string.ascii_uppercase
+            if (root := Path(f"{letter}:\\")).is_dir()
+        )
+    return (Path("/"),)
 
 
 def _matches_path_policy(

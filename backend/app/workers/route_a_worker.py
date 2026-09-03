@@ -98,6 +98,9 @@ class QuickPatHandler:
                 source, current_manifest = build_direct_path_manifest(
                     session.source_relative_path,
                     allowed_suffixes=_direct_path_suffixes(release.adapter_code),
+                    allowed_single_file_suffixes=_direct_path_single_file_suffixes(
+                        release.adapter_code
+                    ),
                     path_policy=_direct_path_manifest_policy(release.adapter_code),
                 )
             else:
@@ -147,6 +150,9 @@ class QuickPatHandler:
                 _completed_source, completed_manifest = build_direct_path_manifest(
                     session.source_relative_path,
                     allowed_suffixes=_direct_path_suffixes(release.adapter_code),
+                    allowed_single_file_suffixes=_direct_path_single_file_suffixes(
+                        release.adapter_code
+                    ),
                     path_policy=_direct_path_manifest_policy(release.adapter_code),
                 )
                 binding_changed = False
@@ -204,9 +210,9 @@ def _direct_path_suffixes(adapter_code: str) -> tuple[str, ...]:
     if adapter_code == "JIJIA_FT_QUICK_PAT_PYZ":
         return (".csv",)
     if adapter_code == "HUAHONG_CP_PYZ":
-        return (".txt",)
+        return (".txt", ".zip", ".7z")
     if adapter_code in {"JETECH_CP_PYZ", "LION_CP_PYZ", "GUOYU_CP_PYZ"}:
-        return (".xls", ".xlsx")
+        return (".xls", ".xlsx", ".zip")
     raise ValueError(f"unsupported direct-path PAT adapter: {adapter_code}")
 
 
@@ -219,6 +225,12 @@ def _direct_path_manifest_policy(adapter_code: str) -> str:
         return "DIANJI_RAW_DIRECTORY_V1"
     _direct_path_suffixes(adapter_code)
     return "ALL_MATCHING_SUFFIXES_V1"
+
+
+def _direct_path_single_file_suffixes(adapter_code: str) -> tuple[str, ...]:
+    if adapter_code == "HUAHONG_CP_PYZ":
+        return (".zip", ".7z")
+    return _direct_path_suffixes(adapter_code)
 
 
 class RouteAInitialImportHandler:

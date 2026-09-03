@@ -94,8 +94,8 @@ class QuickPatRunner:
         package = Path(release.artifact_uri).resolve()
         runtime = Path(release.runtime_uri).resolve()
         target = Path(output_root).resolve()
-        if not source.is_dir():
-            raise FileNotFoundError(f"Quick PAT input directory is unavailable: {source}")
+        if not source.exists() or not (source.is_dir() or source.is_file()):
+            raise FileNotFoundError(f"Quick PAT input source is unavailable: {source}")
         for required in (runtime, package):
             if not required.is_file():
                 raise FileNotFoundError(f"Quick PAT runtime is unavailable: {required}")
@@ -110,11 +110,22 @@ class QuickPatRunner:
             raise RuntimeError("source Manifest JSON does not match its SHA-256")
         manifest = json.loads(source_manifest_json)
         target.mkdir(parents=True, exist_ok=True)
+        engine_source = source
+        staged_source: Path | None = None
+        if source.is_file():
+            staged_source = target / ".single-source"
+            staged_source.mkdir()
+            staged_file = staged_source / source.name
+            try:
+                staged_file.hardlink_to(source)
+            except OSError:
+                shutil.copy2(source, staged_file)
+            engine_source = staged_source
 
         env = isolated_child_environment(
             {
                 "TMS_FT_PAT_PACKAGE": str(package),
-                "TMS_FT_PAT_INPUT": str(source),
+                "TMS_FT_PAT_INPUT": str(engine_source),
                 "TMS_FT_PAT_OUTPUT": str(target),
                 "TMS_FT_PAT_ADAPTER": release.adapter_code,
                 "PYTHONUTF8": "1",
@@ -138,6 +149,9 @@ class QuickPatRunner:
             raise RuntimeError(
                 f"Quick PAT timed out after {release.timeout_seconds}s"
             ) from exc
+        finally:
+            if staged_source is not None and staged_source.exists():
+                shutil.rmtree(staged_source)
         elapsed_seconds = time.perf_counter() - started
         if completed.returncode != 0:
             detail = (completed.stderr or completed.stdout or "unknown PAT error")[-4000:]
@@ -249,8 +263,8 @@ class QuickPatRunner:
         target = Path(output_root).resolve()
         package = Path(release.artifact_uri).resolve()
         runtime = Path(release.runtime_uri).resolve()
-        if not source.is_dir():
-            raise FileNotFoundError(f"Quick PAT input directory is unavailable: {source}")
+        if not source.exists() or not (source.is_dir() or source.is_file()):
+            raise FileNotFoundError(f"Quick PAT input source is unavailable: {source}")
         for required in (runtime, package):
             if not required.is_file():
                 raise FileNotFoundError(f"CP Quick PAT runtime is unavailable: {required}")

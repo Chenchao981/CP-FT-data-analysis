@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from app.domain.cleaner_registry import CleanerRelease
+from app.infrastructure.direct_path_source import build_direct_path_manifest
 from app.infrastructure.existing_cleaner_runner import (
     CleanerArtifact,
     ExistingCleanerRunResult,
@@ -99,6 +100,49 @@ def test_runner_invokes_released_package_and_builds_auditable_artifacts(
     }
     assert result.summary["parameters"][1]["parameter"] == "RDON"
     assert all(len(item.sha256) == 64 for item in result.artifacts)
+
+
+def test_runner_stages_one_ft_source_file_for_existing_directory_pat(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "ft_data_cleaner.pyz"
+    runtime = tmp_path / "python.exe"
+    package.write_bytes(b"released-pat")
+    runtime.touch()
+    source = tmp_path / "one.csv"
+    source.write_text("x\n1\n", encoding="utf-8")
+    _, manifest = build_direct_path_manifest(source, allowed_suffixes=(".csv",))
+    output = tmp_path / "output"
+
+    def fake_run(command, **kwargs):
+        engine_source = Path(kwargs["env"]["TMS_FT_PAT_INPUT"])
+        assert engine_source.is_dir()
+        assert (engine_source / "one.csv").read_text(encoding="utf-8") == "x\n1\n"
+        report = output / "PAT_001" / "PAT_001.xlsx"
+        report.parent.mkdir(parents=True)
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["statistics", "count"])
+        sheet.append(["variable", "count"])
+        sheet.append(["VTH", 1])
+        workbook.save(report)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="杰群 PAT 原始数据汇总完成: 文件=1, 解析行=1, 参数=1\n",
+            stderr="",
+        )
+
+    result = QuickPatRunner(process_runner=fake_run).run_release(
+        release=_release(package, runtime),
+        input_directory=source,
+        output_root=output,
+        source_manifest_json=manifest.as_json(),
+        source_manifest_sha256=manifest.sha256,
+    )
+
+    assert result.record_count == 1
+    assert not (output / ".single-source").exists()
 
 
 @pytest.mark.parametrize(

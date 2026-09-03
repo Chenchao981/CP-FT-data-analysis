@@ -1,6 +1,7 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
+  browseDirectPath,
   createDirectPathPat,
   createQuickPat,
   downloadQuickPat,
@@ -47,10 +48,14 @@ describe("quick analysis api", () => {
     const preview = {
       path: String.raw`F:\data\520data`,
       source_label: "520data",
+      input_kind: "DIRECTORY" as const,
       mode: "LOCAL_PATH_SIZE_MTIME_V1" as const,
       recursive: true as const,
       file_count: 520,
       total_bytes: 1234,
+      archive_count: 0,
+      sample_files: ["one.csv"],
+      sample_truncated: false,
       sha: "b".repeat(64),
       allowed_suffixes: [".csv"],
       tool_code: "JIEQUN_FT_QUICK_PAT_EXISTING" as const,
@@ -76,6 +81,20 @@ describe("quick analysis api", () => {
       tool_code: preview.tool_code,
       source_manifest_mode: preview.mode,
       source_manifest_sha256: preview.sha,
+    });
+  });
+
+  it("browses a directly accessible local path using the selected tool contract", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ path: String.raw`F:\data`, items: [] }), { status: 200 }),
+    );
+
+    await browseDirectPath(String.raw`F:\data`, "HUAHONG_CP_QUICK_PAT_EXISTING");
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/quick-analysis/direct-path/browse");
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      path: String.raw`F:\data`,
+      tool_code: "HUAHONG_CP_QUICK_PAT_EXISTING",
     });
   });
 

@@ -50,6 +50,23 @@ class DirectPathPreviewRequest(BaseModel):
     ] = "JIEQUN_FT_QUICK_PAT_EXISTING"
 
 
+class DirectPathBrowseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    path: str = Field(default="", max_length=1000)
+    tool_code: Literal[
+        "JIEQUN_FT_QUICK_PAT_EXISTING",
+        "RIYUEXIN_FT_QUICK_PAT_EXISTING",
+        "RIYUEGUANG_FT_QUICK_PAT_EXISTING",
+        "DIANJI_FT_QUICK_PAT_EXISTING",
+        "JIJIA_FT_QUICK_PAT_EXISTING",
+        "HUAHONG_CP_QUICK_PAT_EXISTING",
+        "JETECH_CP_QUICK_PAT_EXISTING",
+        "LION_CP_QUICK_PAT_EXISTING",
+        "GUOYU_CP_QUICK_PAT_EXISTING",
+    ] = "JIEQUN_FT_QUICK_PAT_EXISTING"
+
+
 class CreateDirectPathPatRequest(DirectPathPreviewRequest):
     source_manifest_mode: Literal["LOCAL_PATH_SIZE_MTIME_V1"]
     source_manifest_sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
@@ -141,7 +158,8 @@ DIRECT_PATH_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
         "adapter_code": "HUAHONG_CP_PYZ",
         "input_contract_version": "CP_ARCHIVE_OR_TXT_V1",
         "output_contract_version": "CP_CSV_TRIPLET_V1",
-        "allowed_suffixes": (".txt",),
+        "allowed_suffixes": (".txt", ".zip", ".7z"),
+        "single_file_suffixes": (".zip", ".7z"),
         "manifest_policy": "ALL_MATCHING_SUFFIXES_V1",
         "tool_name": "华虹 CP 原始目录 PAT",
     },
@@ -153,7 +171,7 @@ DIRECT_PATH_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
         "adapter_code": "JETECH_CP_PYZ",
         "input_contract_version": "CP_EXCEL_OR_ZIP_V1",
         "output_contract_version": "CP_STANDARD_CSV_TRIPLET_V1",
-        "allowed_suffixes": (".xls", ".xlsx"),
+        "allowed_suffixes": (".xls", ".xlsx", ".zip"),
         "manifest_policy": "ALL_MATCHING_SUFFIXES_V1",
         "tool_name": "积塔 CP 原始目录 PAT",
     },
@@ -165,7 +183,7 @@ DIRECT_PATH_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
         "adapter_code": "LION_CP_PYZ",
         "input_contract_version": "CP_EXCEL_OR_ZIP_V1",
         "output_contract_version": "CP_STANDARD_CSV_TRIPLET_V1",
-        "allowed_suffixes": (".xls", ".xlsx"),
+        "allowed_suffixes": (".xls", ".xlsx", ".zip"),
         "manifest_policy": "ALL_MATCHING_SUFFIXES_V1",
         "tool_name": "立昂微 CP 原始目录 PAT",
     },
@@ -177,7 +195,7 @@ DIRECT_PATH_TOOL_CONTRACTS: dict[str, dict[str, object]] = {
         "adapter_code": "GUOYU_CP_PYZ",
         "input_contract_version": "CP_EXCEL_OR_ZIP_V1",
         "output_contract_version": "CP_STANDARD_CSV_TRIPLET_V1",
-        "allowed_suffixes": (".xls", ".xlsx"),
+        "allowed_suffixes": (".xls", ".xlsx", ".zip"),
         "manifest_policy": "ALL_MATCHING_SUFFIXES_V1",
         "tool_name": "国宇 CP 原始目录 PAT",
     },

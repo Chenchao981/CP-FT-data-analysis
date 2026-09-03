@@ -32,13 +32,17 @@ from app.domain.quick_analysis import (
     LOCAL_QUICK_PAT_TOOL_CODE,
     CreateDirectPathPatRequest,
     CreateQuickPatRequest,
+    DirectPathBrowseRequest,
     DirectPathPreviewRequest,
     LocalQuickPatResultReceipt,
     NewQuickAnalysisSession,
     QuickAnalysisStatus,
     TemporaryFtpPreviewRequest,
 )
-from app.infrastructure.direct_path_source import build_direct_path_manifest
+from app.infrastructure.direct_path_source import (
+    browse_direct_path,
+    build_direct_path_manifest,
+)
 from app.infrastructure.local_quick_result import (
     CommittedLocalQuickResult,
     LocalQuickResultStore,
@@ -279,15 +283,26 @@ def preview_direct_path(
     source, manifest = build_direct_path_manifest(
         payload.path,
         allowed_suffixes=tuple(contract["allowed_suffixes"]),
+        allowed_single_file_suffixes=tuple(
+            contract.get("single_file_suffixes", contract["allowed_suffixes"])
+        ),
         path_policy=str(contract["manifest_policy"]),
     )
     return {
         "path": str(source),
         "source_label": manifest.source_label,
+        "input_kind": "FILE" if source.is_file() else "DIRECTORY",
         "mode": manifest.mode,
         "recursive": True,
         "file_count": manifest.file_count,
         "total_bytes": manifest.total_bytes,
+        "archive_count": sum(
+            1
+            for item in manifest.files
+            if Path(item.relative_path).suffix.lower() in {".zip", ".7z"}
+        ),
+        "sample_files": [item.relative_path for item in manifest.files[:100]],
+        "sample_truncated": manifest.file_count > 100,
         "sha": manifest.sha256,
         "allowed_suffixes": list(contract["allowed_suffixes"]),
         "tool_code": payload.tool_code,
@@ -295,6 +310,21 @@ def preview_direct_path(
         "test_stage": contract["test_stage"],
         "factory_code": contract["factory_code"],
     }
+
+
+@router.post("/direct-path/browse")
+def browse_local_path(
+    payload: DirectPathBrowseRequest,
+    _principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
+) -> dict[str, object]:
+    contract = _direct_path_tool(payload.tool_code)
+    return browse_direct_path(
+        payload.path,
+        allowed_suffixes=tuple(contract["allowed_suffixes"]),
+        selectable_file_suffixes=tuple(
+            contract.get("single_file_suffixes", contract["allowed_suffixes"])
+        ),
+    )
 
 
 @router.post("/direct-path/pat", status_code=status.HTTP_201_CREATED)
@@ -307,6 +337,9 @@ def create_direct_path_pat(
     source, manifest = build_direct_path_manifest(
         payload.path,
         allowed_suffixes=tuple(contract["allowed_suffixes"]),
+        allowed_single_file_suffixes=tuple(
+            contract.get("single_file_suffixes", contract["allowed_suffixes"])
+        ),
         path_policy=str(contract["manifest_policy"]),
     )
     if not manifest.matches_confirmation(

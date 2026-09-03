@@ -117,16 +117,39 @@ export const createQuickPat = (
 export interface DirectPathPreview {
   path: string;
   source_label: string;
+  input_kind: "DIRECTORY" | "FILE";
   mode: "LOCAL_PATH_SIZE_MTIME_V1";
   recursive: true;
   file_count: number;
   total_bytes: number;
+  archive_count: number;
+  sample_files: string[];
+  sample_truncated: boolean;
   sha: string;
   allowed_suffixes: string[];
   tool_code: DirectPathToolCode;
   tool_name: string;
   test_stage: "CP" | "FT";
   factory_code: string;
+}
+
+export interface DirectPathBrowseItem {
+  name: string;
+  path: string;
+  kind: "DIRECTORY" | "FILE";
+  size_bytes: number | null;
+  suffix: string | null;
+  is_archive: boolean;
+  selectable: boolean;
+  selection_hint: string | null;
+}
+
+export interface DirectPathBrowseResult {
+  path: string | null;
+  parent_path: string | null;
+  items: DirectPathBrowseItem[];
+  allowed_suffixes: string[];
+  truncated: boolean;
 }
 
 export type DirectPathToolCode =
@@ -142,6 +165,12 @@ export type DirectPathToolCode =
 
 export const previewDirectPath = (path: string, toolCode: DirectPathToolCode) =>
   apiRequest<DirectPathPreview>(`${base}/direct-path/preview`, {
+    method: "POST",
+    body: JSON.stringify({ path, tool_code: toolCode }),
+  });
+
+export const browseDirectPath = (path: string, toolCode: DirectPathToolCode) =>
+  apiRequest<DirectPathBrowseResult>(`${base}/direct-path/browse`, {
     method: "POST",
     body: JSON.stringify({ path, tool_code: toolCode }),
   });

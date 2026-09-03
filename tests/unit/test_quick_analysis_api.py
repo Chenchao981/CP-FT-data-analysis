@@ -225,6 +225,8 @@ def test_direct_path_api_previews_and_queues_personal_pat(tmp_path: Path) -> Non
     assert manifest["source_label"] == "NCEAP020N10LL"
     assert manifest["file_count"] == 1
     assert manifest["mode"] == "LOCAL_PATH_SIZE_MTIME_V1"
+    assert manifest["input_kind"] == "DIRECTORY"
+    assert manifest["sample_files"] == ["one.csv"]
 
     created = client.post(
         "/api/v1/quick-analysis/direct-path/pat",
@@ -263,7 +265,7 @@ def test_direct_path_api_previews_and_queues_cp_factory_pat(tmp_path: Path) -> N
     manifest = preview.json()
     assert manifest["test_stage"] == "CP"
     assert manifest["factory_code"] == "JETECH"
-    assert manifest["allowed_suffixes"] == [".xls", ".xlsx"]
+    assert manifest["allowed_suffixes"] == [".xls", ".xlsx", ".zip"]
 
     created = client.post(
         "/api/v1/quick-analysis/direct-path/pat",
@@ -279,6 +281,75 @@ def test_direct_path_api_previews_and_queues_cp_factory_pat(tmp_path: Path) -> N
     assert body["test_stage"] == "CP"
     assert body["factory_code"] == "JETECH"
     assert body["access_scope"] == "PERSONAL"
+
+
+def test_direct_path_api_browses_local_folders_files_and_cp_archives(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "cp"
+    (source / "lot-folder").mkdir(parents=True)
+    (source / "wafer.xlsx").write_bytes(b"xlsx")
+    archive = source / "lot.zip"
+    archive.write_bytes(b"zip-container")
+    (source / "ignored.csv").write_bytes(b"csv")
+    app = create_app()
+    app.state.cleaner_registry = StubRegistry()
+    app.state.quick_analysis_service = InMemoryQuickAnalysisService()
+    client = TestClient(app)
+    tool_code = "JETECH_CP_QUICK_PAT_EXISTING"
+
+    browsed = client.post(
+        "/api/v1/quick-analysis/direct-path/browse",
+        json={"path": str(source), "tool_code": tool_code},
+    )
+
+    assert browsed.status_code == 200, browsed.text
+    listing = browsed.json()
+    assert listing["path"] == str(source.resolve())
+    assert [item["name"] for item in listing["items"]] == [
+        "lot-folder",
+        "lot.zip",
+        "wafer.xlsx",
+    ]
+
+    preview = client.post(
+        "/api/v1/quick-analysis/direct-path/preview",
+        json={"path": str(archive), "tool_code": tool_code},
+    )
+    assert preview.status_code == 200, preview.text
+    manifest = preview.json()
+    assert manifest["input_kind"] == "FILE"
+    assert manifest["archive_count"] == 1
+    assert manifest["sample_files"] == ["lot.zip"]
+
+
+def test_huahong_raw_txt_must_be_selected_by_its_directory(tmp_path: Path) -> None:
+    source = tmp_path / "product" / "lot"
+    source.mkdir(parents=True)
+    raw_file = source / "wafer.txt"
+    raw_file.write_bytes(b"raw")
+    app = create_app()
+    app.state.cleaner_registry = StubRegistry()
+    app.state.quick_analysis_service = InMemoryQuickAnalysisService()
+    client = TestClient(app)
+    tool_code = "HUAHONG_CP_QUICK_PAT_EXISTING"
+
+    browsed = client.post(
+        "/api/v1/quick-analysis/direct-path/browse",
+        json={"path": str(source), "tool_code": tool_code},
+    )
+
+    assert browsed.status_code == 200, browsed.text
+    raw_item = browsed.json()["items"][0]
+    assert raw_item["name"] == "wafer.txt"
+    assert raw_item["selectable"] is False
+
+    preview = client.post(
+        "/api/v1/quick-analysis/direct-path/preview",
+        json={"path": str(raw_file), "tool_code": tool_code},
+    )
+    assert preview.status_code == 422
+    assert preview.json()["error"]["code"] == "DIRECT_PATH_FILE_REQUIRES_DIRECTORY"
 
 
 @pytest.mark.parametrize(
