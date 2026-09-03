@@ -146,6 +146,17 @@ def _direct_path_tool(tool_code: str) -> dict[str, object]:
     return DIRECT_PATH_TOOL_CONTRACTS[tool_code]
 
 
+def _direct_path_visible_suffixes(contract: dict[str, object]) -> tuple[str, ...]:
+    return tuple(
+        dict.fromkeys(
+            (
+                *tuple(contract["allowed_suffixes"]),
+                *tuple(contract.get("single_file_suffixes", ())),
+            )
+        )
+    )
+
+
 def _direct_path_release(request: Request, tool_code: str):
     contract = _direct_path_tool(tool_code)
     return cleaner_registry(request).latest_released_for_contract(
@@ -304,7 +315,7 @@ def preview_direct_path(
         "sample_files": [item.relative_path for item in manifest.files[:100]],
         "sample_truncated": manifest.file_count > 100,
         "sha": manifest.sha256,
-        "allowed_suffixes": list(contract["allowed_suffixes"]),
+        "allowed_suffixes": list(_direct_path_visible_suffixes(contract)),
         "tool_code": payload.tool_code,
         "tool_name": contract["tool_name"],
         "test_stage": contract["test_stage"],

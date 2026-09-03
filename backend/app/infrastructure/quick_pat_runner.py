@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
 import time
+import zipfile
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from openpyxl import load_workbook
@@ -110,30 +112,39 @@ class QuickPatRunner:
             raise RuntimeError("source Manifest JSON does not match its SHA-256")
         manifest = json.loads(source_manifest_json)
         target.mkdir(parents=True, exist_ok=True)
+        started = time.perf_counter()
         engine_source = source
         staged_source: Path | None = None
-        if source.is_file():
-            staged_source = target / ".single-source"
-            staged_source.mkdir()
-            staged_file = staged_source / source.name
-            try:
-                staged_file.hardlink_to(source)
-            except OSError:
-                shutil.copy2(source, staged_file)
-            engine_source = staged_source
-
-        env = isolated_child_environment(
-            {
-                "TMS_FT_PAT_PACKAGE": str(package),
-                "TMS_FT_PAT_INPUT": str(engine_source),
-                "TMS_FT_PAT_OUTPUT": str(target),
-                "TMS_FT_PAT_ADAPTER": release.adapter_code,
-                "PYTHONUTF8": "1",
-                "PYTHONIOENCODING": "utf-8",
-            }
-        )
-        started = time.perf_counter()
+        archive_input = source.is_file() and source.suffix.lower() in {".zip", ".7z"}
         try:
+            if source.is_file():
+                staged_source = target / ".single-source"
+                staged_source.mkdir()
+                if archive_input:
+                    _extract_ft_archive(
+                        source,
+                        staged_source,
+                        allowed_suffixes=_ft_raw_suffixes(release.adapter_code),
+                        max_total_bytes=_quick_archive_max_extracted_bytes(),
+                    )
+                else:
+                    staged_file = staged_source / source.name
+                    try:
+                        staged_file.hardlink_to(source)
+                    except OSError:
+                        shutil.copy2(source, staged_file)
+                engine_source = staged_source
+
+            env = isolated_child_environment(
+                {
+                    "TMS_FT_PAT_PACKAGE": str(package),
+                    "TMS_FT_PAT_INPUT": str(engine_source),
+                    "TMS_FT_PAT_OUTPUT": str(target),
+                    "TMS_FT_PAT_ADAPTER": release.adapter_code,
+                    "PYTHONUTF8": "1",
+                    "PYTHONIOENCODING": "utf-8",
+                }
+            )
             completed = self._process_runner(
                 [str(runtime), "-c", _FT_QUICK_PAT_SCRIPT],
                 cwd=str(package.parent),
@@ -176,7 +187,7 @@ class QuickPatRunner:
         engine_file_count, parsed_record_count, engine_parameter_count = (
             _parse_engine_summary(completed.stdout or "")
         )
-        if engine_file_count != manifest.get("file_count"):
+        if not archive_input and engine_file_count != manifest.get("file_count"):
             raise RuntimeError(
                 "PAT engine source count differs from the submitted Manifest: "
                 f"{engine_file_count}!={manifest.get('file_count')}"
@@ -198,6 +209,8 @@ class QuickPatRunner:
             "source_file_count": manifest.get("file_count"),
             "source_total_bytes": manifest.get("total_bytes"),
             "source_manifest_sha256": source_manifest_sha256,
+            "engine_source_file_count": engine_file_count,
+            "archive_input": archive_input,
             "parameter_count": len(parameter_rows),
             "record_count": parsed_record_count,
             "record_count_basis": "PAT_ENGINE_PARSED_ROWS",
@@ -467,6 +480,120 @@ def _file_sha256(path: Path) -> str:
         while chunk := stream.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _ft_raw_suffixes(adapter_code: str) -> tuple[str, ...]:
+    mapping = {
+        "JIEQUN_FT_QUICK_PAT_PYZ": (".csv",),
+        "RIYUEXIN_FT_QUICK_PAT_PYZ": (".xlsx",),
+        "RIYUEGUANG_FT_QUICK_PAT_PYZ": (".xlsx",),
+        "DIANJI_FT_QUICK_PAT_PYZ": (".xls", ".xlsx", ".csv"),
+        "JIJIA_FT_QUICK_PAT_PYZ": (".csv",),
+    }
+    try:
+        return mapping[adapter_code]
+    except KeyError as exc:
+        raise ValueError(f"unsupported FT Quick PAT adapter: {adapter_code}") from exc
+
+
+def _quick_archive_max_extracted_bytes() -> int:
+    value = int(
+        os.getenv("TMS_QUICK_ARCHIVE_MAX_EXTRACTED_BYTES", str(100 * 1024**3))
+    )
+    if value < 1:
+        raise ValueError("TMS_QUICK_ARCHIVE_MAX_EXTRACTED_BYTES必须大于0")
+    return value
+
+
+def _archive_destination(root: Path, member_name: str) -> Path:
+    normalized = member_name.replace("\\", "/")
+    relative = PurePosixPath(normalized)
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or relative.is_absolute()
+        or any(part in {"", ".", ".."} for part in relative.parts)
+        or (relative.parts and ":" in relative.parts[0])
+    ):
+        raise ValueError(f"压缩包包含无效路径: {member_name}")
+    destination = (root / Path(*relative.parts)).resolve()
+    resolved_root = root.resolve()
+    if destination == resolved_root or resolved_root not in destination.parents:
+        raise ValueError(f"压缩包文件超出临时目录: {member_name}")
+    return destination
+
+
+def _extract_ft_archive(
+    source: Path,
+    target: Path,
+    *,
+    allowed_suffixes: tuple[str, ...],
+    max_total_bytes: int,
+) -> tuple[Path, ...]:
+    suffixes = {item.lower() for item in allowed_suffixes}
+    extracted: list[Path] = []
+    total_bytes = 0
+    if source.suffix.lower() == ".zip":
+        try:
+            with zipfile.ZipFile(source) as archive:
+                selected = [
+                    item
+                    for item in archive.infolist()
+                    if not item.is_dir()
+                    and PurePosixPath(item.filename.replace("\\", "/")).suffix.lower()
+                    in suffixes
+                ]
+                if any(item.flag_bits & 0x1 for item in selected):
+                    raise ValueError("FT压缩包不能带密码")
+                total_bytes = sum(item.file_size for item in selected)
+                if total_bytes > max_total_bytes:
+                    raise ValueError("FT压缩包解压后超过快速分析解压容量上限")
+                for item in selected:
+                    destination = _archive_destination(target, item.filename)
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    with archive.open(item) as source_stream, destination.open("xb") as output:
+                        shutil.copyfileobj(source_stream, output, length=1024 * 1024)
+                    extracted.append(destination)
+        except zipfile.BadZipFile as exc:
+            raise ValueError("FT ZIP压缩包损坏或无法读取") from exc
+    elif source.suffix.lower() == ".7z":
+        import py7zr
+
+        try:
+            with py7zr.SevenZipFile(source, mode="r") as archive:
+                if archive.needs_password():
+                    raise ValueError("FT压缩包不能带密码")
+                selected = [
+                    item
+                    for item in archive.list()
+                    if item.is_file
+                    and PurePosixPath(item.filename.replace("\\", "/")).suffix.lower()
+                    in suffixes
+                ]
+                total_bytes = sum(int(item.uncompressed or 0) for item in selected)
+                if total_bytes > max_total_bytes:
+                    raise ValueError("FT压缩包解压后超过快速分析解压容量上限")
+                destinations = [
+                    _archive_destination(target, item.filename) for item in selected
+                ]
+                archive.extract(
+                    path=target,
+                    targets=[item.filename for item in selected],
+                )
+                extracted.extend(destinations)
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError("FT 7z压缩包损坏或无法读取") from exc
+    else:
+        raise ValueError("FT快速分析压缩包只支持ZIP或7z")
+    if not extracted:
+        expected = "、".join(sorted(suffixes))
+        raise ValueError(f"FT压缩包内没有当前工具支持的源文件：{expected}")
+    missing = [path for path in extracted if not path.is_file()]
+    if missing:
+        raise ValueError("FT压缩包未能完整解压")
+    return tuple(sorted(extracted, key=lambda item: str(item).casefold()))
 
 
 _FT_QUICK_PAT_SCRIPT = """

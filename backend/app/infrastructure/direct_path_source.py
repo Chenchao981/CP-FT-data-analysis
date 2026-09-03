@@ -86,10 +86,16 @@ def browse_direct_path(
 ) -> dict[str, object]:
     """List one local directory for the web path picker without uploading data."""
 
-    suffixes = {item.lower() for item in allowed_suffixes}
-    selectable_suffixes = {
+    directory_suffix_order = tuple(item.lower() for item in allowed_suffixes)
+    selectable_suffix_order = tuple(
         item.lower() for item in (selectable_file_suffixes or allowed_suffixes)
-    }
+    )
+    visible_suffix_order = tuple(
+        dict.fromkeys((*directory_suffix_order, *selectable_suffix_order))
+    )
+    directory_suffixes = set(directory_suffix_order)
+    selectable_suffixes = set(selectable_suffix_order)
+    visible_suffixes = directory_suffixes | selectable_suffixes
     raw_text = str(source_path or "").strip().strip('"')
     if not raw_text:
         roots = _available_roots()
@@ -111,7 +117,7 @@ def browse_direct_path(
                 )
                 for root in roots
             ],
-            "allowed_suffixes": sorted(suffixes),
+            "allowed_suffixes": list(visible_suffix_order),
             "truncated": False,
         }
 
@@ -150,7 +156,7 @@ def browse_direct_path(
                     True,
                     None,
                 )
-            elif child.is_file() and child.suffix.lower() in suffixes:
+            elif child.is_file() and child.suffix.lower() in visible_suffixes:
                 suffix = child.suffix.lower()
                 selectable = suffix in selectable_suffixes
                 item = DirectPathBrowseItem(
@@ -179,7 +185,7 @@ def browse_direct_path(
         "path": str(source),
         "parent_path": str(parent) if parent != source else None,
         "items": [asdict(item) for item in items],
-        "allowed_suffixes": sorted(suffixes),
+        "allowed_suffixes": list(visible_suffix_order),
         "truncated": truncated,
     }
 
@@ -218,7 +224,7 @@ def build_direct_path_manifest(
     try:
         if source.is_file():
             suffix = source.suffix.lower()
-            if suffix not in suffixes:
+            if suffix not in suffixes and suffix not in single_file_suffixes:
                 raise DomainError(
                     "DIRECT_PATH_FILE_UNSUPPORTED",
                     "所选文件不符合当前工具支持的格式",

@@ -137,7 +137,15 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
         <Button type="primary" disabled={!browseMutation.data?.path} onClick={() => browseMutation.data?.path && chooseSource(browseMutation.data.path)}>使用当前文件夹</Button>
       </Space>}
     >
-      <Alert showIcon type="info" className="compact-info-alert" message={`当前工具支持：${browseMutation.data?.allowed_suffixes.join("、") || "正在读取"}`} description="双击或打开文件夹继续浏览；选择源文件/压缩包，或使用当前文件夹。华虹原始 TXT 需选择所在文件夹以保留产品/批次信息；数据不会上传。" />
+      <Alert
+        showIcon
+        type="info"
+        className="compact-info-alert"
+        message={`当前工具支持：${browseMutation.data?.allowed_suffixes.join("、") || "正在读取"}`}
+        description={toolCode === "HUAHONG_CP_QUICK_PAT_EXISTING"
+          ? "双击或打开文件夹继续浏览；华虹原始 TXT 需选择所在文件夹以保留产品/批次信息，ZIP/7z 可直接选择。数据不会上传。"
+          : "双击或打开文件夹继续浏览；可选择单个源文件、ZIP/7z，或使用当前文件夹。数据不会上传。"}
+      />
       <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
         <Button icon={<ArrowUpOutlined />} disabled={!browseMutation.data?.parent_path} onClick={() => browseMutation.data?.parent_path && browseMutation.mutate(browseMutation.data.parent_path)}>上一级</Button>
         <Input aria-label="路径浏览地址" value={browserPath} placeholder="输入本地盘、映射盘或 UNC 路径" onChange={(event) => setBrowserPath(event.target.value)} onPressEnter={() => browseMutation.mutate(browserPath)} />

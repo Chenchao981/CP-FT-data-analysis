@@ -210,9 +210,9 @@ def _direct_path_suffixes(adapter_code: str) -> tuple[str, ...]:
     if adapter_code == "JIJIA_FT_QUICK_PAT_PYZ":
         return (".csv",)
     if adapter_code == "HUAHONG_CP_PYZ":
-        return (".txt", ".zip", ".7z")
+        return (".txt",)
     if adapter_code in {"JETECH_CP_PYZ", "LION_CP_PYZ", "GUOYU_CP_PYZ"}:
-        return (".xls", ".xlsx", ".zip")
+        return (".xls", ".xlsx")
     raise ValueError(f"unsupported direct-path PAT adapter: {adapter_code}")
 
 
@@ -230,6 +230,10 @@ def _direct_path_manifest_policy(adapter_code: str) -> str:
 def _direct_path_single_file_suffixes(adapter_code: str) -> tuple[str, ...]:
     if adapter_code == "HUAHONG_CP_PYZ":
         return (".zip", ".7z")
+    if adapter_code in {"JETECH_CP_PYZ", "LION_CP_PYZ", "GUOYU_CP_PYZ"}:
+        return (*_direct_path_suffixes(adapter_code), ".zip")
+    if adapter_code.endswith("_FT_QUICK_PAT_PYZ"):
+        return (*_direct_path_suffixes(adapter_code), ".zip", ".7z")
     return _direct_path_suffixes(adapter_code)
 
 

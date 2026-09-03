@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import subprocess
+import zipfile
 from pathlib import Path
 
+import py7zr
 import pytest
 from app.domain.cleaner_registry import CleanerRelease
 from app.infrastructure.direct_path_source import build_direct_path_manifest
@@ -11,7 +13,7 @@ from app.infrastructure.existing_cleaner_runner import (
     CleanerArtifact,
     ExistingCleanerRunResult,
 )
-from app.infrastructure.quick_pat_runner import QuickPatRunner
+from app.infrastructure.quick_pat_runner import QuickPatRunner, _extract_ft_archive
 from app.infrastructure.source_catalog import SourceCatalog, SourceRoot
 from openpyxl import Workbook
 
@@ -143,6 +145,87 @@ def test_runner_stages_one_ft_source_file_for_existing_directory_pat(
 
     assert result.record_count == 1
     assert not (output / ".single-source").exists()
+
+
+def test_runner_extracts_one_ft_zip_before_invoking_existing_pat(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "ft_data_cleaner.pyz"
+    runtime = tmp_path / "python.exe"
+    package.write_bytes(b"released-pat")
+    runtime.touch()
+    source = tmp_path / "raw.zip"
+    with zipfile.ZipFile(source, mode="w") as archive:
+        archive.writestr("product/one.csv", "x\n1\n")
+        archive.writestr("product/two.csv", "x\n2\n")
+        archive.writestr("readme.txt", "ignored")
+    _, manifest = build_direct_path_manifest(
+        source,
+        allowed_suffixes=(".csv",),
+        allowed_single_file_suffixes=(".csv", ".zip", ".7z"),
+    )
+    output = tmp_path / "output"
+
+    def fake_run(command, **kwargs):
+        engine_source = Path(kwargs["env"]["TMS_FT_PAT_INPUT"])
+        assert sorted(
+            path.relative_to(engine_source).as_posix()
+            for path in engine_source.rglob("*.csv")
+        ) == ["product/one.csv", "product/two.csv"]
+        assert not list(engine_source.rglob("*.txt"))
+        report = output / "PAT_001" / "PAT_001.xlsx"
+        report.parent.mkdir(parents=True)
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.append(["statistics", "count"])
+        sheet.append(["variable", "count"])
+        sheet.append(["VTH", 2])
+        workbook.save(report)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout="杰群 PAT 原始数据汇总完成: 文件=2, 解析行=2, 参数=1\n",
+            stderr="",
+        )
+
+    result = QuickPatRunner(process_runner=fake_run).run_release(
+        release=_release(package, runtime),
+        input_directory=source,
+        output_root=output,
+        source_manifest_json=manifest.as_json(),
+        source_manifest_sha256=manifest.sha256,
+    )
+
+    assert result.record_count == 2
+    assert result.summary["archive_input"] is True
+    assert result.summary["source_file_count"] == 1
+    assert result.summary["engine_source_file_count"] == 2
+    assert not (output / ".single-source").exists()
+
+
+def test_ft_7z_extraction_keeps_only_current_adapter_source_files(
+    tmp_path: Path,
+) -> None:
+    source_file = tmp_path / "one.csv"
+    source_file.write_text("x\n1\n", encoding="utf-8")
+    archive_path = tmp_path / "raw.7z"
+    with py7zr.SevenZipFile(archive_path, mode="w") as archive:
+        archive.write(source_file, arcname="product/one.csv")
+        archive.writestr("ignored", arcname="readme.txt")
+    target = tmp_path / "extracted"
+    target.mkdir()
+
+    extracted = _extract_ft_archive(
+        archive_path,
+        target,
+        allowed_suffixes=(".csv",),
+        max_total_bytes=1024 * 1024,
+    )
+
+    assert [path.relative_to(target).as_posix() for path in extracted] == [
+        "product/one.csv"
+    ]
+    assert not (target / "readme.txt").exists()
 
 
 @pytest.mark.parametrize(

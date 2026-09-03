@@ -155,3 +155,26 @@ def test_direct_path_manifest_rejects_identity_dependent_single_file(
         )
 
     assert captured.value.code == "DIRECT_PATH_FILE_REQUIRES_DIRECTORY"
+
+
+def test_archive_is_selectable_without_becoming_a_directory_member(
+    tmp_path: Path,
+) -> None:
+    raw = tmp_path / "one.csv"
+    archive = tmp_path / "raw.zip"
+    _write(raw, b"raw")
+    _write(archive, b"zip")
+
+    _, directory_manifest = build_direct_path_manifest(
+        tmp_path,
+        allowed_suffixes=(".csv",),
+        allowed_single_file_suffixes=(".csv", ".zip", ".7z"),
+    )
+    _, archive_manifest = build_direct_path_manifest(
+        archive,
+        allowed_suffixes=(".csv",),
+        allowed_single_file_suffixes=(".csv", ".zip", ".7z"),
+    )
+
+    assert [item.relative_path for item in directory_manifest.files] == ["one.csv"]
+    assert [item.relative_path for item in archive_manifest.files] == ["raw.zip"]
