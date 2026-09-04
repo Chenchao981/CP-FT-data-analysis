@@ -170,7 +170,6 @@ describe("QuickAnalysisWorkbench", () => {
     fireEvent.click(createButton);
     expect(await screen.findByText("确认快速 PAT 处理范围")).toBeInTheDocument();
     expect(document.body).toHaveTextContent("520");
-    expect(document.body).toHaveTextContent("实际创建任务时会重新构建同一规则的 Manifest");
 
     fireEvent.click(screen.getByRole("button", { name: /确认并创建任务/ }));
     await waitFor(() => expect(createQuickPat).toHaveBeenCalledWith(
@@ -187,7 +186,7 @@ describe("QuickAnalysisWorkbench", () => {
     fireEvent.click(await screen.findByRole("tab", { name: /VDMOS 个人工具/ }));
     const link = screen.getByRole("link", { name: /打开 VDMOS 个人工具/ });
     expect(link).toHaveAttribute("href", "/personal-tools/vdmos/VDMOS_Tool_v8.9.html");
-    expect(document.body).toHaveTextContent("不会把临时文件或结果写入正式数据资产");
+    expect(document.body).not.toHaveTextContent("正式数据资产");
   }, 15_000);
 
   it("offers a personal-computer agent path that never uploads raw source", async () => {

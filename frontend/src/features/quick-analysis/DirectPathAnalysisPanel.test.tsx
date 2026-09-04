@@ -111,13 +111,12 @@ describe("DirectPathAnalysisPanel", () => {
     ));
   }, 30_000);
 
-  it("separates CP and FT factories and shows honest web availability", () => {
+  it("separates CP and FT factories and disables unavailable operations", () => {
     renderPanel();
 
     expect(screen.getByRole("button", { name: /日月新/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /华虹/ })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /FT 数据清洗/ }));
-    expect(screen.getByText(/当前网页后台执行合同尚未接入/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /FT 数据清洗/ })).toBeDisabled();
 
     fireEvent.click(screen.getByRole("button", { name: /CP 工具/ }));
     expect(screen.getByRole("button", { name: /华虹/ })).toBeInTheDocument();

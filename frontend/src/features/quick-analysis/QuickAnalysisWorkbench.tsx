@@ -172,10 +172,9 @@ export function QuickAnalysisWorkbench() {
   return <div className="workbench quick-analysis-workbench">
     {contextHolder}
     <div className="page-heading">
-      <div><Typography.Text type="secondary">与正式制造区共用清洗、统计和图表能力</Typography.Text><Typography.Title level={2}>个人分析工具</Typography.Title><Typography.Text type="secondary">从个人电脑或已共享路径读取数据；原始文件不入库，只把分析结果保存到服务器历史。</Typography.Text></div>
+      <Typography.Title level={2}>个人分析工具</Typography.Title>
       <Button icon={<ReloadOutlined />} onClick={() => void Promise.all([roots.refetch(), directories.refetch(), manifest.refetch(), sessions.refetch()])}>刷新</Button>
     </div>
-    <Alert className="compact-info-alert" showIcon type="info" message="正式 CP/FT 走上传、识别、清洗和正式数据链路；个人分析只做一次性计算，不保留原始文件和清洗中间数据。" />
     <Tabs
       defaultActiveKey="local"
       className="quick-source-tabs"
@@ -194,17 +193,13 @@ export function QuickAnalysisWorkbench() {
           key: "vdmos",
           label: <Space><LineChartOutlined />VDMOS 个人工具</Space>,
           children: <Card className="quick-source-card" title={<Space><LineChartOutlined />VDMOS 综合分析工具</Space>}>
-            <Typography.Paragraph>保留 VDMOS Tool v8.9 的参数选择、图表组合与报告界面，适合个人定制分析。该工具在独立页面运行，不会把临时文件或结果写入正式数据资产。</Typography.Paragraph>
-            <Alert type="info" showIcon message="独立个人工具" description="浏览器只打开随系统发布的 VDMOS 页面。正式数据的跨批次分析仍从 CP 数据、FT 数据或正式数据资产进入。" style={{ marginBottom: 16 }} />
             <Button type="primary" icon={<LineChartOutlined />} href={vdmosToolUrl} target="_blank" rel="noreferrer">打开 VDMOS 个人工具</Button>
           </Card>,
         },
         {
           key: "server",
           label: <Space><CloudServerOutlined />已配置服务器</Space>,
-          children: <>
-            <Alert type="info" showIcon message="后台已配置的数据源" description="适用于经常使用或定时拉取的 FTP、NAS、服务器挂载目录。用户无需重复输入地址和密码，可直接选择目录并后台计算。" style={{ marginBottom: 16 }} />
-            <Card title={<Space><CloudServerOutlined />选择受控服务器目录</Space>} className="quick-source-card" extra={<Button type="primary" icon={<PlayCircleOutlined />} disabled={!selectedRoot?.available || !manifest.data} loading={manifest.isFetching || createMutation.isPending} onClick={() => setConfirmOpen(true)}>确认范围并计算 PAT</Button>}>
+          children: <Card title={<Space><CloudServerOutlined />选择服务器目录</Space>} className="quick-source-card" extra={<Button type="primary" icon={<PlayCircleOutlined />} disabled={!selectedRoot?.available || !manifest.data} loading={manifest.isFetching || createMutation.isPending} onClick={() => setConfirmOpen(true)}>确认范围并计算 PAT</Button>}>
               {roots.isError ? <Alert type="error" showIcon message="数据源加载失败" description={roots.error.message} /> : !roots.isLoading && !roots.data?.length ? <Empty description="尚未配置快速分析数据源，请管理员设置 TMS_SOURCE_ROOTS_JSON。" /> : <>
                 <Space wrap className="quick-source-toolbar">
                   <Typography.Text strong>数据源</Typography.Text>
@@ -216,8 +211,7 @@ export function QuickAnalysisWorkbench() {
                 {manifest.isError && <Alert type="error" showIcon message="递归文件范围预览失败" description={manifest.error.message} />}
                 <Table rowKey="relative_path" size="small" loading={directories.isLoading} columns={directoryColumns} dataSource={directories.data?.directories ?? []} pagination={false} locale={{ emptyText: "当前目录没有子目录，可直接点击右上角开始计算。" }} />
               </>}
-            </Card>
-          </>,
+          </Card>,
         },
         {
           key: "temporary-ftp",
@@ -232,7 +226,7 @@ export function QuickAnalysisWorkbench() {
       { label: "已完成", value: metrics.success, tone: "success" },
       { label: "失败", value: metrics.failed, tone: metrics.failed ? "danger" : "default" },
     ]} />
-    <Card title="历史分析结果" className="production-table-card quick-session-card" extra={<Typography.Text type="secondary">只保留分析结果，原始文件和清洗中间数据不保留、不进入正式数据资产</Typography.Text>}>
+    <Card title="历史分析结果" className="production-table-card quick-session-card">
       <Space wrap style={{ marginBottom: 12 }}>
         <Typography.Text strong>状态</Typography.Text>
         <Select
@@ -320,7 +314,6 @@ export function QuickAnalysisWorkbench() {
       onOk={() => createMutation.mutate()}
     >
       {manifest.data ? <>
-        <Alert type="info" showIcon message="系统将递归处理以下范围" description="实际创建任务时会重新构建同一规则的 Manifest；目录内容发生变化时会阻止提交并要求重新确认。" style={{ marginBottom: 16 }} />
         <Row gutter={[12, 12]}>
           <Col span={12}><Statistic title="源文件数" value={manifest.data.file_count} /></Col>
           <Col span={12}><Statistic title="源数据大小" value={size(manifest.data.total_bytes)} /></Col>

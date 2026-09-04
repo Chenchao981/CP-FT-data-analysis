@@ -48,7 +48,6 @@ type BrowserPurpose = "INPUT" | "OUTPUT";
 interface OperationConfig {
   code: OperationCode;
   name: string;
-  detail: string;
   available: boolean;
   icon: React.ReactNode;
 }
@@ -57,7 +56,6 @@ interface FactoryConfig {
   code: string;
   name: string;
   englishName: string;
-  sourceHint: string;
   formats: string;
   toolCode: DirectPathToolCode;
   operations: OperationConfig[];
@@ -66,15 +64,13 @@ interface FactoryConfig {
 const operation = (
   code: OperationCode,
   name: string,
-  detail: string,
   icon: React.ReactNode,
   available = false,
-): OperationConfig => ({ code, name, detail, icon, available });
+): OperationConfig => ({ code, name, icon, available });
 
 const patOperation = operation(
   "PAT",
   "PAT 参数分析",
-  "直接解析原始目录，后台计算 PAT",
   <ExperimentOutlined />,
   true,
 );
@@ -85,12 +81,11 @@ const FACTORIES: Record<WorkbenchStage, FactoryConfig[]> = {
       code: "HUAHONG",
       name: "华虹",
       englishName: "HuaHong",
-      sourceHint: "选择 DCP/TXT 数据目录，或单个 ZIP/7z 压缩包",
       formats: "DCP/TXT · ZIP/7z",
       toolCode: "HUAHONG_CP_QUICK_PAT_EXISTING",
       operations: [
-        operation("CLEAN", "数据清洗", "输出 cleaned、yield、spec 标准 CSV", <DatabaseOutlined />),
-        operation("CHART", "图表分析", "CP Cockpit、良率与参数图表", <BarChartOutlined />),
+        operation("CLEAN", "数据清洗", <DatabaseOutlined />),
+        operation("CHART", "图表分析", <BarChartOutlined />),
         patOperation,
       ],
     },
@@ -98,12 +93,11 @@ const FACTORIES: Record<WorkbenchStage, FactoryConfig[]> = {
       code: "JETECH",
       name: "积塔",
       englishName: "Jetech",
-      sourceHint: "选择积塔 Excel 数据目录、单个 Excel 或 ZIP 压缩包",
       formats: "XLS/XLSX · ZIP",
       toolCode: "JETECH_CP_QUICK_PAT_EXISTING",
       operations: [
-        operation("CLEAN", "数据清洗", "输出 cleaned、yield、spec 标准 CSV", <DatabaseOutlined />),
-        operation("CHART", "图表分析", "CP Cockpit、良率与参数图表", <BarChartOutlined />),
+        operation("CLEAN", "数据清洗", <DatabaseOutlined />),
+        operation("CHART", "图表分析", <BarChartOutlined />),
         patOperation,
       ],
     },
@@ -111,26 +105,24 @@ const FACTORIES: Record<WorkbenchStage, FactoryConfig[]> = {
       code: "LION",
       name: "立昂微",
       englishName: "Lion",
-      sourceHint: "选择立昂微 CP Excel 数据目录、单个 Excel 或 ZIP 压缩包",
       formats: "XLS/XLSX · ZIP",
       toolCode: "LION_CP_QUICK_PAT_EXISTING",
       operations: [
-        operation("CLEAN", "数据清洗", "自动识别已验收的 CP 数据格式", <DatabaseOutlined />),
-        operation("CHART", "图表分析", "CP Cockpit 与立昂微专用图表", <BarChartOutlined />),
+        operation("CLEAN", "数据清洗", <DatabaseOutlined />),
+        operation("CHART", "图表分析", <BarChartOutlined />),
         patOperation,
-        operation("DIE_COUNT", "管芯数汇总", "汇总 NCE品名、LOT、Wafer、PASS、Good Die", <FileExcelOutlined />),
+        operation("DIE_COUNT", "管芯数汇总", <FileExcelOutlined />),
       ],
     },
     {
       code: "GUOYU",
       name: "国宇 FRD",
       englishName: "Guoyu",
-      sourceHint: "选择批次/产品 Excel 目录、单个 Excel 或 ZIP 压缩包",
       formats: "XLS/XLSX · ZIP",
       toolCode: "GUOYU_CP_QUICK_PAT_EXISTING",
       operations: [
-        operation("CLEAN", "数据清洗", "输出 cleaned、yield、spec 标准 CSV", <DatabaseOutlined />),
-        operation("CHART", "图表分析", "CP Cockpit、良率与参数图表", <BarChartOutlined />),
+        operation("CLEAN", "数据清洗", <DatabaseOutlined />),
+        operation("CHART", "图表分析", <BarChartOutlined />),
         patOperation,
       ],
     },
@@ -140,39 +132,36 @@ const FACTORIES: Record<WorkbenchStage, FactoryConfig[]> = {
       code: "RIYUEXIN",
       name: "日月新",
       englishName: "Riyuexin",
-      sourceHint: "选择产品根目录，或 DC/DVDS/RG 原始 XLSX 目录",
       formats: "DC · DVDS · RG · XLSX · ZIP/7z",
       toolCode: "RIYUEXIN_FT_QUICK_PAT_EXISTING",
       operations: [
-        operation("CLEAN", "FT 数据清洗", "DC、DVDS、RG", <DatabaseOutlined />),
-        operation("CHART", "FT 散点图", "清洗后查看参数散点与规格", <BarChartOutlined />),
+        operation("CLEAN", "FT 数据清洗", <DatabaseOutlined />),
+        operation("CHART", "FT 散点图", <BarChartOutlined />),
         patOperation,
-        operation("SYL_SBL", "SBL & SYL", "选择单个封装厂良率 Excel", <FileExcelOutlined />),
+        operation("SYL_SBL", "SBL & SYL", <FileExcelOutlined />),
       ],
     },
     {
       code: "JIEQUN",
       name: "杰群",
       englishName: "Jiequn",
-      sourceHint: "选择产品根目录、DC/DVDS/RG 目录，或原始 DTA CSV 压缩包",
       formats: "DC-AI · DVDS · RG · CSV · ZIP/7z",
       toolCode: "JIEQUN_FT_QUICK_PAT_EXISTING",
       operations: [
-        operation("CLEAN", "FT 数据清洗", "DC-AI 自动识别、DVDS、RG", <DatabaseOutlined />),
-        operation("CHART", "FT 散点图", "DC-AI 清洗后查看参数散点", <BarChartOutlined />),
+        operation("CLEAN", "FT 数据清洗", <DatabaseOutlined />),
+        operation("CHART", "FT 散点图", <BarChartOutlined />),
         patOperation,
-        operation("SYL_SBL", "SBL & SYL", "选择单个封装厂良率 Excel", <FileExcelOutlined />),
+        operation("SYL_SBL", "SBL & SYL", <FileExcelOutlined />),
       ],
     },
     {
       code: "RIYUEGUANG",
       name: "日月光",
       englishName: "ASE",
-      sourceHint: "选择产品根目录，或 DC/DVDS/RG 原始 XLSX 目录",
       formats: "DC · DVDS · RG · XLSX · ZIP/7z",
       toolCode: "RIYUEGUANG_FT_QUICK_PAT_EXISTING",
       operations: [
-        operation("CLEAN", "FT 数据清洗", "按日月光已验收数据格式清洗", <DatabaseOutlined />),
+        operation("CLEAN", "FT 数据清洗", <DatabaseOutlined />),
         patOperation,
       ],
     },
@@ -180,25 +169,23 @@ const FACTORIES: Record<WorkbenchStage, FactoryConfig[]> = {
       code: "DIANJI",
       name: "电基",
       englishName: "Dianji",
-      sourceHint: "选择一种电基 PowerTECH、STS8203 或 TF 原始数据目录",
       formats: "XLS/XLSX/CSV · ZIP/7z",
       toolCode: "DIANJI_FT_QUICK_PAT_EXISTING",
       operations: [
-        operation("CLEAN", "FT-ALL 清洗", "自动识别已注册的电基原始格式", <DatabaseOutlined />),
-        operation("CHART", "FT 散点图", "FT-ALL 清洗后查看参数散点", <BarChartOutlined />),
+        operation("CLEAN", "FT-ALL 清洗", <DatabaseOutlined />),
+        operation("CHART", "FT 散点图", <BarChartOutlined />),
         patOperation,
-        operation("SYL_SBL", "SBL & SYL", "选择单个封装厂良率 Excel", <FileExcelOutlined />),
+        operation("SYL_SBL", "SBL & SYL", <FileExcelOutlined />),
       ],
     },
     {
       code: "JIJIA",
       name: "集佳",
       englishName: "Jijia",
-      sourceHint: "选择包含集佳 STS8203 原始 CSV 的目录或压缩包",
       formats: "FT-ALL · CSV · ZIP/7z",
       toolCode: "JIJIA_FT_QUICK_PAT_EXISTING",
       operations: [
-        operation("CLEAN", "FT-ALL 清洗", "严格解析集佳 STS8203 数据", <DatabaseOutlined />),
+        operation("CLEAN", "FT-ALL 清洗", <DatabaseOutlined />),
         patOperation,
       ],
     },
@@ -328,7 +315,6 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
       <div className="tool-stage-heading">
         <div>
           <Typography.Title level={4}>1. 选择 CP 或 FT 工具</Typography.Title>
-          <Typography.Text type="secondary">两个工具台完全分开，不需要选择工程、量产或工厂类型。</Typography.Text>
         </div>
         <div className="stage-switch" role="group" aria-label="工具类型">
           {(["CP", "FT"] as const).map((item) => <button
@@ -368,13 +354,6 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
     </Card>
 
     <Card className="tool-step-card" title="3. 选择输入路径">
-      <Alert
-        showIcon
-        type="info"
-        className="compact-info-alert"
-        message={factory.sourceHint}
-        description="直接读取当前 TMS 运行电脑可访问的本地盘、映射盘和共享路径；源文件不上传、不入库，只在服务器保留分析结果。"
-      />
       <div className="path-form-grid">
         <label htmlFor="quick-input-path">输入路径</label>
         <Space.Compact className="path-input-group">
@@ -411,20 +390,14 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
           type="button"
           className={`${selected.code === item.code ? "operation-tile active" : "operation-tile"}${item.available ? "" : " pending"}`}
           aria-pressed={selected.code === item.code}
+          disabled={!item.available}
           onClick={() => { setSelectedOperation(item.code); setPreview(undefined); }}
         >
           <span className="operation-icon">{item.icon}</span>
-          <span><strong>{item.name}</strong><small>{item.detail}</small></span>
-          <Tag color={item.available ? "success" : "default"}>{item.available ? "可运行" : "网页待接入"}</Tag>
+          <span><strong>{item.name}</strong></span>
+          <Tag color={item.available ? "success" : "default"}>{item.available ? "可运行" : "待接入"}</Tag>
         </button>)}
       </div>
-
-      {!selected.available && <Alert
-        showIcon
-        type="warning"
-        message={`${factory.name} · ${selected.name} 已在原桌面工具中存在，当前网页后台执行合同尚未接入`}
-        description="本页先准确保留厂家、功能和路径交互，不会创建一个无法正确产出结果的假任务。"
-      />}
 
       {selected.code === "PAT" && preview && <Card
         size="small"
@@ -461,10 +434,6 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
         />
       </Card>}
 
-      {selected.code === "PAT" && !preview && <div className="operation-empty-state">
-        <ExperimentOutlined />
-        <div><strong>PAT 已选定</strong><span>请先在上方选择输入、输出路径，并点击“解析范围”。</span></div>
-      </div>}
     </Card>
 
     <Modal
@@ -479,17 +448,9 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
         </Button>
       </Space>}
     >
-      <Alert
-        showIcon
-        type="info"
-        className="compact-info-alert"
-        message={browserPurpose === "INPUT"
-          ? `当前厂家支持：${browseMutation.data?.allowed_suffixes.join("、") || "正在读取"}`
-          : "双击文件夹继续浏览，确认后结果会直接保存到所选目录"}
-        description={browserPurpose === "INPUT"
-          ? "可选择一个源文件/压缩包，或进入目标目录后使用当前文件夹。"
-          : "输出目录可与输入目录不同；如存在同名 PAT 文件，系统自动追加序号，不覆盖旧结果。"}
-      />
+      {browserPurpose === "INPUT" && <Typography.Text type="secondary">
+        支持格式：{browseMutation.data?.allowed_suffixes.join("、") || "读取中"}
+      </Typography.Text>}
       <Space.Compact style={{ width: "100%", marginBottom: 12 }}>
         <Button icon={<ArrowUpOutlined />} disabled={!browseMutation.data?.parent_path} onClick={() => browseMutation.data?.parent_path && browseMutation.mutate(browseMutation.data.parent_path)}>上一级</Button>
         <Input aria-label="路径浏览地址" value={browserPath} placeholder="输入本地盘、映射盘或 UNC 路径" onChange={(event) => setBrowserPath(event.target.value)} onPressEnter={() => browseMutation.mutate(browserPath)} />

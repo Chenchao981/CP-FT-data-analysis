@@ -1,6 +1,6 @@
 import { CloudServerOutlined, SearchOutlined } from "@ant-design/icons";
 import { useMutation } from "@tanstack/react-query";
-import { Alert, Button, Card, Col, Input, InputNumber, List, Row, Select, Space, Statistic, Typography, message } from "antd";
+import { Button, Card, Col, Input, InputNumber, List, Row, Select, Space, Statistic, Typography, message } from "antd";
 import { useState } from "react";
 
 import { previewTemporaryFtp, type TemporaryFtpPreview, type TemporaryFtpRequest } from "../../api/quickAnalysis";
@@ -22,13 +22,6 @@ export function TemporaryFtpPanel() {
 
   return <>
     {contextHolder}
-    <Alert
-      showIcon
-      type="info"
-      message="临时 FTP 账号只用于本次目录预览"
-      description="页面不会保存密码。确认需要反复分析后，请在后台配置为已配置服务器数据源，再由 Worker 后台执行；NAS 建议使用映射盘符/UNC 路径或后台配置。"
-      style={{ marginBottom: 16 }}
-    />
     <Card title={<Space><CloudServerOutlined />临时连接</Space>} extra={<Button type="primary" icon={<SearchOutlined />} disabled={!ready} loading={mutation.isPending} onClick={() => mutation.mutate()}>连接并预览</Button>}>
       <Space direction="vertical" size={12} style={{ width: "100%" }}>
         <Space wrap>
@@ -43,9 +36,8 @@ export function TemporaryFtpPanel() {
         </Space>
         {preview && <Card size="small" type="inner" title={`${preview.protocol}://${preview.server}:${preview.port}${preview.remote_path}`}>
           <Row gutter={16}>
-            <Col span={8}><Statistic title="CSV 文件" value={preview.file_count} /></Col>
-            <Col span={8}><Statistic title="源数据大小" value={displaySize(preview.total_bytes)} /></Col>
-            <Col span={8}><Statistic title="用途" value="目录确认" /></Col>
+            <Col span={12}><Statistic title="CSV 文件" value={preview.file_count} /></Col>
+            <Col span={12}><Statistic title="源数据大小" value={displaySize(preview.total_bytes)} /></Col>
           </Row>
           <Typography.Text strong>文件示例（最多 20 个）</Typography.Text>
           <List size="small" dataSource={preview.sample_files} renderItem={(item) => <List.Item><Typography.Text code>{item}</Typography.Text></List.Item>} />

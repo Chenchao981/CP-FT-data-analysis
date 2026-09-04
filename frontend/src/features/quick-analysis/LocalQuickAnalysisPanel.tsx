@@ -22,7 +22,6 @@ import {
   Space,
   Statistic,
   Tag,
-  Typography,
   message,
 } from "antd";
 import { useEffect, useMemo, useState } from "react";
@@ -223,15 +222,8 @@ export function LocalQuickAnalysisPanel({ onRegistered }: LocalQuickAnalysisPane
 
   return <div className="local-quick-panel">
     {contextHolder}
-    <Alert
-      showIcon
-      type="info"
-      message="计算在当前电脑完成，源文件不上传"
-      description="Agent 使用原生目录选择器读取本机文件，只把 PAT Excel、统计摘要和来源 Manifest 登记到你的个人快速分析记录。TMS 登录令牌不会交给 Agent。"
-      style={{ marginBottom: 16 }}
-    />
     <Card
-      title={<Space><LinkOutlined />连接本机 Agent</Space>}
+      title={<Space><LinkOutlined />本机 Agent</Space>}
       extra={<Tag color={health.isSuccess ? "success" : "default"}>{health.isSuccess ? "端口在线" : "未检测到"}</Tag>}
       className="quick-source-card"
     >
@@ -247,9 +239,6 @@ export function LocalQuickAnalysisPanel({ onRegistered }: LocalQuickAnalysisPane
         </Col>
         <Col><Button type="primary" loading={connect.isPending} onClick={() => connect.mutate()}>连接</Button></Col>
       </Row>
-      {!health.isSuccess && <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
-        请先在本机启动“TMS Local Agent”。Agent 仅监听 127.0.0.1:8765；关闭窗口即停止本机计算服务。
-      </Typography.Paragraph>}
     </Card>
 
     <Card
@@ -279,7 +268,7 @@ export function LocalQuickAnalysisPanel({ onRegistered }: LocalQuickAnalysisPane
             <List.Item.Meta
               avatar={item.enabled ? <CheckCircleOutlined style={{ color: "#52c41a" }} /> : <SafetyCertificateOutlined style={{ color: "#faad14" }} />}
               title={<Space>{item.display_name}<Tag>{item.factory_code}</Tag></Space>}
-              description={item.enabled ? `${item.input_contract_version} → ${item.output_contract_version}` : item.disabled_reason}
+              description={item.enabled ? undefined : item.disabled_reason}
             />
           </List.Item>}
         />}
@@ -287,7 +276,6 @@ export function LocalQuickAnalysisPanel({ onRegistered }: LocalQuickAnalysisPane
           type="error"
           showIcon
           message="Agent 与 TMS 登记的工具合同不一致"
-          description="请更新 Agent 配置或由管理员登记相同 SHA、超时和输出上限的已发布工具；合同不一致时禁止计算。"
         />}
         {preview && <>
           <Descriptions bordered size="small" column={{ xs: 1, sm: 2 }}>
@@ -296,7 +284,6 @@ export function LocalQuickAnalysisPanel({ onRegistered }: LocalQuickAnalysisPane
             <Descriptions.Item label="源文件">{preview.file_count.toLocaleString("zh-CN")}</Descriptions.Item>
             <Descriptions.Item label="源数据量">{size(preview.total_bytes)}</Descriptions.Item>
             <Descriptions.Item label="允许类型">{preview.allowed_suffixes.join("、")}</Descriptions.Item>
-            <Descriptions.Item label="执行位置">当前用户电脑</Descriptions.Item>
           </Descriptions>
           <Button
             type="primary"
