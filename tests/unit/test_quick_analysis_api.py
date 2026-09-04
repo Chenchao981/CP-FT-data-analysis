@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
@@ -245,6 +246,44 @@ def test_direct_path_api_previews_and_queues_personal_pat(tmp_path: Path) -> Non
     assert body["source_relative_path"] == str(source.resolve())
     assert body["status"] == "QUEUED"
     assert body["job_id"] == 1
+
+
+def test_completed_personal_result_remains_in_history_after_session_deadline(
+    tmp_path: Path,
+) -> None:
+    owner = _principal(10, "owner")
+    service = InMemoryQuickAnalysisService()
+    request = _session_request(
+        source_root_code="LOCAL_AGENT",
+        access_scope="PERSONAL",
+        data_domain_id=None,
+    )
+    request = replace(
+        request, expires_at_utc=datetime.now(UTC) - timedelta(seconds=1)
+    )
+    session = service.create(owner, request)
+    report = tmp_path / "PAT.xlsx"
+    report.write_bytes(b"persistent-result")
+    artifact = QuickAnalysisArtifact(
+        "pat_report",
+        str(report),
+        report.stat().st_size,
+        hashlib.sha256(report.read_bytes()).hexdigest(),
+    )
+    service.attach_job(session.analysis_session_id, 71)
+    service.mark_running(session.analysis_session_id)
+    service.record_success(
+        session.analysis_session_id,
+        71,
+        parameter_count=1,
+        record_count=10,
+        summary={},
+        artifacts=(artifact,),
+    )
+
+    saved = service.get_for_principal(session.analysis_session_id, owner)
+    assert saved.status.value == "SUCCESS"
+    assert service.result_artifact(session.analysis_session_id, owner) == artifact
 
 
 def test_direct_path_api_previews_and_queues_cp_factory_pat(tmp_path: Path) -> None:

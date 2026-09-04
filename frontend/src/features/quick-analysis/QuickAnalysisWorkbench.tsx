@@ -4,6 +4,7 @@ import {
   FolderOpenOutlined,
   LaptopOutlined,
   LeftOutlined,
+  LineChartOutlined,
   PlayCircleOutlined,
   ReloadOutlined,
 } from "@ant-design/icons";
@@ -46,6 +47,7 @@ import {
   shanghaiLocalInputToUtc,
 } from "../../utils/dateTime";
 import { DirectPathAnalysisPanel } from "./DirectPathAnalysisPanel";
+import { LocalQuickAnalysisPanel } from "./LocalQuickAnalysisPanel";
 import { TemporaryFtpPanel } from "./TemporaryFtpPanel";
 import { PatResultView } from "../analytics/PatResultView";
 
@@ -159,27 +161,43 @@ export function QuickAnalysisWorkbench() {
     { title: "指定输出", key: "exported_result_path", width: 300, ellipsis: true, render: (_, row) => row.summary?.exported_result_path || "—" },
     { title: "发起人", dataIndex: "owner_name", width: 100 },
     { title: "创建时间", dataIndex: "created_at_utc", width: 175, render: formatUtcDateTime },
-    { title: "结果到期", dataIndex: "expires_at_utc", width: 175, render: formatUtcDateTime },
+    { title: "结果保存", dataIndex: "retention_mode", width: 120, render: () => <Tag color="green">服务器历史</Tag> },
     { title: "错误", dataIndex: "error_message", width: 240, ellipsis: true, render: (value) => value || "—" },
     { title: "操作", key: "actions", width: 100, fixed: "right", render: (_, row) => row.status === "SUCCESS" && row.result_file_name ? <Button type="link" size="small" icon={<DownloadOutlined />} loading={downloadMutation.isPending && downloadMutation.variables?.analysis_session_id === row.analysis_session_id} onClick={() => downloadMutation.mutate(row)}>下载 PAT</Button> : "—" },
   ];
   const selectedRoot = roots.data?.find((item) => item.code === rootCode);
 
+  const vdmosToolUrl = "/personal-tools/vdmos/VDMOS_Tool_v8.9.html";
+
   return <div className="workbench quick-analysis-workbench">
     {contextHolder}
     <div className="page-heading">
-      <div><Typography.Text type="secondary">复用现有 CP 与 FT 桌面工具能力</Typography.Text><Typography.Title level={2}>CP / FT 个人工具</Typography.Title><Typography.Text type="secondary">先选 CP 或 FT、再选厂家和路径，最后选择清洗、图表、PAT 或 SBL&SYL；快速结果不写入正式 Canonical 明细。</Typography.Text></div>
+      <div><Typography.Text type="secondary">与正式制造区共用清洗、统计和图表能力</Typography.Text><Typography.Title level={2}>个人分析工具</Typography.Title><Typography.Text type="secondary">从个人电脑或已共享路径读取数据；原始文件不入库，只把分析结果保存到服务器历史。</Typography.Text></div>
       <Button icon={<ReloadOutlined />} onClick={() => void Promise.all([roots.refetch(), directories.refetch(), manifest.refetch(), sessions.refetch()])}>刷新</Button>
     </div>
-    <Alert className="compact-info-alert" showIcon type="info" message="本机路径模式直接读取当前 TMS 主机可访问目录；PAT 已接通后台执行和指定目录输出，其余桌面工具能力按厂家显示接入状态。" />
+    <Alert className="compact-info-alert" showIcon type="info" message="正式 CP/FT 走上传、识别、清洗和正式数据链路；个人分析只做一次性计算，不保留原始文件和清洗中间数据。" />
     <Tabs
       defaultActiveKey="local"
       className="quick-source-tabs"
       items={[
         {
           key: "local",
-          label: <Space><LaptopOutlined />CP / FT 个人工具</Space>,
+          label: <Space><LaptopOutlined />同机 / 共享路径</Space>,
           children: <DirectPathAnalysisPanel onCreated={() => queryClient.invalidateQueries({ queryKey: ["quick-analysis", "sessions"] })} />,
+        },
+        {
+          key: "local-agent",
+          label: <Space><LaptopOutlined />个人电脑（Agent）</Space>,
+          children: <LocalQuickAnalysisPanel onRegistered={() => queryClient.invalidateQueries({ queryKey: ["quick-analysis", "sessions"] })} />,
+        },
+        {
+          key: "vdmos",
+          label: <Space><LineChartOutlined />VDMOS 个人工具</Space>,
+          children: <Card className="quick-source-card" title={<Space><LineChartOutlined />VDMOS 综合分析工具</Space>}>
+            <Typography.Paragraph>保留 VDMOS Tool v8.9 的参数选择、图表组合与报告界面，适合个人定制分析。该工具在独立页面运行，不会把临时文件或结果写入正式数据资产。</Typography.Paragraph>
+            <Alert type="info" showIcon message="独立个人工具" description="浏览器只打开随系统发布的 VDMOS 页面。正式数据的跨批次分析仍从 CP 数据、FT 数据或正式数据资产进入。" style={{ marginBottom: 16 }} />
+            <Button type="primary" icon={<LineChartOutlined />} href={vdmosToolUrl} target="_blank" rel="noreferrer">打开 VDMOS 个人工具</Button>
+          </Card>,
         },
         {
           key: "server",
@@ -208,13 +226,13 @@ export function QuickAnalysisWorkbench() {
         },
       ]}
     />
-    <MetricStrip ariaLabel="快速分析任务状态" items={[
+    <MetricStrip ariaLabel="个人工具任务状态" items={[
       { label: "筛选结果", value: metrics.total },
       { label: "排队 / 计算", value: metrics.running, tone: "primary" },
       { label: "已完成", value: metrics.success, tone: "success" },
       { label: "失败", value: metrics.failed, tone: metrics.failed ? "danger" : "default" },
     ]} />
-    <Card title="快速分析记录" className="production-table-card quick-session-card" extra={<Typography.Text type="secondary">个人结果仅本人；数据域结果仅当前有效成员</Typography.Text>}>
+    <Card title="历史分析结果" className="production-table-card quick-session-card" extra={<Typography.Text type="secondary">只保留分析结果，原始文件和清洗中间数据不保留、不进入正式数据资产</Typography.Text>}>
       <Space wrap style={{ marginBottom: 12 }}>
         <Typography.Text strong>状态</Typography.Text>
         <Select
@@ -227,7 +245,7 @@ export function QuickAnalysisWorkbench() {
         />
         <Typography.Text strong>创建时间（上海）</Typography.Text>
         <Input
-          aria-label="快速分析开始时间"
+          aria-label="个人工具开始时间"
           type="datetime-local"
           value={sessionRange.from}
           style={{ width: 190 }}
@@ -235,7 +253,7 @@ export function QuickAnalysisWorkbench() {
         />
         <Typography.Text>至</Typography.Text>
         <Input
-          aria-label="快速分析结束时间"
+          aria-label="个人工具结束时间"
           type="datetime-local"
           value={sessionRange.to}
           style={{ width: 190 }}
@@ -251,8 +269,8 @@ export function QuickAnalysisWorkbench() {
           </Button>
         ))}
       </Space>
-      {sessions.isError && <Alert type="error" showIcon message="快速分析记录加载失败" description={sessions.error.message} />}
-      {downloadError && <Alert type="error" showIcon message="PAT 下载失败" description={`${downloadError}。结果可能已过期或已清理，请刷新记录后重试。`} style={{ marginBottom: 12 }} />}
+      {sessions.isError && <Alert type="error" showIcon message="个人工具任务记录加载失败" description={sessions.error.message} />}
+      {downloadError && <Alert type="error" showIcon message="PAT 下载失败" description={`${downloadError}。请刷新记录后重试，如仍失败请联系系统管理员。`} style={{ marginBottom: 12 }} />}
       <Table
         rowKey="analysis_session_id"
         columns={sessionColumns}
@@ -276,6 +294,7 @@ export function QuickAnalysisWorkbench() {
           expandedRowRender: (row) => <PatResultView
             title={`${row.test_stage} · ${row.factory_code} · PAT分析结果`}
             labelTitle="测试参数"
+            scope="PERSONAL"
             rows={(row.summary?.parameters ?? []).map((item) => ({
               key: item.parameter,
               label: item.parameter,

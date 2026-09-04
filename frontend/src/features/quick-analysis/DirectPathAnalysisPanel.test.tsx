@@ -124,4 +124,17 @@ describe("DirectPathAnalysisPanel", () => {
     expect(screen.queryByRole("button", { name: /日月新/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /PAT 参数分析/ })).toHaveTextContent("可运行");
   }, 15_000);
+
+  it("runs PAT without requiring an extra local export directory", async () => {
+    renderPanel();
+    fireEvent.change(screen.getByLabelText("输入路径"), {
+      target: { value: String.raw`F:\ft-source` },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /解析范围/ }));
+
+    expect(await screen.findByText("已确认解析范围：lot.zip")).toBeInTheDocument();
+    expect(screen.getByText("自动保存到个人历史")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /开始后台 PAT/ }));
+    await waitFor(() => expect(createDirectPathPat).toHaveBeenCalledWith(preview, ""));
+  }, 15_000);
 });

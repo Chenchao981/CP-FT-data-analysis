@@ -5,8 +5,13 @@ from datetime import UTC, datetime
 import pytest
 from app.core.errors import DomainError
 from app.domain.auth import Principal
-from app.domain.quick_analysis import NewQuickAnalysisSession, QuickAnalysisStatus
+from app.domain.quick_analysis import (
+    NewQuickAnalysisSession,
+    QuickAnalysisArtifact,
+    QuickAnalysisStatus,
+)
 from app.infrastructure.sql_quick_analysis_service import (
+    SESSION_SELECT,
     SqlQuickAnalysisService,
     _to_session,
 )
@@ -306,15 +311,77 @@ def test_sql_quick_personal_scope_never_grants_system_admin_owner_bypass() -> No
         service.get_for_principal(1, admin)
     assert metadata_error.value.code == "QUICK_ANALYSIS_NOT_FOUND"
     metadata_sql, metadata_parameters = engine.connection.calls[-1]
-    assert "AND ((s.access_scope='PERSONAL'" in metadata_sql
+    assert "AND (:is_admin=1 OR (s.access_scope='PERSONAL'" in metadata_sql
     assert metadata_parameters["user_id"] == 99
 
     with pytest.raises(DomainError) as artifact_error:
         service.result_artifact(1, admin)
     assert artifact_error.value.code == "QUICK_RESULT_NOT_FOUND"
     artifact_sql, artifact_parameters = engine.connection.calls[-1]
-    assert "AND ((s.access_scope='PERSONAL'" in artifact_sql
+    assert "AND (:is_admin=1 OR (s.access_scope='PERSONAL'" in artifact_sql
     assert artifact_parameters["user_id"] == 99
+
+
+def test_success_artifacts_are_registered_as_persistent_result_history() -> None:
+    class Connection:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+            self.responses = iter(
+                (
+                    _MappedResult(
+                        {
+                            "analysis_session_id": 41,
+                            "owner_user_id": 8,
+                            "access_scope": "PERSONAL",
+                            "data_domain_id": None,
+                            "status": "RUNNING",
+                            "expires_at_utc": datetime(2026, 9, 2, tzinfo=UTC),
+                        }
+                    ),
+                    _MappedResult("ACTIVE"),
+                    _MappedResult(1),
+                    _MappedResult(None),
+                    _MappedResult(None),
+                )
+            )
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args) -> None:
+            return None
+
+        def execute(self, statement, parameters):
+            self.calls.append((str(statement), parameters))
+            return next(self.responses)
+
+    class Engine:
+        def __init__(self) -> None:
+            self.connection = Connection()
+
+        def begin(self):
+            return self.connection
+
+    engine = Engine()
+    service = SqlQuickAnalysisService(engine)  # type: ignore[arg-type]
+    service.record_success(
+        41,
+        91,
+        parameter_count=1,
+        record_count=10,
+        summary={"elapsed_seconds": 1.2},
+        artifacts=(
+            # The file is not read here; registration uses already verified metadata.
+            QuickAnalysisArtifact(
+                "pat_report", r"F:\workspace\91\PAT.xlsx", 20, "a" * 64
+            ),
+        ),
+    )
+
+    artifact_sql, artifact_parameters = engine.connection.calls[3]
+    assert ":sha,0,NULL)" in artifact_sql
+    assert "expires" not in artifact_parameters
+    assert "SUCCESS' AND s.expires_at_utc" not in SESSION_SELECT
 
 
 def test_worker_execution_rejects_domain_session_when_owner_account_is_disabled() -> (

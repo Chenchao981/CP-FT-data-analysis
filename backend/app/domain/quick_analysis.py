@@ -740,11 +740,10 @@ class InMemoryQuickAnalysisService:
 
     @staticmethod
     def _effective(item: QuickAnalysisSession) -> QuickAnalysisSession:
-        if (
-            item.status == QuickAnalysisStatus.SUCCESS
-            and item.expires_at_utc <= datetime.now(UTC)
-        ):
-            return replace(item, status=QuickAnalysisStatus.EXPIRED)
+        # RESULT_ONLY means the source and cleaning intermediates are not retained;
+        # the completed result itself remains part of the owner's history.  The
+        # session deadline is still used to bound queued/failed workspace cleanup,
+        # but it must never expire a successfully registered result.
         return item
 
 

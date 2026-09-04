@@ -98,9 +98,14 @@ class MonitoredProcessRunner:
                 except subprocess.TimeoutExpired:
                     continue
         except BaseException:
-            for child in tracked.children(recursive=True):
+            try:
+                children = tracked.children(recursive=True)
+            except psutil.NoSuchProcess:
+                children = ()
+            for child in children:
                 child.kill()
-            process.kill()
+            if process.poll() is None:
+                process.kill()
             process.communicate()
             raise
         finally:
@@ -112,7 +117,11 @@ class MonitoredProcessRunner:
 
     def _sample(self, process: psutil.Process) -> None:
         rss = 0
-        for item in (process, *process.children(recursive=True)):
+        try:
+            children = process.children(recursive=True)
+        except psutil.NoSuchProcess:
+            children = ()
+        for item in (process, *children):
             try:
                 rss += item.memory_info().rss
             except (psutil.NoSuchProcess, psutil.AccessDenied):

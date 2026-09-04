@@ -252,7 +252,7 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
   const runMutation = useMutation({
     mutationFn: () => createDirectPathPat(preview!, currentPaths.output),
     onSuccess: (session) => {
-      messageApi.success(`个人 PAT ${session.analysis_session_id} 已进入后台队列，完成后自动保存到所选输出目录`);
+      messageApi.success(`个人 PAT ${session.analysis_session_id} 已进入后台队列，完成后结果保存到服务器历史记录`);
       onCreated();
     },
     onError: (error) => messageApi.error(error.message),
@@ -320,7 +320,7 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
     },
   ], [browserPurpose, browseMutation]);
 
-  const canRunPat = selected.code === "PAT" && Boolean(preview && currentPaths.output.trim());
+  const canRunPat = selected.code === "PAT" && Boolean(preview);
 
   return <div className="personal-tool-workbench">
     {contextHolder}
@@ -367,13 +367,13 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
       </div>
     </Card>
 
-    <Card className="tool-step-card" title="3. 选择输入和输出路径">
+    <Card className="tool-step-card" title="3. 选择输入路径">
       <Alert
         showIcon
         type="info"
         className="compact-info-alert"
         message={factory.sourceHint}
-        description="可预览当前 TMS 主机能够访问的本地盘、映射盘和 UNC 路径；目录文件不经过浏览器上传。"
+        description="直接读取当前 TMS 运行电脑可访问的本地盘、映射盘和共享路径；源文件不上传、不入库，只在服务器保留分析结果。"
       />
       <div className="path-form-grid">
         <label htmlFor="quick-input-path">输入路径</label>
@@ -390,13 +390,13 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
           <Button icon={<SearchOutlined />} disabled={selected.code !== "PAT" || !currentPaths.input.trim()} loading={previewMutation.isPending} onClick={() => previewMutation.mutate()}>解析范围</Button>
         </Space.Compact>
 
-        <label htmlFor="quick-output-path">输出路径</label>
+        <label htmlFor="quick-output-path">额外导出（可选）</label>
         <Space.Compact className="path-input-group">
           <Input
             id="quick-output-path"
             aria-label="输出路径"
             value={currentPaths.output}
-            placeholder="选择结果保存文件夹；不存在时由系统创建"
+            placeholder="不填也会保存到服务器历史；需要本地副本时再选"
             onChange={(event) => updatePath("output", event.target.value)}
           />
           <Button icon={<FolderOpenOutlined />} loading={browseMutation.isPending && browserPurpose === "OUTPUT"} onClick={() => openBrowser("OUTPUT")}>预览选择</Button>
@@ -449,9 +449,9 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
           <Tag color={preview.input_kind === "DIRECTORY" ? "blue" : "purple"}>{preview.input_kind === "DIRECTORY" ? "文件夹" : "单个文件"}</Tag>
           {preview.archive_count > 0 && <Tag color="purple">压缩包 {preview.archive_count} 个</Tag>}
           <Typography.Text><strong>输入：</strong><Typography.Text code copyable>{preview.path}</Typography.Text></Typography.Text>
-          <Typography.Text><strong>输出：</strong><Typography.Text code copyable>{currentPaths.output || "尚未选择"}</Typography.Text></Typography.Text>
+          <Typography.Text><strong>服务器结果：</strong>自动保存到个人历史</Typography.Text>
+          <Typography.Text><strong>额外导出：</strong><Typography.Text code copyable>{currentPaths.output || "不导出本地副本"}</Typography.Text></Typography.Text>
         </Space>
-        {!currentPaths.output.trim() && <Alert type="warning" showIcon message="请选择输出路径后再开始 PAT" />}
         <List
           size="small"
           header={<Typography.Text strong>将解析的文件{preview.sample_truncated ? "（前 100 个）" : ""}</Typography.Text>}

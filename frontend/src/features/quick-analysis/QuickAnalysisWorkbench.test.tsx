@@ -20,6 +20,10 @@ vi.mock("./DirectPathAnalysisPanel", () => ({
   DirectPathAnalysisPanel: () => <div>direct-path-panel</div>,
 }));
 
+vi.mock("./LocalQuickAnalysisPanel", () => ({
+  LocalQuickAnalysisPanel: () => <div>local-agent-panel</div>,
+}));
+
 vi.mock("./TemporaryFtpPanel", () => ({
   TemporaryFtpPanel: () => <div>temporary-ftp-panel</div>,
 }));
@@ -177,8 +181,24 @@ describe("QuickAnalysisWorkbench", () => {
     ));
   }, 15_000);
 
-  it("keeps an expired or missing download failure visible", async () => {
-    vi.mocked(downloadQuickPat).mockRejectedValueOnce(new Error("结果文件已过期"));
+  it("keeps VDMOS as a separate personal tool outside formal CP and FT data", async () => {
+    renderWorkbench();
+
+    fireEvent.click(await screen.findByRole("tab", { name: /VDMOS 个人工具/ }));
+    const link = screen.getByRole("link", { name: /打开 VDMOS 个人工具/ });
+    expect(link).toHaveAttribute("href", "/personal-tools/vdmos/VDMOS_Tool_v8.9.html");
+    expect(document.body).toHaveTextContent("不会把临时文件或结果写入正式数据资产");
+  }, 15_000);
+
+  it("offers a personal-computer agent path that never uploads raw source", async () => {
+    renderWorkbench();
+
+    fireEvent.click(await screen.findByRole("tab", { name: /个人电脑（Agent）/ }));
+    expect(screen.getByText("local-agent-panel")).toBeInTheDocument();
+  }, 15_000);
+
+  it("keeps a missing download failure visible", async () => {
+    vi.mocked(downloadQuickPat).mockRejectedValueOnce(new Error("结果文件不可用"));
     renderWorkbench();
 
     const button = await screen.findByRole(
@@ -188,7 +208,15 @@ describe("QuickAnalysisWorkbench", () => {
     );
     fireEvent.click(button);
     expect(await screen.findByText("PAT 下载失败")).toBeInTheDocument();
-    expect(document.body).toHaveTextContent("结果可能已过期或已清理");
+    expect(document.body).toHaveTextContent("如仍失败请联系系统管理员");
+  }, 15_000);
+
+  it("shows completed results as server history instead of expiring output", async () => {
+    renderWorkbench();
+
+    expect(await screen.findByText("历史分析结果")).toBeInTheDocument();
+    expect(await screen.findByText("服务器历史")).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("结果到期");
   }, 15_000);
 
   it("expands a completed PAT session into the shared result chart and table", async () => {

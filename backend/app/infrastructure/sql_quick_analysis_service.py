@@ -33,9 +33,7 @@ SELECT
     s.source_root_code,s.source_relative_path,s.source_manifest_mode,
     s.source_manifest_sha256,s.source_file_count,s.source_total_bytes,
     s.retention_mode,s.cleaner_release_id,s.reserved_bytes,s.cleanup_status,
-    CASE WHEN s.status='SUCCESS' AND s.expires_at_utc<=SYSUTCDATETIME()
-         THEN 'EXPIRED'
-         WHEN s.status IN('QUEUED','RUNNING') AND j.status IN('FAILED','CANCELLED')
+    CASE WHEN s.status IN('QUEUED','RUNNING') AND j.status IN('FAILED','CANCELLED')
          THEN j.status ELSE s.status END AS effective_status,
     j.job_id,j.status AS job_status,s.parameter_count,s.record_count,s.summary_json,
     a.file_name AS result_file_name,a.file_size AS result_size_bytes,
@@ -585,7 +583,7 @@ class SqlQuickAnalysisService:
                         "INSERT ingestion.processing_artifact("
                         "job_id,processing_run_id,artifact_role,file_name,storage_uri,"
                         "file_size,sha256,temporary_flag,expires_at_utc) VALUES("
-                        ":job,NULL,:role,:file_name,:uri,:size,:sha,1,:expires)"
+                        ":job,NULL,:role,:file_name,:uri,:size,:sha,0,NULL)"
                     ),
                     {
                         "job": job_id,
@@ -596,7 +594,6 @@ class SqlQuickAnalysisService:
                         "uri": artifact.path,
                         "size": artifact.size_bytes,
                         "sha": artifact.sha256,
-                        "expires": session["expires_at_utc"],
                     },
                 )
             connection.execute(
@@ -684,8 +681,8 @@ class SqlQuickAnalysisService:
             row = (
                 connection.execute(
                     text(
-                        "SELECT TOP (1) pa.artifact_role,pa.storage_uri,pa.file_size,pa.sha256,"
-                        "s.expires_at_utc FROM workspace.analysis_session s "
+                        "SELECT TOP (1) pa.artifact_role,pa.storage_uri,pa.file_size,pa.sha256 "
+                        "FROM workspace.analysis_session s "
                         "JOIN ingestion.processing_job j ON j.analysis_session_id=s.analysis_session_id "
                         "JOIN ingestion.processing_artifact pa ON pa.job_id=j.job_id "
                         "WHERE s.analysis_session_id=:session AND s.status='SUCCESS' "
@@ -701,9 +698,6 @@ class SqlQuickAnalysisService:
             )
         if row is None:
             raise DomainError("QUICK_RESULT_NOT_FOUND", "PAT 结果尚不可下载", 404)
-        expires = _utc(row["expires_at_utc"])
-        if expires is not None and expires <= datetime.now(UTC):
-            raise DomainError("QUICK_RESULT_EXPIRED", "PAT 结果已过期", 410)
         return QuickAnalysisArtifact(
             str(row["artifact_role"]),
             str(row["storage_uri"]),

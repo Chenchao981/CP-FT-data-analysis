@@ -1,10 +1,11 @@
-import { Card, Col, Row, Statistic, Table, Tag } from "antd";
+import { Col, Row, Statistic, Table, Tag } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { EChartsCoreOption } from "echarts/core";
 import type { ReactNode } from "react";
 import { useMemo } from "react";
 
 import { EChart } from "../../components/EChart";
+import { AnalysisResultFrame, type AnalysisResultScope } from "../../components/AnalysisResultFrame";
 
 export interface PatResultViewRow {
   key: string;
@@ -27,9 +28,10 @@ export interface PatResultViewProps {
   title?: string;
   labelTitle?: string;
   rows: PatResultViewRow[];
+  scope?: AnalysisResultScope;
 }
 
-export function PatResultView({ title = "PAT 分析结果", labelTitle = "参数 / 分组", rows }: PatResultViewProps) {
+export function PatResultView({ title = "PAT 分析结果", labelTitle = "参数 / 分组", rows, scope = "FORMAL" }: PatResultViewProps) {
   const option = useMemo<EChartsCoreOption>(() => ({
     animation: false,
     tooltip: { trigger: "axis" },
@@ -56,7 +58,7 @@ export function PatResultView({ title = "PAT 分析结果", labelTitle = "参数
   ];
   if (hasActions) columns.push({ title: "操作", dataIndex: "actions", fixed: "right", width: 100, render: (item) => item ?? "—" });
 
-  return <Card title={title} className="pat-result-view">
+  return <AnalysisResultFrame title={title} scope={scope} className="pat-result-view">
     <Row gutter={[12, 12]} className="pat-result-metrics">
       <Col xs={12} md={6}><Statistic title="参数 / 分组" value={rows.length} /></Col>
       <Col xs={12} md={6}><Statistic title="有效数据" value={rows.reduce((sum, item) => sum + item.count, 0)} /></Col>
@@ -65,5 +67,5 @@ export function PatResultView({ title = "PAT 分析结果", labelTitle = "参数
     </Row>
     {rows.length > 0 && <EChart ariaLabel="PAT 分析结果图表" option={option} className="pat-result-chart" />}
     <Table rowKey="key" size="small" pagination={{ pageSize: 20, hideOnSinglePage: true }} scroll={{ x: hasActions ? 1050 : 950 }} columns={columns} dataSource={rows} />
-  </Card>;
+  </AnalysisResultFrame>;
 }

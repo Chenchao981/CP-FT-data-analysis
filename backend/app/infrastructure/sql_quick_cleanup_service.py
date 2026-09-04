@@ -54,6 +54,7 @@ class SqlQuickCleanupService:
                         "JOIN ingestion.processing_job j "
                         "ON j.analysis_session_id=s.analysis_session_id "
                         "WHERE s.expires_at_utc<=:cutoff "
+                        "AND s.status IN('FAILED','CANCELLED') "
                         "AND (s.cleanup_status IN('RETAINED','ERROR') OR ("
                         "s.cleanup_status='CLEANING' AND "
                         "s.cleanup_attempted_at_utc<=:stale_cutoff)) "
@@ -91,6 +92,7 @@ class SqlQuickCleanupService:
                     "cleanup_attempt_count=cleanup_attempt_count+1,"
                     "cleanup_attempted_at_utc=SYSUTCDATETIME(),cleanup_error=NULL "
                     "WHERE analysis_session_id=:session AND expires_at_utc<=:cutoff "
+                    "AND status IN('FAILED','CANCELLED') "
                     "AND (cleanup_status IN('RETAINED','ERROR') OR ("
                     "cleanup_status='CLEANING' AND "
                     "cleanup_attempted_at_utc<=:stale_cutoff))"
@@ -276,7 +278,7 @@ class SqlQuickCleanupService:
                 "after_json": json.dumps(
                     asdict(result), ensure_ascii=False, separators=(",", ":")
                 ),
-                "reason": "Quick Analysis TTL expired; remove temporary files",
+                "reason": "Quick Analysis failed or cancelled; remove temporary files",
                 "correlation_id": str(uuid4()),
             },
         )
