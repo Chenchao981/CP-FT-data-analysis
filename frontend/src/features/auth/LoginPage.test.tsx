@@ -32,7 +32,7 @@ describe("LoginPage", () => {
     vi.mocked(useAuth).mockReturnValue({ login: vi.fn() } as never);
     render(<AntApp><LoginPage /></AntApp>);
 
-    expect(screen.getByText("欢迎进入 TMS")).toBeInTheDocument();
+    expect(screen.getByText("欢迎进入 NCE PYMS")).toBeInTheDocument();
     expect(screen.getByText(/让每一颗芯片的测试数据/)).toBeInTheDocument();
     expect(screen.getByText("版本化 Cleaner")).toBeInTheDocument();
     expect(screen.getByText("Canonical 数据链")).toBeInTheDocument();

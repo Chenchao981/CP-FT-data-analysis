@@ -77,7 +77,7 @@ describe("SavedAnalysesPanel", () => {
 
     fireEvent.change(screen.getByRole("textbox", { name: "Saved Analysis 名称" }), { target: { value: "Current VTH view" } });
     fireEvent.change(screen.getByRole("textbox", { name: "Saved Analysis 变更原因" }), { target: { value: "Create reviewed snapshot" } });
-    fireEvent.click(screen.getByRole("button", { name: /保存当前 Context/ }));
+    fireEvent.click(screen.getByRole("button", { name: /保存当前图表组合/ }));
 
     await waitFor(() => expect(createSavedAnalysis).toHaveBeenCalledWith({
       ...context,
@@ -114,7 +114,7 @@ describe("SavedAnalysesPanel", () => {
   it("keeps read-only roles away from write controls", async () => {
     renderPanel(vi.fn(), ["DATASET_READ"]);
     expect(await screen.findByText("只读模式")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /保存当前 Context/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /保存当前图表组合/ })).not.toBeInTheDocument();
     expect(createSavedAnalysis).not.toHaveBeenCalled();
   });
 });

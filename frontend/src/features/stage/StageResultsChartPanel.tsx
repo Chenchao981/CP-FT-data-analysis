@@ -1,10 +1,11 @@
 import { BarChartOutlined } from "@ant-design/icons";
-import { Alert, Button, Card, Empty, Typography } from "antd";
+import { Alert, Button, Empty } from "antd";
 import type { EChartsCoreOption } from "echarts/core";
 import { useMemo } from "react";
 
 import type { StageResultRow, TestStage } from "../../api/stageData";
 import { EChart, type EChartEventMap } from "../../components/EChart";
+import { AnalysisResultFrame } from "../../components/AnalysisResultFrame";
 
 interface StageResultsChartPanelProps {
   testStage: TestStage;
@@ -81,16 +82,16 @@ export function StageResultsChartPanel({ testStage, rows, loading, canOpenAnalyt
     },
   }), [canOpenAnalytics, onOpenAnalytics]);
 
-  return <Card
+  return <AnalysisResultFrame
     className="stage-results-chart-card"
     loading={loading}
     title={`${testStage} 最近清洗结果图表`}
+    scope="FORMAL"
     extra={latest && canOpenAnalytics ? <Button type="primary" icon={<BarChartOutlined />} onClick={() => onOpenAnalytics?.(latest.dataset_id!, latest.dataset_version_no!)}>打开最新完整图表</Button> : null}
   >
     {chartRows.length ? <>
-      <Typography.Paragraph type="secondary">这里先展示当前查询最近 12 条正式结果的测试数量和已知良率。点击柱或折线，或使用右上角按钮，可进入箱线图、直方图、散点图、PAT、SPC 等完整分析。</Typography.Paragraph>
       <EChart className="stage-results-chart" ariaLabel={`${testStage} 最近清洗结果图表`} option={option} onEvents={chartEvents} />
-      {chartRows.some((row) => row.yield_rate == null) && <Alert type="info" showIcon message="部分结果没有已知良率" description="缺少 PASS/FAIL 事实时良率折线保持空白，不按 0% 展示；测试数量仍正常显示。" />}
+      {chartRows.some((row) => row.yield_rate == null) && <Alert type="info" showIcon message="部分结果没有已知良率" />}
     </> : !loading ? <Empty description="当前查询没有可展示的正式清洗结果" /> : null}
-  </Card>;
+  </AnalysisResultFrame>;
 }

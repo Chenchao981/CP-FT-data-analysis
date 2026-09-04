@@ -110,6 +110,7 @@ export interface AnalyticsRuleContext {
   spec_versions: string[];
   bin_mapping_versions: string[];
   evaluation_rule_versions: string[];
+  applicable_rule_versions?: string[];
 }
 
 export interface AnalyticsCapability {

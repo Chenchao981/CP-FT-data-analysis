@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Alert, Checkbox, Form, Input, Modal, Radio, Space, Spin, Typography } from "antd";
+import { Alert, Checkbox, Form, Input, Modal, Radio, Space, Spin } from "antd";
 import { useEffect } from "react";
 
 import {
@@ -99,12 +99,6 @@ export function LotEnrichmentModal({
       destroyOnHidden
     >
       <Space direction="vertical" size={16} className="full-width">
-        <Alert
-          showIcon
-          type="info"
-          message="补录不会修改原始文件"
-          description="保存后系统会重新清洗，并按补录的 Lot 重新校验 Spec。"
-        />
         {inputRequests.isLoading && <div className="page-loading"><Spin /></div>}
         {inputRequests.isError && <Alert showIcon type="error" message="无法读取待补录文件" description={inputRequests.error.message} />}
         {inputRequests.data && (
@@ -153,7 +147,6 @@ export function LotEnrichmentModal({
               <Input.TextArea rows={2} maxLength={300} placeholder="例如：与当班测试记录核对一致" />
             </Form.Item>
             {resolveMutation.isError && <Alert showIcon type="error" message="批次号保存失败" description={resolveMutation.error.message} />}
-            <Typography.Text type="secondary">如多个文件实际属于不同 Lot，请逐项填写；系统不会自动把一个 Lot 套用到所有文件。</Typography.Text>
           </Form>
         )}
       </Space>

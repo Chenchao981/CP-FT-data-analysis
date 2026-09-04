@@ -134,7 +134,6 @@ export function OverviewInstantRiskPanel({ context, parameterOptions, config, on
 
   return <Card title="即时统计风险（显式执行）" extra={<Tag>ANALYTICS_INSTANT_RISK_V1</Tag>}>
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-      <Alert type="info" showIcon message="不会在进入 Overview 时自动运行" description="仅在选择分析方法、参数及已批准的 exact Rule Code + Version 后点击执行。前端不选择阈值、不重算风险；Capability 风险指标和阈值必须写入获批 CPK Rule。" />
       <Row gutter={[12, 12]}>
         <Col xs={24} md={12}><Typography.Text strong>风险分析方法</Typography.Text><Select aria-label="Overview Risk Analyses" mode="multiple" value={[...config.analyses]} options={ANALYSES} onChange={(values) => onConfigChange({ ...config, analyses: values })} className="full-width" /></Col>
         {requiresParameter && <Col xs={24} md={6}><Typography.Text strong>风险参数</Typography.Text><Select aria-label="Overview Risk Parameter" showSearch value={config.parameter || undefined} options={Array.from(new Set([config.parameter, ...parameterOptions].filter(Boolean))).map((value) => ({ label: value, value }))} onChange={(parameter) => onConfigChange({ ...config, parameter })} className="full-width" /></Col>}
@@ -146,13 +145,13 @@ export function OverviewInstantRiskPanel({ context, parameterOptions, config, on
         {selected.has("SBL_GROUPED_LIMIT") && <><Col xs={24} md={6}><Typography.Text strong>SBL Bin Type</Typography.Text><Select aria-label="Overview SBL Bin Type" value={config.sbl.binType} options={["CP_BIN", "SOFT_BIN", "HARD_BIN"].map((value) => ({ label: value, value }))} onChange={(binType) => onConfigChange({ ...config, sbl: { ...config.sbl, binType } })} className="full-width" /></Col>{ruleFields("SBL", "sbl")}</>}
         {selected.has("SYL_GROUPED_LIMIT") && ruleFields("SYL", "syl")}
       </Row>
-      <Space wrap><Button type="primary" disabled={!runnable} loading={mutation.isPending && attemptedSignature === signature} onClick={() => { setAttemptedSignature(signature); mutation.mutate(); }}>执行即时风险评估</Button><Typography.Text type="secondary">当前 Context / exact Rule / 参数任一变化后，旧结果立即隐藏，必须重新执行。</Typography.Text></Space>
+      <Space wrap><Button type="primary" disabled={!runnable} loading={mutation.isPending && attemptedSignature === signature} onClick={() => { setAttemptedSignature(signature); mutation.mutate(); }}>执行即时风险评估</Button></Space>
       {!runnable && config.analyses.length > 0 && <Alert type="warning" showIcon message="风险请求尚不完整" description={groupContractValid ? "请补齐所选方法需要的参数及每个 exact Rule Code + Version。" : "SBL / SYL 不允许使用 CONDITION 分组，请选择可追溯的物理子组。"} />}
       {currentError && <Alert type="error" showIcon message="即时风险评估失败（失败关闭）" description={errorDescription} />}
       {result?.warnings.length ? <Alert type="warning" showIcon message="服务端风险提示" description={result.warnings.join("、")} /> : null}
       {result ? <><Space wrap><Tag>Context {result.filter_summary.context_hash.slice(0, 12)}…</Tag><Tag>Calculation {result.calculation_context_hash.slice(0, 12)}…</Tag><Tag>{result.requested_analyses.join(" / ")}</Tag></Space>{result.items.length ? <Table rowKey="code" columns={columns} dataSource={result.items} pagination={false} size="small" scroll={{ x: 1750 }} /> : <Empty description="批准规则计算完成，当前 Context 无风险分组结果" />}</> : <Empty description="尚未显式执行即时风险评估" />}
       {selectedEvidence && <Card size="small" title={selectedEvidence.title} extra={<Button size="small" onClick={() => setSelectedEvidence(null)}>关闭</Button>}>
-        {selectedEvidence.truncated && <Alert type="warning" showIcon message="服务端返回的是有界证据集，不声称代表全部受影响总体" style={{ marginBottom: 8 }} />}
+      {selectedEvidence.truncated && <Alert type="warning" showIcon message="证据列表已截断" style={{ marginBottom: 8 }} />}
         <Table rowKey="key" size="small" pagination={{ pageSize: 25 }} dataSource={selectedEvidence.keys.map((key) => ({ key }))} columns={[{ title: "Unit Key", dataIndex: "key" }, { title: "操作", render: (_, row: { key: string }) => <Button size="small" onClick={() => onOpenDrilldown(row.key)}>打开 Drawer</Button> }]} />
       </Card>}
     </Space>

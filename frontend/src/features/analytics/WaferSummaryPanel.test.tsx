@@ -91,7 +91,7 @@ describe("WaferSummaryPanel", () => {
 
   it("does not call the CP-only endpoint for an FT Context", () => {
     renderPanel("FT");
-    expect(screen.getByText("Wafer Summary 只适用于 CP Dataset")).toBeInTheDocument();
+    expect(screen.getByText("Wafer Summary 仅适用于 CP 数据")).toBeInTheDocument();
     expect(getWaferSummary).not.toHaveBeenCalled();
   });
 });

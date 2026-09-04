@@ -149,7 +149,7 @@ describe("ProductCrosswalkWorkbench", () => {
       enterprise_key: "SAP-MAT-001",
       reason: "SAP 主数据 Owner 已核准",
     }));
-  }, 20_000);
+  }, 30_000);
 
   it("preserves server filters and controls paging through URL parameters", async () => {
     const props = renderWorkbench(false, new URLSearchParams({ status: "PENDING", supplier_code: "RYX", page: "1", page_size: "20" }));

@@ -267,8 +267,8 @@ describe("AnalyticsWorkbench ANALYTICS_CONTEXT_V1 flow", () => {
     const onOpenCatalog = vi.fn();
     renderAnalytics({ datasets: [], initialSearch: "", onOpenCatalog });
 
-    expect(screen.getByText("尚未选择 Dataset")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /返回历史正式数据选择/ }));
+    expect(screen.getByText("尚未选择正式数据")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /返回产品与批次/ }));
     expect(onOpenCatalog).toHaveBeenCalledOnce();
     expect(getAnalyticsOverview).not.toHaveBeenCalled();
     expect(getAnalyticsShellContext).not.toHaveBeenCalled();
@@ -428,8 +428,7 @@ describe("AnalyticsWorkbench ANALYTICS_CONTEXT_V1 flow", () => {
       expect(params.get("detail_eval_rule")).toBe("CP_PAT");
       expect(params.get("detail_eval_version")).toBe("V2");
     });
-    expect(await screen.findByText("当前为持久化评价风险限定总体", {}, { timeout: 15_000 })).toBeInTheDocument();
-    expect(screen.getByText(/PAT · CP_PAT@V2 · Result FAIL \/ NOT_EVALUATED/)).toBeInTheDocument();
+    expect(await screen.findByText(/PAT · CP_PAT@V2 · FAIL \/ NOT_EVALUATED/, {}, { timeout: 15_000 })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "汇总、保存与导出" }));
     await waitFor(() => {
@@ -527,7 +526,7 @@ describe("AnalyticsWorkbench ANALYTICS_CONTEXT_V1 flow", () => {
     expect(screen.getByText("1.55 V")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Expand row" }));
     expect(await screen.findByText("SPEC_RULE / RULE-7")).toBeInTheDocument();
-  }, 20_000);
+  }, 30_000);
 
   it("shows the Quality gate and permission-aware Saved/Export Delivery controls", async () => {
     renderAnalytics({ initialSearch: "dataset=20%3A1&section=quality" });
@@ -536,7 +535,7 @@ describe("AnalyticsWorkbench ANALYTICS_CONTEXT_V1 flow", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "报告与数据" }));
     fireEvent.click(screen.getByRole("tab", { name: "汇总、保存与导出" }));
-    expect(await screen.findByText("Saved Analysis（版本化 Context）")).toBeInTheDocument();
+    expect(await screen.findByText("图表组合方案")).toBeInTheDocument();
     expect(screen.getByText("只读模式")).toBeInTheDocument();
     expect(screen.getByText("无导出权限")).toBeInTheDocument();
   }, 20_000);

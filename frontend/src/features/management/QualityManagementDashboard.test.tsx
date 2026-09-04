@@ -132,7 +132,6 @@ describe("QualityManagementDashboard", () => {
     renderDashboard();
 
     expect(await screen.findByText("质量趋势")).toBeInTheDocument();
-    expect(document.body).toHaveTextContent("已知良率分母 0，ABORT 0 个，均未混入 FAIL");
 
     const yieldTitle = screen.getByText("已知良率");
     expect(within(yieldTitle.closest(".ant-card") as HTMLElement).getByText("—")).toBeInTheDocument();
@@ -141,7 +140,7 @@ describe("QualityManagementDashboard", () => {
     expect(screen.getByText("Fail Bin 分布")).toBeInTheDocument();
     expect(screen.getByText("BIN_5")).toBeInTheDocument();
     expect(screen.getByText("最近 Current Dataset")).toBeInTheDocument();
-    expect(screen.getByText(/Lot 与 Source 追溯边界/)).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("Lot 与 Source 追溯边界");
     expect(screen.getByTestId("quality-trend-chart").getAttribute("data-option")).toContain('"data":[null]');
     expect(screen.getByTestId("quality-trend-chart").getAttribute("data-option")).toContain("2026-08-29");
 
@@ -157,7 +156,7 @@ describe("QualityManagementDashboard", () => {
     renderDashboard(new URLSearchParams(), false, false, true);
 
     expect(await screen.findByTestId("analysis-rule-registry")).toBeInTheDocument();
-    expect(screen.getByText("当前仅开放 Rule Registry")).toBeInTheDocument();
+    expect(screen.getByText("当前账户仅可管理分析规则")).toBeInTheDocument();
     expect(getQualityManagementSummary).not.toHaveBeenCalled();
     expect(screen.queryByText("筛选条件（上海业务时间）")).not.toBeInTheDocument();
   });
@@ -177,7 +176,7 @@ describe("QualityManagementDashboard", () => {
     expect(next.get("lot_id")).toBe("LOT-002");
     expect(next.get("from_utc")).toBe("2026-08-02T00:30:00.000Z");
     expect(next.get("to_utc")).toBe("2026-09-01T00:00:00.000Z");
-    expect(screen.getByText("失败 Job KPI 对当前筛选不适用")).toBeInTheDocument();
+    expect(screen.getByText("失败任务数量不适用于当前产品或 Lot 筛选")).toBeInTheDocument();
     const failedJobTitle = screen.getByText("失败 Job（批次口径）");
     expect(within(failedJobTitle.closest(".ant-card") as HTMLElement).getByText("不适用")).toBeInTheDocument();
 

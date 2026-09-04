@@ -132,7 +132,7 @@ describe("AnalyticsSpatialSection", () => {
       rule_version: null,
     });
     expect(await screen.findByText("MISSING_MEASUREMENTS_EXCLUDED_FROM_COLOR_DOMAIN")).toBeInTheDocument();
-    expect(screen.getByText(/服务端 Color Domain：Min 0 \/ P02 1 \/ P98 9 \/ Max 10/)).toBeInTheDocument();
+    expect(screen.getByText("颜色范围 0 – 10")).toBeInTheDocument();
     const map = screen.getByRole("img", { name: "PARAMETER_HEATMAP Spatial Map" });
     let option = JSON.parse(map.getAttribute("data-option") ?? "{}");
     expect(option.visualMap.min).toBe(1);
@@ -153,7 +153,7 @@ describe("AnalyticsSpatialSection", () => {
 
   it("fails closed until a single wafer is explicitly selected", () => {
     renderSpatial({ ...context, filters: { ...context.filters, lot_ids: [], wafer_ids: [] } });
-    expect(screen.getByText("该 Mode 要求明确的单 Wafer")).toBeInTheDocument();
+    expect(screen.getByText("请选择 1 个 Lot 和 1 个 Wafer")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "执行 Spatial 分析" })).toBeDisabled();
     expect(analyzeSpatial).not.toHaveBeenCalled();
   });
@@ -180,7 +180,7 @@ describe("AnalyticsSpatialSection", () => {
     expect(vi.mocked(analyzeSpatial).mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ mode: "COMPOSITE_FAILURE", parameters: [] }));
     fireEvent.click(screen.getByRole("img", { name: "COMPOSITE_FAILURE Spatial Map" }));
     expect(onOpenDrilldown).not.toHaveBeenCalled();
-    expect(screen.getByText("共 2 个服务端稳定 Unit key；逐个打开现有 Drawer，不使用代表 Unit。")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "打开成员 UNIT:501" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "打开成员 UNIT:502" }));
     expect(onOpenDrilldown).toHaveBeenCalledWith("UNIT:502");
   }, 20_000);
@@ -245,11 +245,11 @@ describe("AnalyticsSpatialSection", () => {
     fireEvent.click(map);
     expect(onOpenDrilldown).toHaveBeenCalledWith("UNIT:501");
     fireEvent.click(screen.getByRole("button", { name: "打开 EDGE Zone Detail" }));
-    expect(screen.getByText("EDGE Radial Zone 成员 Unit")).toBeInTheDocument();
+    expect(screen.getByText(/EDGE Radial Zone 成员 Unit（/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "打开成员 UNIT:502" }));
     expect(onOpenDrilldown).toHaveBeenCalledWith("UNIT:502");
     fireEvent.click(screen.getByRole("button", { name: "打开 FAB_A Quadrant Detail" }));
-    expect(screen.getByText("FAB_A Quadrant 成员 Unit")).toBeInTheDocument();
+    expect(screen.getByText(/FAB_A Quadrant 成员 Unit（/)).toBeInTheDocument();
   }, 20_000);
 
   it("fails the display closed if a Zone response lacks approved geometry or point identity", async () => {

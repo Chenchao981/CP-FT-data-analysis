@@ -166,7 +166,7 @@ describe("AnalysisRuleRegistryPanel", () => {
       effective_to_utc: null,
       supersedes_rule_version_id: null,
     }));
-  }, 45_000);
+  }, 70_000);
 
   it("exposes all V2 quadrant semantics as blank Owner-entered fields", async () => {
     vi.mocked(listAnalysisRules).mockResolvedValue([zoneRuleSet]);

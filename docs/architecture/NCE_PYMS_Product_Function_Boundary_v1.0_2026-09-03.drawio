@@ -5,7 +5,7 @@
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="2" value="NCE PYMS：正式制造数据平台与个人分析工具双工作区" style="text;html=1;align=center;verticalAlign=middle;fontFamily=Microsoft YaHei;fontSize=22;fontStyle=1;fontColor=#12344d;" vertex="1" parent="1">
+        <mxCell id="2" value="NCE PYMS：两种数据入口，共用清洗、统计与图表核心" style="text;html=1;align=center;verticalAlign=middle;fontFamily=Microsoft YaHei;fontSize=22;fontStyle=1;fontColor=#12344d;" vertex="1" parent="1">
           <mxGeometry x="160" y="20" width="1320" height="40" as="geometry" />
         </mxCell>
         <mxCell id="3" value="数据来源" style="swimlane;startSize=30;horizontal=1;rounded=1;html=1;fontFamily=Microsoft YaHei;fontStyle=1;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="1">
@@ -39,7 +39,7 @@
         </mxCell>
         <mxCell id="24" value="工具发布注册&#xa;版本 / SHA / 输入输出合同" style="rounded=1;whiteSpace=wrap;html=1;fontFamily=Microsoft YaHei;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="23"><mxGeometry x="60" y="60" width="260" height="65" as="geometry" /></mxCell>
         <mxCell id="25" value="正式Cleaner Runner&#xa;DQ / Canonical Writer" style="rounded=1;whiteSpace=wrap;html=1;fontFamily=Microsoft YaHei;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="23"><mxGeometry x="380" y="60" width="240" height="65" as="geometry" /></mxCell>
-        <mxCell id="26" value="分析与规则服务&#xa;自动匹配 / 统计 / 导出" style="rounded=1;whiteSpace=wrap;html=1;fontFamily=Microsoft YaHei;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="23"><mxGeometry x="680" y="60" width="240" height="65" as="geometry" /></mxCell>
+        <mxCell id="26" value="共用处理核心&#xa;标准数据 / 统计 / 规则 / 图表 / 导出" style="rounded=1;whiteSpace=wrap;html=1;fontFamily=Microsoft YaHei;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="23"><mxGeometry x="680" y="60" width="240" height="65" as="geometry" /></mxCell>
         <mxCell id="27" value="Personal Tool Runner&#xa;直接路径 / 临时Workspace" style="rounded=1;whiteSpace=wrap;html=1;fontFamily=Microsoft YaHei;fillColor=#e1d5e7;strokeColor=#9673a6;" vertex="1" parent="23"><mxGeometry x="980" y="60" width="240" height="65" as="geometry" /></mxCell>
         <mxCell id="28" value="身份与权限&#xa;Owner / 数据域 / 管理员" style="rounded=1;whiteSpace=wrap;html=1;fontFamily=Microsoft YaHei;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="23"><mxGeometry x="1280" y="60" width="170" height="65" as="geometry" /></mxCell>
         <mxCell id="29" value="数据层：两套生命周期，禁止混写" style="swimlane;startSize=34;horizontal=1;rounded=1;html=1;fontFamily=Microsoft YaHei;fontSize=15;fontStyle=1;fillColor=#eef2f5;strokeColor=#546e7a;" vertex="1" parent="1">
@@ -62,6 +62,7 @@
         <mxCell id="50" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#9673a6;" edge="1" parent="1" source="27" target="32"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="51" value="不直接复制结果" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;dashed=1;strokeColor=#b85450;fontFamily=Microsoft YaHei;fontColor=#b85450;" edge="1" parent="1" source="32" target="33"><mxGeometry relative="1" as="geometry" /></mxCell>
         <mxCell id="52" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;dashed=1;strokeColor=#666666;" edge="1" parent="1" source="33" target="10"><mxGeometry relative="1" as="geometry"><Array as="points"><mxPoint x="730" y="1028" /><mxPoint x="730" y="235" /><mxPoint x="195" y="235" /></Array></mxGeometry></mxCell>
+        <mxCell id="53" value="共用统计与图表" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;endArrow=block;strokeColor=#9673a6;fontFamily=Microsoft YaHei;fontSize=11;" edge="1" parent="1" source="27" target="26"><mxGeometry relative="1" as="geometry" /></mxCell>
       </root>
     </mxGraphModel>
   </diagram>

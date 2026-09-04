@@ -56,7 +56,7 @@ export function LoginPage() {
   return <main className="login-shell">
     <div className="login-grid-overlay" aria-hidden="true" />
     <section className="login-story">
-      <div className="login-brand"><div className="login-logo">T</div><div><b>TMS</b><span>TEST DATA INTELLIGENCE</span></div></div>
+      <div className="login-brand"><div className="login-logo"><img src="/tms-logo.png" alt="新洁能 PYMS" /></div><div><b>NCE PYMS</b><span>PRODUCT &amp; YIELD MANAGEMENT</span></div></div>
       <div className="login-story-copy">
         <Tag className="login-eyebrow">POWER SEMICONDUCTOR DATA HUB</Tag>
         <Typography.Title>让每一颗芯片的测试数据<br/><span>可追溯 · 可解释 · 可行动</span></Typography.Title>
@@ -72,7 +72,7 @@ export function LoginPage() {
     <section className="login-panel-wrap">
       <div className="login-panel">
         <Space size={8}><Tag color="cyan">SECURE ACCESS</Tag><span className="login-live-dot">服务可用</span></Space>
-        <Typography.Title level={2}>欢迎进入 TMS</Typography.Title>
+        <Typography.Title level={2}>欢迎进入 NCE PYMS</Typography.Title>
         <p className="login-panel-description">使用已启用的企业账号继续</p>
         <Form<LoginValues> layout="vertical" requiredMark={false} onFinish={submitLogin} size="large" className="login-form">
           <Form.Item name="login_name" label="登录名" rules={[{ required: true, message: "请输入登录名" }]}>
@@ -86,7 +86,7 @@ export function LoginPage() {
         <div className="login-actions"><Typography.Text type="secondary"><SafetyCertificateOutlined /> 权限由管理员审批</Typography.Text><Button type="link" onClick={() => setRegisterOpen(true)}>申请注册</Button></div>
         <div className="login-security-note"><SafetyCertificateOutlined /><span><b>安全提示</b><small>系统记录登录与关键操作审计，请勿共享账号。</small></span></div>
       </div>
-      <div className="login-version">TMS Route A · Candidate Environment</div>
+      <div className="login-version">NCE PYMS · Candidate Environment</div>
     </section>
 
     <Modal title="申请注册" open={registerOpen} onCancel={() => setRegisterOpen(false)} footer={null} destroyOnHidden>

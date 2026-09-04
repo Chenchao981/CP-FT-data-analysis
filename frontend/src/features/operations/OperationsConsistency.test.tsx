@@ -201,7 +201,6 @@ describe("OperationsConsistency", () => {
     renderSummary();
 
     expect(await screen.findByText("运行一致性摘要加载失败")).toBeInTheDocument();
-    expect(screen.getByText("本页不展示底层错误详情；请稍后刷新，如持续失败请联系管理员。")).toBeInTheDocument();
     expect(screen.queryByText(/db\.internal|password|C:\\private/)).not.toBeInTheDocument();
   });
 
@@ -240,7 +239,7 @@ describe("OperationsConsistency", () => {
     renderSummary();
 
     expect(await screen.findByText("无活动Worker")).toBeInTheDocument();
-    expect(screen.getByText(/Worker 状态来自心跳记录/)).toBeInTheDocument();
+    expect(screen.getByText(/超时阈值/)).toBeInTheDocument();
     expect(screen.queryByText("Worker 在线")).not.toBeInTheDocument();
   });
 
@@ -250,7 +249,6 @@ describe("OperationsConsistency", () => {
     renderSummary();
 
     expect(await screen.findByText("Worker 运维摘要加载失败")).toBeInTheDocument();
-    expect(screen.getByText("本页不展示底层数据库、主机或连接详情；请稍后刷新或联系系统管理员。")).toBeInTheDocument();
     expect(screen.queryByText(/private|password|C:\\workers/)).not.toBeInTheDocument();
   });
 });

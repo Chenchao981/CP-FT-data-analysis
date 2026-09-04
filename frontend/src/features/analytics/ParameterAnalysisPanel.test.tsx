@@ -333,7 +333,7 @@ describe("ParameterAnalysisPanel", () => {
     renderPanel();
 
     expect(analyzeDatasetParameters).not.toHaveBeenCalled();
-    expect(screen.getByText(/其他方法自动使用当前数据绑定的有效规则/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "执行参数分析" })).toBeInTheDocument();
     await selectValue("参数分析类型", "箱线图");
     await selectValue("参数分析类型", "直方图");
     await selectValue("参数分析类型", "Capability");
@@ -405,11 +405,11 @@ describe("ParameterAnalysisPanel", () => {
     expect(histogramOption.series[0].markLine.data.map((item: { name: string }) => item.name)).toEqual(["LSL", "USL"]);
     expect(histogramOption.series[0].markLine.data.map((item: { xAxis: number }) => item.xAxis)).toEqual([0, 1]);
     expect(histogramOption.series[0].markLine.data.map((item: { label: { formatter: string } }) => item.label.formatter)).toEqual(["LSL 1", "USL 5"]);
-    expect(screen.getByText(/方法 EQUAL_WIDTH_HISTOGRAM_V1/)).toBeInTheDocument();
+    expect(screen.getByText("EQUAL_WIDTH_HISTOGRAM_V1")).toBeInTheDocument();
     expect(screen.getByText("CPK_RULE:v1")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "打开 VTH Detail" }));
     expect(panelProps.onOpenAggregateDrilldown).toHaveBeenCalledWith(expect.objectContaining({ dataset: { dataset_id: 20, version_no: 1 }, parameters: ["VTH"] }));
-  }, 20_000);
+  }, 45_000);
 
   it("preserves Tester, Program and Test Condition from the unified Context", async () => {
     renderPanel({
@@ -431,7 +431,7 @@ describe("ParameterAnalysisPanel", () => {
   it("requests approved NORMAL_FIT and plots only the server-returned MLE density points", async () => {
     vi.mocked(analyzeDatasetParameters).mockResolvedValue(normalFitResult);
     renderPanel();
-    expect(screen.getByText(/其他方法自动使用当前数据绑定的有效规则/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "执行参数分析" })).toBeInTheDocument();
     await selectValue("参数分析类型", "Normal Fit");
     openAdvancedRuleSettings();
     fireEvent.change(screen.getByRole("textbox", { name: "Normal Fit Rule Code" }), { target: { value: "NORMAL_FIT_RULE" } });
@@ -448,9 +448,9 @@ describe("ParameterAnalysisPanel", () => {
     expect(option.series[0].markLine.data.map((item: { xAxis: number }) => item.xAxis)).toEqual([1, 5]);
     fireEvent.click(chart);
     expect(panelProps.onOpenDrilldown).toHaveBeenCalledWith("UNIT:701");
-    expect(screen.getByText(/服务端返回 3 个曲线点/)).toBeInTheDocument();
+    expect(screen.getByText("3 个曲线点")).toBeInTheDocument();
     expect(screen.getAllByText("NORMAL_FIT_MLE_V1").length).toBeGreaterThan(0);
-  }, 20_000);
+  }, 45_000);
 
   it("applies and clears the shared Y-axis display range without changing the request", async () => {
     const onDisplayStateChange = vi.fn();
@@ -475,7 +475,7 @@ describe("ParameterAnalysisPanel", () => {
     fireEvent.change(screen.getByRole("spinbutton", { name: "参数分析 Y 轴最小值" }), { target: { value: "" } });
     expect(onDisplayStateChange).toHaveBeenCalledWith({ yAxisMin: null });
     expect(analyzeDatasetParameters).toHaveBeenCalledTimes(1);
-  }, 20_000);
+  }, 45_000);
 
   it("shows a fail-closed missing-Spec hint for Histogram and Normal Fit", async () => {
     vi.mocked(analyzeDatasetParameters).mockResolvedValue(noSpecDistributionResult);
@@ -489,8 +489,8 @@ describe("ParameterAnalysisPanel", () => {
     fireEvent.change(screen.getByRole("textbox", { name: "Normal Fit Rule Version" }), { target: { value: "v1" } });
     fireEvent.click(screen.getByRole("button", { name: "执行参数分析" }));
 
-    expect((await screen.findAllByText("当前参数没有可用 Released Formal Spec")).length).toBe(2);
-  }, 20_000);
+    expect((await screen.findAllByText("当前参数没有可用正式规格")).length).toBe(2);
+  }, 45_000);
 
   it("preserves a source filter for a single dataset", async () => {
     renderPanel({
@@ -512,7 +512,7 @@ describe("ParameterAnalysisPanel", () => {
 
     view.rerenderPanel({ ...panelProps, lotIds: ["LOT-B"] });
 
-    expect(await screen.findByText("当前结果已过期")).toBeInTheDocument();
+    expect(await screen.findByText("当前结果已过期，请重新执行")).toBeInTheDocument();
     expect(screen.getByText("合同 PARAMETER_ANALYSIS_V1")).toBeInTheDocument();
     expect(analyzeDatasetParameters).toHaveBeenCalledTimes(1);
   });

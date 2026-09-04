@@ -174,7 +174,7 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
     ...viewState,
     analysis: { ...viewState.analysis, [key]: { ...viewState.analysis[key], ...patch } } as AnalysisComponentState,
   });
-  const declaredRuleVersions = contextQuery.data?.rule_context.evaluation_rule_versions ?? [];
+  const declaredRuleVersions = contextQuery.data?.rule_context.applicable_rule_versions ?? [];
   const declaredRuleSignature = declaredRuleVersions.join("|");
   const analysisSignature = JSON.stringify(viewState.analysis);
   useEffect(() => {
@@ -246,8 +246,8 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
 
   if (!selectedDatasets.length) {
     return <div className="workbench analytics-workbench">
-      <div className="page-heading"><div><Typography.Title level={2}>正式数据分析</Typography.Title><Typography.Text type="secondary">从历史正式数据中选择 1–8 个 Dataset 后进入分析。</Typography.Text></div></div>
-      <Card><Empty description="尚未选择 Dataset"><Button type="primary" icon={<ArrowLeftOutlined />} onClick={onOpenCatalog}>返回历史正式数据选择</Button></Empty></Card>
+      <div className="page-heading"><Typography.Title level={2}>正式数据分析</Typography.Title></div>
+      <Card><Empty description="尚未选择正式数据"><Button type="primary" icon={<ArrowLeftOutlined />} onClick={onOpenCatalog}>返回产品与批次</Button></Empty></Card>
     </div>;
   }
 
@@ -332,17 +332,16 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
   return <div className="workbench analytics-workbench">
     <div className="page-heading">
       <div>
-        <Typography.Text type="secondary">清洗结果 · 服务端统一分析</Typography.Text>
         <Typography.Title level={2}>{contextQuery.data?.dataset_context.test_stage === "FT" ? "FT 数据分析" : contextQuery.data?.dataset_context.test_stage === "CP" ? "CP 数据分析" : "正式数据分析"}</Typography.Title>
         <Space wrap>{selectedDatasets.map((item) => <Tag color="blue" key={datasetKey(item)}>{datasetLabel(item)}</Tag>)}</Space>
       </div>
       <Space>
-        <Button icon={<ArrowLeftOutlined />} onClick={onOpenCatalog}>历史正式数据</Button>
+        <Button icon={<ArrowLeftOutlined />} onClick={onOpenCatalog}>产品与批次</Button>
         <Button icon={<ReloadOutlined />} loading={analyticsFetching > 0} onClick={() => void queryClient.invalidateQueries({ queryKey: ["analytics"] })}>刷新</Button>
       </Space>
     </div>
 
-    <Card className="analytics-filter-card" title="分析范围" extra={<Typography.Text type="secondary">切换图表时自动沿用当前范围</Typography.Text>}>
+    <Card className="analytics-filter-card" title="分析范围">
       <Row gutter={[12, 12]}>
         <Col xs={24} sm={12} lg={8} xl={6}>
           <Typography.Text strong>当前数据集</Typography.Text>
@@ -380,7 +379,6 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
           更多筛选{advancedFilterCount ? `（已启用 ${advancedFilterCount} 类）` : ""}
         </Button>
         <Button onClick={clearFilters}>清空筛选</Button>
-        <Typography.Text type="secondary">所有图表、表格和导出使用同一分析范围。</Typography.Text>
       </Space>
     </Card>
 
@@ -409,9 +407,6 @@ export function AnalyticsWorkbench({ datasets, searchParams, onSearchParamsChang
         onChange={(key) => updateGroup(key as AnalysisGroup)}
         items={groupTabs.map((item) => ({ key: item.key, label: item.label, disabled: item.disabled }))}
       />
-      <Typography.Paragraph type="secondary" className="analytics-group-description">
-        {ANALYSIS_GROUPS.find((item) => item.key === activeGroup)?.description}
-      </Typography.Paragraph>
       {activeGroup === "report" && <Tabs
         size="small"
         activeKey={activeSection}

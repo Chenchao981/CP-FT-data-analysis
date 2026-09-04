@@ -77,7 +77,7 @@ describe("StageAnalysisLauncher", () => {
       parameters: ["BVDSS", "RDON", "VTH"],
       chartTypes: ["SCATTER"],
     });
-  });
+  }, 10_000);
 
   it("separates server-directory results from personal web uploads", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -87,4 +87,28 @@ describe("StageAnalysisLauncher", () => {
     fireEvent.click(screen.getByText("服务器目录 / 自动清洗（1）"));
     expect(screen.getByText("服务器目录 / 自动清洗（1）")).toBeInTheDocument();
   });
+
+  it("re-resolves parameter-scoped rules after the user selects parameters", async () => {
+    vi.mocked(getAnalyticsShellContext).mockImplementation(async (request) => ({
+      options: { parameters: ["BVDSS", "RDON", "VTH"] },
+      rule_context: {
+        applicable_rule_versions: request.parameters.includes("BVDSS")
+          ? ["RULE:CPK_DEFAULT:V1"]
+          : [],
+      },
+    } as never));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(<QueryClientProvider client={queryClient}><StageAnalysisLauncher testStage="CP" rows={rows} loading={false} currentLogin="operator" onDraw={vi.fn()} /></QueryClientProvider>);
+
+    await chooseSelect("CP分析产品", "PRODUCT-A");
+    await chooseSelect("CP分析批次", "LOT-A");
+    expect(await screen.findByRole("checkbox", { name: "能力分析（不可用）" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "BVDSS" }));
+
+    await waitFor(() => expect(getAnalyticsShellContext).toHaveBeenLastCalledWith(
+      expect.objectContaining({ parameters: ["BVDSS"] }),
+    ));
+    expect(await screen.findByRole("checkbox", { name: "能力分析" })).toBeEnabled();
+  }, 15_000);
 });

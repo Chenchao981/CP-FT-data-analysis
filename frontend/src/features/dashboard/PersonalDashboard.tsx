@@ -85,7 +85,6 @@ function SummaryView({ data, scope }: { data: QualityManagementSummary; scope: D
             <Typography.Text>产品 {count(data.kpis.product_count)} 个，Lot {count(data.kpis.lot_count)} 个</Typography.Text>
             <Typography.Text>PASS {count(data.kpis.pass_units)} / FAIL {count(data.kpis.fail_units)} / UNKNOWN {count(data.kpis.unknown_units)}</Typography.Text>
             <Typography.Text type={data.kpis.failed_job_count ? "danger" : undefined}>失败 Job：{count(data.kpis.failed_job_count)}</Typography.Text>
-            <Typography.Text type="secondary">只统计已发布且当前生效的正式数据；未知 PASS/FAIL 不补零。</Typography.Text>
           </Space>
         </Card>
       </Col>
@@ -161,11 +160,7 @@ export function PersonalDashboard({
 
   return <div className="personal-dashboard workbench">
     <div className="page-heading dashboard-page-heading">
-      <div>
-        <Typography.Text type="secondary">个人工作台 · 近30天</Typography.Text>
-        <Typography.Title level={2}>个人驾驶舱</Typography.Title>
-        <Typography.Text type="secondary">{userName} · 仅展示当前权限范围内可执行、可追溯的数据。</Typography.Text>
-      </div>
+      <Typography.Title level={2}>个人驾驶舱</Typography.Title>
       <Space wrap>
         <Button type="primary" icon={<RadarChartOutlined />} disabled={!canOpenQuality} onClick={() => onNavigate("/management/quality")}>进入质量总览</Button>
         <Button onClick={() => onNavigate("/datasets/current")}>查看正式数据 <ArrowRightOutlined /></Button>
@@ -174,30 +169,29 @@ export function PersonalDashboard({
 
     <Card className="dashboard-panel dashboard-main-panel" title="我可见的正式数据" extra={<Typography.Text type="secondary">近30天 · 按正式发布时间</Typography.Text>}>
       <Tabs activeKey={scope} onChange={(key) => setScope(key as DashboardScope)} items={[
-        { key: "PERSONAL", label: <span><UserOutlined /> 我的数据</span>, children: <Typography.Text type="secondary">只统计归属于当前登录人的个人数据，不混入他人数据。</Typography.Text> },
+        { key: "PERSONAL", label: <span><UserOutlined /> 我的数据</span> },
         { key: "DOMAIN", label: <span><CloudServerOutlined /> 数据域</span>, children: <Space wrap><Select aria-label="选择数据域" loading={domains.isPending} placeholder="选择已授权数据域" value={dataDomainId} onChange={setDataDomainId} style={{ minWidth: 280 }} options={(domains.data ?? []).map((item: DataDomain) => ({ value: item.data_domain_id, label: `${item.domain_name} (${item.test_stage})` }))} />{selectedDomain && <><Tag color="blue">{selectedDomain.test_stage}</Tag>{selectedDomain.factory_code && <Tag>{selectedDomain.factory_code}</Tag>}</>}</Space> },
       ]} />
       {scopeContent}
     </Card>
 
-    {canRunQuickAnalysis && <Card className="dashboard-panel" title="我的快速分析" extra={<Button type="link" onClick={() => onNavigate("/quick-analysis")}>查看全部 <ArrowRightOutlined /></Button>}>
-      <Typography.Paragraph type="secondary">仅显示本人快速分析；数据域任务不混入个人驾驶舱。</Typography.Paragraph>
+    {canRunQuickAnalysis && <Card className="dashboard-panel" title="我的个人工具任务" extra={<Button type="link" onClick={() => onNavigate("/quick-analysis")}>查看全部 <ArrowRightOutlined /></Button>}>
       {personalQuick.isPending
         ? <div className="page-loading"><Spin /></div>
         : personalQuick.isError
           ? <Alert type="error" showIcon message="我的 Quick 暂时不可用" description={personalQuick.error instanceof Error ? personalQuick.error.message : "请稍后重试"} />
           : personalQuickItems.length === 0
-            ? <Empty description="暂无个人快速分析结果" />
+            ? <Empty description="暂无个人工具结果" />
             : <Table rowKey="analysis_session_id" columns={quickColumns} dataSource={personalQuickItems} pagination={false} size="small" scroll={{ x: 670 }} />}
     </Card>}
 
     <Card className="dashboard-panel quick-entry-panel" title="常用入口">
       <Row gutter={[8, 8]}>
         {[
-          ["/cp", "CP 数据", "统一 Wafer 清洗与分析", <ExperimentOutlined />],
-          ["/ft", "FT 数据", "统一 Lot 清洗与分析", <ThunderboltOutlined />],
-        ].map(([path, title, detail, icon]) => <Col xs={24} md={12} key={String(path)}><button type="button" onClick={() => onNavigate(String(path))}>{icon}<span><b>{title}</b><small>{detail}</small></span><ArrowRightOutlined /></button></Col>)}
-        <Col xs={24}><button type="button" disabled={!canRunQuickAnalysis} onClick={() => onNavigate("/quick-analysis")}><RadarChartOutlined /><span><b>快速分析</b><small>本机工具或服务器近数据计算</small></span><ArrowRightOutlined /></button></Col>
+          ["/cp", "CP 数据", <ExperimentOutlined />],
+          ["/ft", "FT 数据", <ThunderboltOutlined />],
+        ].map(([path, title, icon]) => <Col xs={24} md={12} key={String(path)}><button type="button" onClick={() => onNavigate(String(path))}>{icon}<span><b>{title}</b></span><ArrowRightOutlined /></button></Col>)}
+        <Col xs={24}><button type="button" disabled={!canRunQuickAnalysis} onClick={() => onNavigate("/quick-analysis")}><RadarChartOutlined /><span><b>个人分析工具</b></span><ArrowRightOutlined /></button></Col>
       </Row>
     </Card>
   </div>;

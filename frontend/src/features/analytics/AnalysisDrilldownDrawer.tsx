@@ -80,7 +80,7 @@ export function AnalysisDrilldownDrawer({ context, drilldownKey, onClose }: Anal
     width={920}
     destroyOnHidden
   >
-    {!validKey && drilldownKey !== null && <Alert type="error" showIcon message="无效钻取身份" description="只接受服务端返回的 UNIT drilldown_key。" />}
+    {!validKey && drilldownKey !== null && <Alert type="error" showIcon message="无效钻取身份" />}
     {query.isLoading && <Typography.Text type="secondary">正在加载服务端钻取记录…</Typography.Text>}
     {query.isError && <Alert type="error" showIcon message="钻取加载失败" description={query.error.message} />}
     {unit && <Space direction="vertical" size="large" style={{ width: "100%" }}>
@@ -126,8 +126,7 @@ export function AnalysisDrilldownDrawer({ context, drilldownKey, onClose }: Anal
       {unit.measurements.some((item) => item.formal_spec.status !== "RESOLVED") && <Alert
         type="error"
         showIcon
-        message="NO_SPEC / Formal Spec 门禁"
-        description="至少一个测量项没有唯一 Released Formal Spec。Tester Program Limit 仅作来源事实展示，不会作为 Formal Spec fallback。"
+        message="部分测量项没有正式规格"
       />}
       <Table
         title={() => "Measurement / Released Formal Spec / Current Evaluation Chain"}

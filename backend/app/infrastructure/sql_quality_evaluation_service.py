@@ -1676,6 +1676,7 @@ class SqlQualityEvaluationService:
                     }
                 )
             ),
+            base_rule_context.applicable_rule_versions,
         )
         counts = QualityCalculationCounts(
             input_units,

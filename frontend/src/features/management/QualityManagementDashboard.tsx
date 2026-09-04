@@ -72,7 +72,6 @@ const breakdownDimensions = [
   { key: "FACTORY", label: "按厂家" },
   { key: "PRODUCT", label: "按产品" },
   { key: "TEST_STAGE", label: "按 CP/FT" },
-  { key: "BUSINESS_DOMAIN", label: "按业务域" },
 ] as const;
 
 export function QualityManagementDashboard({ searchParams, onSearchParamsChange, onOpenAnalytics, onOpenJob, canOpenAnalytics, canReadManagement = true, canGovernRules = false }: QualityManagementDashboardProps) {
@@ -183,7 +182,7 @@ export function QualityManagementDashboard({ searchParams, onSearchParamsChange,
       render: (value, row) => <Space size={4}><span>{value || "—"}</span>{row.job_id != null && <Button type="link" size="small" onClick={() => onOpenJob(row.job_id!)}>查看链路</Button>}</Space>,
     },
     { title: "厂家", dataIndex: "factory_code", width: 110, render: (value) => factoryNames[String(value).toLowerCase()] ?? value },
-    { title: "范围", key: "scope", width: 125, render: (_, row) => `${row.business_domain === "ENGINEERING" ? "工程" : "量产"} / ${row.test_stage}` },
+    { title: "测试阶段", dataIndex: "test_stage", width: 105, render: (value) => <Tag color={value === "CP" ? "blue" : "purple"}>{value}</Tag> },
     { title: "总单元", dataIndex: "unit_count", width: 105 },
     { title: "PASS", dataIndex: "pass_count", width: 90 },
     { title: "FAIL", dataIndex: "fail_count", width: 90 },
@@ -211,6 +210,9 @@ export function QualityManagementDashboard({ searchParams, onSearchParamsChange,
   ];
 
   const kpis = data?.kpis;
+  const attentionRows = useMemo(() => (data?.recent_datasets ?? [])
+    .filter((row) => row.yield_rate == null || row.yield_rate < 0.9 || row.unknown_count > 0)
+    .sort((left, right) => (left.yield_rate ?? -1) - (right.yield_rate ?? -1)), [data?.recent_datasets]);
   const failedJobsApplicable = !request.product_name && !request.lot_id;
   const cards = kpis ? [
     ["已知良率", percent(kpis.yield_rate), kpis.yield_rate == null ? undefined : kpis.yield_rate < 0.9 ? "#cf1322" : "#1677ff"],
@@ -223,22 +225,17 @@ export function QualityManagementDashboard({ searchParams, onSearchParamsChange,
 
   return <div className="workbench production-workbench">
     <div className="page-heading">
-      <div>
-        <Typography.Text type="secondary">管理驾驶舱 / Current Dataset 质量</Typography.Text>
-        <Typography.Title level={2}>质量与良率管理摘要</Typography.Title>
-        <Space wrap><Tag color="cyan">当前范围：我的数据</Tag><Typography.Text type="secondary">只基于后端返回的正式 Current 事实和已审批口径，UNKNOWN 不会被补成 FAIL 或零。</Typography.Text></Space>
-      </div>
+      <Space wrap><Typography.Title level={2}>良率与质量</Typography.Title><Tag color="cyan">我的数据</Tag></Space>
       {canReadManagement && <Button icon={<ReloadOutlined />} loading={summary.isFetching} onClick={() => void summary.refetch()}>刷新摘要</Button>}
     </div>
 
-    {!canReadManagement && <><Form form={form} component={false} /><Alert type="info" showIcon message="当前仅开放 Rule Registry" description="当前账户拥有 RULE_GOVERN，但没有 MANAGEMENT_READ；质量摘要和筛选不会请求或展示。" className="review-alert" /></>}
-    {canReadManagement && summary.isError && <Alert type="error" showIcon message="质量管理摘要加载失败" description="本页不展示底层连接或 SQL 详情；请稍后刷新。" className="review-alert" />}
+    {!canReadManagement && <><Form form={form} component={false} /><Alert type="info" showIcon message="当前账户仅可管理分析规则" className="review-alert" /></>}
+    {canReadManagement && summary.isError && <Alert type="error" showIcon message="质量管理摘要加载失败" className="review-alert" />}
     {data && <>
       <Row gutter={[16, 16]} className="production-stats">
         {cards.map(([title, value, color]) => <Col key={title} xs={24} sm={12} lg={8} xl={4}><Card><Statistic title={title} value={value} valueStyle={{ color }} /></Card></Col>)}
       </Row>
-      <Typography.Paragraph type="secondary">统计范围 [{formatUtcDateTime(data.from_utc)}, {formatUtcDateTime(data.to_utc)})；最近 Dataset：{formatUtcDateTime(kpis?.latest_dataset_at_utc)}。已知良率分母 {numberOrDash(kpis?.known_yield_denominator)}，ABORT {numberOrDash(kpis?.abort_units)} 个，均未混入 FAIL。</Typography.Paragraph>
-      {!failedJobsApplicable && <Alert type="warning" showIcon className="review-alert" message="失败 Job KPI 对当前筛选不适用" description="失败 Job 只能可靠按时间、业务域、阶段和厂家归属；当前产品或 Lot 筛选不会被强行套用。" />}
+      {!failedJobsApplicable && <Alert type="warning" showIcon className="review-alert" message="失败任务数量不适用于当前产品或 Lot 筛选" />}
       <Card title="质量趋势" className="production-table-card" style={{ marginBottom: 18 }}>
         {data.trends.length ? <EChart option={trendOption} /> : <Empty description="当前口径没有趋势数据" />}
       </Card>
@@ -258,7 +255,6 @@ export function QualityManagementDashboard({ searchParams, onSearchParamsChange,
           <Col xs={24} sm={12} lg={4}><Form.Item label="产品" name="product_name"><Input allowClear /></Form.Item></Col>
           <Col xs={24} sm={12} lg={4}><Form.Item label="Lot" name="lot_id"><Input allowClear /></Form.Item></Col>
           <Col xs={24} sm={12} lg={4}><Form.Item label="厂家" name="factory_code"><Select allowClear showSearch options={Object.entries(factoryNames).map(([value, label]) => ({ value, label }))} /></Form.Item></Col>
-          <Col xs={12} sm={6} lg={4}><Form.Item label="业务域" name="business_domain"><Select allowClear options={[{ label: "工程", value: "ENGINEERING" }, { label: "量产", value: "PRODUCTION" }]} /></Form.Item></Col>
           <Col xs={12} sm={6} lg={4}><Form.Item label="阶段" name="test_stage"><Select allowClear options={[{ label: "CP", value: "CP" }, { label: "FT", value: "FT" }]} /></Form.Item></Col>
           <Col span={24}><Space wrap><Button type="primary" htmlType="submit" icon={<FilterOutlined />}>更新管理口径</Button><Button onClick={() => { form.resetFields(); updateSearch({}); }}>清空</Button>{[7, 30, 90].map((days) => <Button key={days} onClick={() => applyRecentRange(days)}>{`最近 ${days} 天`}</Button>)}</Space></Col>
             </Row>
@@ -268,7 +264,7 @@ export function QualityManagementDashboard({ searchParams, onSearchParamsChange,
           key: "methodology",
           label: "统计方法与趋势明细",
           children: <Space direction="vertical" size={16} className="full-width">
-            <Alert type="info" showIcon message="PASS / (PASS + FAIL)；UNKNOWN 和 ABORT 不进入良率分母" description={`快照时间：${formatUtcDateTime(data.observed_at_utc)}`} />
+            <Space wrap><Tag>良率：PASS / (PASS + FAIL)</Tag><Tag>快照：{formatUtcDateTime(data.observed_at_utc)}</Tag></Space>
             <Descriptions column={1} size="small" bordered>
               {Object.entries(data.methodology).map(([key, value]) => <Descriptions.Item key={key} label={methodologyName[key] ?? key}>{methodologyValue[value] ?? value}</Descriptions.Item>)}
             </Descriptions>
@@ -279,6 +275,19 @@ export function QualityManagementDashboard({ searchParams, onSearchParamsChange,
     />}
 
     {data && <>
+      <Card title="异常关注" extra={<Space><Tag>良率低于 90% / 不可评价 / 有未知结果</Tag><Tag color={attentionRows.length ? "warning" : "success"}>{attentionRows.length ? `${attentionRows.length} 个待关注` : "当前无异常"}</Tag></Space>} className="production-table-card" style={{ marginBottom: 18 }}>
+        <Table rowKey={(row) => `${row.dataset_id}-${row.version_no}`} size="small" dataSource={attentionRows} pagination={false} locale={{ emptyText: <Empty description="当前范围未发现需关注的产品或批次" /> }} scroll={{ x: 1200 }} columns={[
+          { title: "产品", dataIndex: "product_name", width: 190, fixed: "left" },
+          { title: "Lot", dataIndex: "lot_id", width: 160 },
+          { title: "阶段", dataIndex: "test_stage", width: 80 },
+          { title: "厂家", dataIndex: "factory_code", width: 110, render: (value) => factoryNames[String(value).toLowerCase()] ?? value },
+          { title: "良率", dataIndex: "yield_rate", width: 100, render: percent },
+          { title: "FAIL", dataIndex: "fail_count", width: 90 },
+          { title: "UNKNOWN", dataIndex: "unknown_count", width: 105 },
+          { title: "发现原因", key: "reason", width: 220, render: (_, row) => row.yield_rate == null ? "良率不可评价" : row.yield_rate < 0.9 ? "已知良率低于 90%" : "存在 UNKNOWN" },
+          { title: "操作", key: "action", width: 150, fixed: "right", render: (_, row) => <Button type="link" size="small" icon={<BarChartOutlined />} disabled={!canOpenAnalytics} onClick={() => onOpenAnalytics(row.dataset_id, row.version_no)}>查看证据</Button> },
+        ]} />
+      </Card>
       <Card title="质量分解" className="production-table-card" style={{ marginBottom: 18 }}>
         <Tabs items={breakdownDimensions.map((dimension) => ({
           key: dimension.key,
@@ -290,7 +299,6 @@ export function QualityManagementDashboard({ searchParams, onSearchParamsChange,
         <Table rowKey="bin_code" size="small" columns={failBinColumns} dataSource={data.fail_bins} pagination={false} locale={{ emptyText: <Empty description="当前口径没有 Fail Bin" /> }} />
       </Card>
       <Card title="最近 Current Dataset" extra={<Tag color="blue">最多 20 个</Tag>} className="production-table-card">
-        <Alert type="info" showIcon message="Lot 与 Source 追溯边界" description="当前仅通过真实 Job / Import Batch 发布链路下钻；没有独立 Lot 或 Source 明细 API 时，本页不会伪造入口。" style={{ marginBottom: 12 }} />
         <Table rowKey={(row) => `${row.dataset_id}-${row.version_no}`} columns={recentColumns} dataSource={data.recent_datasets} pagination={false} scroll={{ x: 1900 }} locale={{ emptyText: <Empty description="当前口径没有 Current Dataset" /> }} />
       </Card>
     </>}

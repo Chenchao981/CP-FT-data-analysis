@@ -16,6 +16,7 @@ import {
   type QualityMarginPoint,
 } from "../../api/qualityEvaluation";
 import { EChart, type EChartEventMap } from "../../components/EChart";
+import { AnalysisResultFrame } from "../../components/AnalysisResultFrame";
 import { PatResultView } from "./PatResultView";
 import { drilldownKeyFromChartEvent } from "./chartDrilldown";
 import { ANALYSIS_COMPONENT_DEFAULTS, type QualityAnalysisViewConfig } from "./context/analysisViewConfig";
@@ -206,8 +207,7 @@ export function QualityEvaluationPanel({ context, overview, overviewError, onOpe
   return <Space direction="vertical" size="large" style={{ width: "100%" }}>
     <Card title="质量管控分析">
       <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-        <Alert type="info" showIcon message="选择方法和分析范围后开始计算" description="PAT、SPC、裕度、Bin、SBL和SYL均调用服务器中已确认的规则，页面只负责展示结果。" />
-        {noDeclaredRules && <Alert type="warning" showIcon message="当前数据还没有可自动使用的分析规则" description="请联系管理员在质量管理中配置并启用对应规则，然后返回本页刷新。" />}
+        {noDeclaredRules && <Alert type="warning" showIcon message="当前数据没有可用分析规则" />}
         <Row gutter={[12, 12]}>
           <Col xs={24} sm={12} lg={8}><Typography.Text strong>方法</Typography.Text><Select aria-label="Quality 方法" allowClear value={analysis} onChange={changeAnalysis} options={analysisOptions} placeholder="显式选择方法" className="full-width" /></Col>
           <Col xs={24} sm={12} lg={8}><Typography.Text strong>Group By</Typography.Text><Select aria-label="Quality Group By" allowClear value={groupBy} onChange={(value) => onConfigChange({ groupBy: value ?? null })} options={groupOptions.map((item) => ({ ...item, disabled: (needsBin || analysis === "SYL_GROUPED_LIMIT") && item.value === "CONDITION" }))} placeholder="显式选择分组" className="full-width" /></Col>
@@ -222,7 +222,6 @@ export function QualityEvaluationPanel({ context, overview, overviewError, onOpe
           type={ruleCodePattern.test(ruleCode) && versionPattern.test(ruleVersion) ? "success" : "warning"}
           showIcon
           message={ruleCode && ruleVersion ? `当前分析规则：${ruleCode}@${ruleVersion}` : "没有找到唯一可用规则"}
-          description={ruleCode && ruleVersion ? "执行时服务器仍会核对该规则是否在当前厂家、产品和参数范围有效。" : "管理员启用规则后刷新即可，普通用户不需要填写规则编号。"}
         />}
         <Collapse size="small" items={[{
           key: "rule",
@@ -232,15 +231,15 @@ export function QualityEvaluationPanel({ context, overview, overviewError, onOpe
             <Col xs={24} sm={12}><Typography.Text strong>规则版本</Typography.Text><Input aria-label="Quality Rule Version" value={ruleVersion} onChange={(event) => onConfigChange({ rule: { ...config.rule, versionCode: event.target.value } })} placeholder="系统自动匹配" maxLength={64} /></Col>
           </Row>,
         }]} />
-        <Space wrap><Button type="primary" aria-label="执行 Quality 分析" icon={<PlayCircleOutlined />} disabled={!inputValid} loading={mutation.isPending} onClick={run}>开始质量分析</Button><Typography.Text type="secondary">使用页面顶部选定的批次、晶圆、参数和测试条件。</Typography.Text></Space>
-        {stale && <Alert type="warning" showIcon message="输入已改变，旧 Quality 结果已隐藏" description="请重新显式执行；前端不会把旧规则/旧分组结果套到新 Context。" />}
+        <Space wrap><Button type="primary" aria-label="执行 Quality 分析" icon={<PlayCircleOutlined />} disabled={!inputValid} loading={mutation.isPending} onClick={run}>开始质量分析</Button></Space>
+        {stale && <Alert type="warning" showIcon message="输入已改变，请重新执行" />}
         {approvalGate && <Alert type="error" showIcon message="Quality Rule 未批准或未激活" description={<Space direction="vertical"><Typography.Text>错误码：ANALYSIS_RULE_NOT_APPROVED</Typography.Text><Typography.Text>{apiError?.message}</Typography.Text>{apiError?.recommendedAction && <Typography.Text>建议：{apiError.recommendedAction}</Typography.Text>}</Space>} />}
         {mutation.isError && !approvalGate && <Alert type="error" showIcon message="Quality 分析失败" description={<Space direction="vertical"><Typography.Text>{mutation.error.message}</Typography.Text>{apiError?.code && <Typography.Text>错误码：{apiError.code}</Typography.Text>}</Space>} />}
       </Space>
     </Card>
 
     {result && <>
-      <Card title={`${result.analysis} · 服务端权威结果`}>
+      <AnalysisResultFrame title={result.analysis} scope="FORMAL">
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
           <Space wrap>
             <Tag color="blue">{result.contract_version}</Tag><Tag>Calculation {result.calculation_context_hash.slice(0, 12)}…</Tag>
@@ -263,7 +262,7 @@ export function QualityEvaluationPanel({ context, overview, overviewError, onOpe
           <Alert type={result.sampling_summary.sampled ? "warning" : "info"} showIcon message={result.sampling_summary.sampled ? "服务端已执行确定性绘图采样" : "服务端未采样绘图点"} description={`方法 ${result.sampling_summary.method ?? "NONE"}；返回 ${result.sampling_summary.returned_points} / 原始 ${result.sampling_summary.original_points}；保留 OOS / Rule Hit ${result.sampling_summary.preserved_out_of_spec_points}。`} />
           {result.warnings.map((warning) => <Alert key={warning} type="warning" showIcon message={warning} />)}
         </Space>
-      </Card>
+      </AnalysisResultFrame>
 
       {result.analysis === "PAT_ROBUST_IQR" && <PatResultView
         title="PAT 分析结果"
@@ -291,7 +290,7 @@ export function QualityEvaluationPanel({ context, overview, overviewError, onOpe
           { title: "MR Bar / MR UCL", key: "mr", render: (_, row) => `${numeric(row.mr_bar)} / ${numeric(row.mr_upper_control_limit)}` }, { title: "Boundary Reset", dataIndex: "boundary_reset", key: "reset", render: (value) => value ? "YES" : "NO" }, { title: "Status", dataIndex: "status", key: "status" },
         ]} />
         {result.spc.length ? <><Select aria-label="SPC 显示 Group" value={activeSpc ? qualityGroupKey(activeSpc.dataset_id, activeSpc.version_no, activeSpc.group_key) : undefined} onChange={(value) => onConfigChange({ spcDisplayGroup: value })} options={result.spc.map((item) => ({ label: `#${item.dataset_id} v${item.version_no} · ${item.group_key}`, value: qualityGroupKey(item.dataset_id, item.version_no, item.group_key) }))} style={{ width: "100%", maxWidth: 720 }} />
-          {activeSpc && <><Typography.Text type="secondary">I 图与 MR 图直接绘制服务端返回点：{visibleSpcPoints.length} / 原始 {activeSpc.sampling_summary.original_points}；服务端方法 {activeSpc.sampling_summary.method ?? "NONE"}，全部 Rule Hits 已保留。</Typography.Text><EChart className="quality-imr-chart" ariaLabel="SPC I-MR Chart" option={spcOption} onEvents={chartEvents} />
+          {activeSpc && <><Space wrap><Tag>点数 {visibleSpcPoints.length} / {activeSpc.sampling_summary.original_points}</Tag><Tag>{activeSpc.sampling_summary.method ?? "NONE"}</Tag></Space><EChart className="quality-imr-chart" ariaLabel="SPC I-MR Chart" option={spcOption} onEvents={chartEvents} />
             <Typography.Title level={5}>Rule Hit Evidence</Typography.Title>
             <Table rowKey="sequence" size="small" pagination={{ pageSize: 50, showSizeChanger: false }} dataSource={spcRuleHitPoints} locale={{ emptyText: "当前返回点没有命中已批准规则" }} columns={[
               { title: "Sequence", dataIndex: "sequence", key: "sequence" }, { title: "I Value", dataIndex: "value", key: "value" }, { title: "Moving Range", dataIndex: "moving_range", key: "mr", render: numeric }, { title: "Rule Hits", dataIndex: "rule_hits", key: "hits", render: (values) => values.map((value: string) => <Tag color="error" key={value}>{value}</Tag>) }, { title: "Evidence", dataIndex: "drilldown_key", key: "evidence", render: (key) => drillButtons([key]) },
@@ -306,10 +305,10 @@ export function QualityEvaluationPanel({ context, overview, overviewError, onOpe
           { title: "OOS", key: "oos", render: (_, row) => `${row.out_of_spec_count} / ${percent(row.out_of_spec_rate)}` }, { title: "Minimum Margin", dataIndex: "minimum_margin", key: "minimum", render: numeric },
         ]} />
         {marginGroups.length ? <><Select aria-label="Margin 显示 Group" value={activeMarginKey} onChange={(value) => onConfigChange({ marginDisplayGroup: value })} options={marginGroups.map((item) => ({ label: `#${item.dataset_id} v${item.version_no} · ${item.group_key}`, value: `${item.dataset_id}:${item.version_no}:${item.group_key}` }))} style={{ width: "100%", maxWidth: 720 }} />
-          <Typography.Text type="secondary">分布图只绘制服务端确定性采样返回的 {activeMargin?.sampling_summary.returned_points ?? 0} / 原始 {activeMargin?.sampling_summary.original_points ?? 0} 点；全部 OOS 由服务端保留。Brush、缩放和 Y 轴显示只影响视图，不重新判定 Spec。</Typography.Text>
+          <Tag>点数 {activeMargin?.sampling_summary.returned_points ?? 0} / {activeMargin?.sampling_summary.original_points ?? 0}</Tag>
           <EChart ariaLabel="Spec Margin OOS Distribution Chart" option={marginOption} onEvents={chartEvents} />
         </> : <Empty description="无 Margin Group" />}
-        <Typography.Text type="secondary">当前 Group 证据表优先显示 OOS 和最小 Margin，最多 {firstMarginPoints(result, activeMarginKey).length} 个服务端结果；Group 汇总仍覆盖全部点。</Typography.Text>
+        <Tag>证据 {firstMarginPoints(result, activeMarginKey).length} 条</Tag>
         <Table rowKey="measurement_id" size="small" pagination={false} dataSource={firstMarginPoints(result, activeMarginKey)} columns={[
           { title: "Unit", dataIndex: "unit_id", key: "unit" }, { title: "Value", dataIndex: "value", key: "value" }, { title: "Nearest Margin", dataIndex: "nearest_margin", key: "margin" }, { title: "OOS", dataIndex: "out_of_spec", key: "oos", render: (value) => <Tag color={value ? "error" : "success"}>{value ? "YES" : "NO"}</Tag> }, { title: "Drilldown", dataIndex: "drilldown_key", key: "drill", render: (key) => drillButtons([key]) },
         ]} />
@@ -317,7 +316,6 @@ export function QualityEvaluationPanel({ context, overview, overviewError, onOpe
 
       {result.analysis === "BIN_COOCCURRENCE" && <Card title="Bin Co-occurrence"><Space direction="vertical" style={{ width: "100%" }}>
         {cooccurrenceGroups.size ? <><Space wrap><Select aria-label="Bin Co-occurrence 显示 Group" value={activeCooccurrenceKey} onChange={(value) => onConfigChange({ cooccurrenceDisplayGroup: value })} options={Array.from(cooccurrenceGroups.entries()).map(([key, cells]) => ({ label: `#${cells[0].dataset_id} v${cells[0].version_no} · ${cells[0].group_key}`, value: key }))} style={{ width: 720, maxWidth: "100%" }} /><Select aria-label="Bin Co-occurrence 百分比色阶" value={percentAxisMode} onChange={(value) => onConfigChange({ percentAxisMode: value })} options={[{ label: "百分比色阶：自适应", value: "AUTO" }, { label: "百分比色阶：0–100%", value: "FIXED_0_100" }]} style={{ width: 220 }} /></Space>
-          <Alert type="info" showIcon message="共现分母与 Pareto 口径" description="Heatmap rate、Physical Units、Denominator、Pareto rank/share/cumulative 均为服务端权威字段；前端只绘制。" />
           <EChart ariaLabel="Bin Co-occurrence Heatmap" option={cooccurrenceHeatmap} onEvents={chartEvents} />
           <EChart ariaLabel="Bin Co-occurrence Pareto" option={cooccurrencePareto} onEvents={chartEvents} />
         </> : <Empty description="无 Bin 共现结果" />}
@@ -329,7 +327,6 @@ export function QualityEvaluationPanel({ context, overview, overviewError, onOpe
 
       {result.analysis === "SBL_GROUPED_LIMIT" && <Card title="SBL Grouped Limit"><Space direction="vertical" style={{ width: "100%" }}>
         {sblLimits.length ? <><Space wrap><Select aria-label="SBL 显示 Fail Bin" value={activeSbl ? `${activeSbl.dataset_id}:${activeSbl.version_no}:${activeSbl.bin_code}` : undefined} onChange={(value) => onConfigChange({ sblDisplayBin: value })} options={sblLimits.map((item) => ({ label: `#${item.dataset_id} v${item.version_no} · Bin ${item.bin_code}`, value: `${item.dataset_id}:${item.version_no}:${item.bin_code}` }))} style={{ width: 360 }} /><Select aria-label="Quality 百分比 Y 轴" value={percentAxisMode} onChange={(value) => onConfigChange({ percentAxisMode: value })} options={[{ label: "百分比轴：自适应", value: "AUTO" }, { label: "百分比轴：0–100%", value: "FIXED_0_100" }]} style={{ width: 220 }} /></Space>
-          <Typography.Text type="secondary">趋势点、SBL 线以及 Fail Bin Pareto 的 count/rank/share/cumulative 均来自服务端批准规则结果；前端只绘制。</Typography.Text>
           <EChart ariaLabel="SBL Quality Trend Chart" option={sblTrend} onEvents={chartEvents} />
           <EChart ariaLabel="SBL Fail Bin Pareto" option={sblPareto} onEvents={chartEvents} />
         </> : <Empty description="无 SBL 结果" />}
@@ -342,7 +339,6 @@ export function QualityEvaluationPanel({ context, overview, overviewError, onOpe
 
       {result.analysis === "SYL_GROUPED_LIMIT" && <Card title="SYL Grouped Limit"><Space direction="vertical" style={{ width: "100%" }}>
         {sylLimits.length ? <><Space wrap><Select aria-label="SYL 显示 Dataset" value={activeSyl ? `${activeSyl.dataset_id}:${activeSyl.version_no}` : undefined} onChange={(value) => onConfigChange({ sylDisplayDataset: value })} options={sylLimits.map((item) => ({ label: `#${item.dataset_id} v${item.version_no}`, value: `${item.dataset_id}:${item.version_no}` }))} style={{ width: 260 }} /><Select aria-label="Quality 百分比 Y 轴" value={percentAxisMode} onChange={(value) => onConfigChange({ percentAxisMode: value })} options={[{ label: "百分比轴：自适应", value: "AUTO" }, { label: "百分比轴：0–100%", value: "FIXED_0_100" }]} style={{ width: 220 }} /></Space>
-          <Typography.Text type="secondary">Known Yield 趋势与 SYL 线均为服务端批准版本返回值；UNKNOWN、ABORT 和 Other 继续单独计数，不进入 PASS/(PASS+FAIL)。</Typography.Text>
           <EChart ariaLabel="SYL Quality Trend Chart" option={sylTrend} onEvents={chartEvents} />
         </> : <Empty description="无 SYL 结果" />}
         <Table rowKey={(row) => `${row.dataset_id}:${row.version_no}`} pagination={false} scroll={{ x: 1400 }} dataSource={result.syl} expandable={{ expandedRowRender: (row) => <Table rowKey="group_key" size="small" pagination={{ pageSize: 50, showSizeChanger: false }} dataSource={row.groups} columns={[

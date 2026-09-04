@@ -120,16 +120,12 @@ export function OperationsConsistency() {
   return <div className="workbench production-workbench">
     {messageContext}
     <div className="page-heading">
-      <div>
-        <Typography.Text type="secondary">系统治理 / 只读运行摘要</Typography.Text>
-        <Typography.Title level={2}>运行一致性</Typography.Title>
-        <Typography.Text type="secondary">面向管理与运维的发布链路健康摘要，不展示源路径、账号或错误详情。</Typography.Text>
-      </div>
+      <Typography.Title level={2}>运行一致性</Typography.Title>
       <Button icon={<ReloadOutlined />} loading={summary.isFetching} onClick={() => void summary.refetch()}>刷新摘要</Button>
     </div>
 
     {summary.isLoading ? <div className="page-loading"><Spin size="large" /></div> : summary.isError ? (
-      <Alert showIcon type="error" message="运行一致性摘要加载失败" description="本页不展示底层错误详情；请稍后刷新，如持续失败请联系管理员。" />
+      <Alert showIcon type="error" message="运行一致性摘要加载失败" />
     ) : data ? <>
       <Alert
         className="quick-analysis-alert"
@@ -187,11 +183,11 @@ export function OperationsConsistency() {
     </> : null}
 
     <div className="page-heading" style={{ marginTop: 28 }}>
-      <div><Typography.Title level={3}>Worker 心跳与队列</Typography.Title><Typography.Text type="secondary">Worker 状态来自心跳记录，队列年龄来自独立后端观测；绝不通过队列长度推断 Worker 在线。</Typography.Text></div>
+      <Typography.Title level={3}>Worker 心跳与队列</Typography.Title>
       <Button icon={<ReloadOutlined />} loading={workerFleet.isFetching} onClick={() => void workerFleet.refetch()}>刷新 Worker</Button>
     </div>
     {workerFleet.isLoading ? <div className="page-loading"><Spin size="large" /></div> : workerFleet.isError ? (
-      <Alert showIcon type="error" message="Worker 运维摘要加载失败" description="本页不展示底层数据库、主机或连接详情；请稍后刷新或联系系统管理员。" />
+      <Alert showIcon type="error" message="Worker 运维摘要加载失败" />
     ) : fleet ? <>
       {fleet.alert_codes.length > 0 && <Alert type="warning" showIcon message="Worker 运维告警" description={<Space wrap>{fleet.alert_codes.map((code) => <Tag color="warning" key={code}>{code}</Tag>)}</Space>} className="review-alert" />}
       <MetricStrip ariaLabel="Worker 与队列状态" items={[
@@ -204,7 +200,7 @@ export function OperationsConsistency() {
         { label: "最早等待", value: fleet.oldest_queued_seconds == null ? "—" : `${fleet.oldest_queued_seconds} 秒` },
         { label: "最后心跳", value: formatUtcDateTime(fleet.last_heartbeat_at_utc) },
       ]} />
-      <Typography.Paragraph type="secondary">快照：{formatUtcDateTime(fleet.observed_at_utc)}；STALE 阈值：{fleet.stale_after_seconds} 秒。Drain/Resume 只改变后端期望状态，实际 READY/心跳状态仍以 Worker 后续上报为准。</Typography.Paragraph>
+      <Space wrap style={{ marginBottom: 12 }}><Tag>快照：{formatUtcDateTime(fleet.observed_at_utc)}</Tag><Tag>超时阈值：{fleet.stale_after_seconds} 秒</Tag></Space>
       <Card className="production-table-card">
         <Table rowKey="worker_id" columns={workerColumns} dataSource={fleet.workers} pagination={false} scroll={{ x: canOperateWorkers ? 1600 : 1400 }} locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无活动Worker" /> }} />
       </Card>

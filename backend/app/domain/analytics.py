@@ -245,6 +245,11 @@ class AnalyticsRuleContext:
     spec_versions: tuple[str, ...]
     bin_mapping_versions: tuple[str, ...]
     evaluation_rule_versions: tuple[str, ...]
+    # Rules that are fully approved, enabled, effective and applicable to every
+    # Dataset/parameter in this exact analysis Context.  This is deliberately
+    # separate from evaluation_rule_versions, which describes historical
+    # evaluations already persisted on measurements.
+    applicable_rule_versions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

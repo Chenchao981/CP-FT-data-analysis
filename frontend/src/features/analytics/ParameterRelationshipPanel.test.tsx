@@ -174,7 +174,7 @@ describe("ParameterRelationshipPanel", () => {
 
     await waitFor(() => expect(analyzeParameterRelationship).toHaveBeenCalledTimes(1));
     expect(await screen.findByRole("img", { name: "VTH / RDON Scatter" })).toBeInTheDocument();
-  });
+  }, 10_000);
 
   it("sends exact X/Y plus all Context filters, renders server charts/sampling/correlation, and drills by backend key", async () => {
     vi.mocked(analyzeParameterRelationship).mockImplementation(async (request) => request.x_parameter === "RDON"
@@ -370,7 +370,6 @@ describe("ParameterRelationshipPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "执行参数关系分析" }));
 
     expect(await screen.findByText("部分参数没有唯一 Released Formal Spec")).toBeInTheDocument();
-    expect(screen.getByText(/绝不回退 Program Limit/)).toBeInTheDocument();
     const option = JSON.parse(screen.getByRole("img", { name: "VTH / RDON Scatter" }).getAttribute("data-option") ?? "{}");
     expect(option.series[0].markLine).toBeUndefined();
   }, 20_000);

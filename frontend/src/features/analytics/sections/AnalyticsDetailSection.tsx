@@ -120,11 +120,10 @@ export function AnalyticsDetailSection({ context, focusDatasetId, page, pageSize
     extra={<Segmented<AnalyticsDetailView> aria-label="明细视图" value={view} options={[{ label: "WIDE", value: "WIDE" }, { label: "LONG", value: "LONG" }]} onChange={(value) => onConfigChange({ view: value })} />}
   >
     {query.isError && <Alert type="error" showIcon message="Detail 加载失败" description={query.error.message} style={{ marginBottom: 12 }} />}
-    {query.data?.evaluation_filter && <Alert type="info" showIcon message="当前为持久化评价风险限定总体" description={`${query.data.evaluation_filter.evaluation_type} · ${query.data.evaluation_filter.rule_code ?? "UNVERSIONED_RULE"}@${query.data.evaluation_filter.rule_version ?? "UNVERSIONED"} · Result ${query.data.evaluation_filter.evaluation_results.join(" / ")}；后端只返回至少包含一条完全匹配 current evaluation 的 Unit。`} style={{ marginBottom: 12 }} />}
-    {query.data?.measurement_filter && <Alert type="info" showIcon message="当前为测量聚合限定总体" description={`${query.data.measurement_filter.parameter} · ${query.data.measurement_filter.lower_bound ?? "-∞"}${query.data.measurement_filter.lower_inclusive ? " ≤" : " <"} value ${query.data.measurement_filter.upper_inclusive ? "≤" : "<"} ${query.data.measurement_filter.upper_bound ?? "+∞"}；Unit 资格由后端 Measurement EXISTS 精确限定。`} style={{ marginBottom: 12 }} />}
+    {query.data?.evaluation_filter && <Alert type="info" showIcon message={`${query.data.evaluation_filter.evaluation_type} · ${query.data.evaluation_filter.rule_code ?? "UNVERSIONED_RULE"}@${query.data.evaluation_filter.rule_version ?? "UNVERSIONED"} · ${query.data.evaluation_filter.evaluation_results.join(" / ")}`} style={{ marginBottom: 12 }} />}
+    {query.data?.measurement_filter && <Alert type="info" showIcon message={`${query.data.measurement_filter.parameter} · ${query.data.measurement_filter.lower_bound ?? "-∞"}${query.data.measurement_filter.lower_inclusive ? " ≤" : " <"} value ${query.data.measurement_filter.upper_inclusive ? "≤" : "<"} ${query.data.measurement_filter.upper_bound ?? "+∞"}`} style={{ marginBottom: 12 }} />}
     {query.data?.warnings.length ? <Alert type="warning" showIcon message="服务端提示" description={query.data.warnings.join("、")} style={{ marginBottom: 12 }} /> : null}
-    {query.data && <Space wrap style={{ marginBottom: 12 }}><Tag>服务端排序 {query.data.sort_by} {query.data.sort_direction}</Tag><Typography.Text type="secondary">仅白名单字段可排序，排序与分页均由后端执行。</Typography.Text></Space>}
-    {view === "LONG" && <Alert type="info" showIcon message="LONG 表格展开 Measurement" description="分页 total 仍以后端 Unit 数为准；前端只展开本页返回的 measurements。" style={{ marginBottom: 12 }} />}
+    {query.data && <Space wrap style={{ marginBottom: 12 }}><Tag>排序 {query.data.sort_by} {query.data.sort_direction}</Tag></Space>}
     {view === "WIDE" ? <Table<AnalyticsDetailRow>
       rowKey="drilldown_key"
       columns={wideColumns}

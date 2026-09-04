@@ -21,24 +21,6 @@ const StageResultsChartPanel = lazy(() => import("./StageResultsChartPanel").the
 const statusColor: Record<string, string> = { RECEIVED: "blue", QUEUED: "gold", PROCESSING: "processing", PROCESSED: "success", NEEDS_INPUT: "orange", FAILED: "error" };
 const statusName: Record<string, string> = { RECEIVED: "已接收", QUEUED: "排队中", PROCESSING: "处理中", PROCESSED: "已处理", NEEDS_INPUT: "待补录", FAILED: "失败", CANCELLED: "已取消", ARCHIVED: "已归档" };
 const activeUploadStatuses = new Set(["RECEIVED", "QUEUED", "PROCESSING"]);
-const stageDescription: Record<TestStage, string> = {
-  CP: "选择晶圆厂并上传对应CP源文件后，系统自动调用该厂现有清洗程序并形成Wafer分析数据。",
-  FT: "选择日月新、日月光或电基并提交对应已验收源文件，系统按独立厂家合同严格校验后形成产品/Lot分析数据。",
-};
-const visibilityDescription: Record<StageScope, { message: string; description: string }> = {
-  ALL: {
-    message: "CP/FT 按测试阶段统一使用",
-    description: "用户无需选择工程、量产或工厂菜单；待 SAP 订单关联接入后，再由批次号结合量产单和工厂订单信息自动判定。",
-  },
-  ENGINEERING: {
-    message: "工程数据仅上传人本人可见",
-    description: "工程上传记录、清洗结果和分析均按上传人隔离；下载、补录和重新处理等动作由服务端逐条授权。",
-  },
-  PRODUCTION: {
-    message: "量产正式结果面向全员共享查询",
-    description: "不同人员可以重复上传并创建彼此独立的 Batch 和分析结果；原始文件下载、补录和重新处理仍由服务端逐条授权。",
-  },
-};
 const size = (value: number) => value < 1024 * 1024 ? `${(value / 1024).toFixed(1)} KB` : `${(value / 1024 / 1024).toFixed(2)} MB`;
 const needsLotInput = (row: StageUploadRow) => row.status === "NEEDS_INPUT" || row.action_required === "LOT_ID";
 
@@ -383,8 +365,7 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
 
   return <div className="workbench production-workbench">
     {contextHolder}
-    <div className="page-heading"><div><Typography.Text type="secondary">{testStage} 统一数据入口</Typography.Text><Typography.Title level={2}>{testStage}数据</Typography.Title><Typography.Text type="secondary">{stageDescription[testStage]}</Typography.Text></div><Space wrap><Button icon={<ReloadOutlined />} onClick={() => void refresh()}>刷新</Button>{testStage === "FT" && latestAnalyzableResult && can("DATASET_READ") && <Button type="primary" ghost icon={<BarChartOutlined />} onClick={() => onOpenAnalytics?.(latestAnalyzableResult.dataset_id!, latestAnalyzableResult.dataset_version_no!)}>查看最新图表</Button>}{can("TASK_CREATE") && <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => { setFiles([]); setInputMode("UPLOAD"); setSourceRootCode(undefined); setSourceRelativePath("."); setOpen(true); }}>上传数据</Button>}</Space></div>
-    <Alert showIcon type="info" className="compact-info-alert" message={visibilityDescription[businessDomain].message} description={visibilityDescription[businessDomain].description} />
+    <div className="page-heading"><Typography.Title level={2}>{testStage}数据</Typography.Title><Space wrap><Button icon={<ReloadOutlined />} onClick={() => void refresh()}>刷新</Button>{testStage === "FT" && latestAnalyzableResult && can("DATASET_READ") && <Button type="primary" ghost icon={<BarChartOutlined />} onClick={() => onOpenAnalytics?.(latestAnalyzableResult.dataset_id!, latestAnalyzableResult.dataset_version_no!)}>查看最新图表</Button>}{can("TASK_CREATE") && <Button type="primary" icon={<CloudUploadOutlined />} onClick={() => { setFiles([]); setInputMode("UPLOAD"); setSourceRootCode(undefined); setSourceRelativePath("."); setOpen(true); }}>上传数据</Button>}</Space></div>
     <MetricStrip ariaLabel={`${testStage} 数据处理状态`} items={[
       { label: "查询上传记录", value: metrics.total },
       { label: "当前页处理中", value: metrics.processing, tone: "primary" },
@@ -422,10 +403,10 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
             <Col xs={24} sm={12} lg={6}><Form.Item label="结束时间（上海，不含）" name="to_local"><Input type="datetime-local" allowClear /></Form.Item></Col>
           </Row>
         </details>
-        <Space wrap className="filter-actions"><Button type="primary" htmlType="submit" icon={<FilterOutlined />}>服务端检索</Button><Button onClick={() => { setAdvancedFiltersOpen(false); filterForm.resetFields(); updateSearchParams((next) => { for (const key of stageFilterKeys) next.delete(key); next.set("upload_page", "1"); next.set("result_page", "1"); }); }}>清空</Button><Typography.Text type="secondary">服务端按权限、筛选和页码返回，不加载全表。</Typography.Text></Space>
+        <Space wrap className="filter-actions"><Button type="primary" htmlType="submit" icon={<FilterOutlined />}>检索</Button><Button onClick={() => { setAdvancedFiltersOpen(false); filterForm.resetFields(); updateSearchParams((next) => { for (const key of stageFilterKeys) next.delete(key); next.set("upload_page", "1"); next.set("result_page", "1"); }); }}>清空</Button></Space>
       </Form>
     </Card>
-    {oldestQueueAge != null && <Alert type="info" showIcon message="队列等待观测（当前页）" description={`当前页最长已等待 ${oldestQueueAge} 秒。该值不代表 Worker 在线或离线；请由具备 AUDIT_READ 权限的人员在“运行一致性”查看后端运维观测。`} className="review-alert" />}
+    {oldestQueueAge != null && <Alert type="info" showIcon message={`当前页最长等待：${oldestQueueAge} 秒`} className="review-alert" />}
     {(uploads.isError || results.isError) && <Alert type="error" showIcon message={`${testStage}数据加载失败`} description={(uploads.error ?? results.error)?.message} />}
     {downloadError && <Alert type="error" showIcon closable message="源文件下载失败" description={downloadError} onClose={() => setDownloadError(undefined)} style={{ marginBottom: 16 }} />}
     <Card className="production-table-card"><Tabs activeKey={activeTab} onChange={(tab) => updateSearchParams((next) => { if (tab === "result") next.set("tab", "result"); else next.delete("tab"); })} items={[
@@ -433,8 +414,6 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
       { key: "result", label: "清洗结果", children: <Table rowKey="result_summary_id" columns={resultColumns} dataSource={results.data?.items ?? []} loading={results.isLoading} scroll={{ x: 1720 }} pagination={{ current: results.data?.page ?? resultPage.page, pageSize: results.data?.page_size ?? resultPage.pageSize, total: results.data?.total ?? 0, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (total) => `共 ${total} 条` }} onChange={(pagination) => updateSearchParams((next) => { next.set("result_page", String(pagination.current ?? 1)); next.set("result_page_size", String(pagination.pageSize ?? 20)); })} /> },
     ]} /></Card>
     <Modal title={`提交${testStage}数据`} open={open} width={820} onCancel={() => !mutation.isPending && setOpen(false)} onOk={() => form.submit()} okText="提交后台清洗" confirmLoading={mutation.isPending} okButtonProps={{ disabled: inputMode === "CATALOG" && (!sourceManifest.data || confirmedManifestSha !== sourceManifest.data.sha) }} destroyOnHidden>
-      <Alert showIcon type="info" message={`上传身份：${user?.display_name}（${user?.login_name}）`} description="系统从当前登录账号自动记录上传人，无需填写。" />
-      {businessDomain === "PRODUCTION" && <Alert showIcon type="success" message="量产数据允许重复上传" description="即使文件内容或 Lot 与既有记录相同，本次提交仍会创建独立 Batch，并保留本次上传人与分析结果。" style={{ marginTop: 12 }} />}
       <Form form={form} layout="vertical" initialValues={{ factory_code: defaultFactory }} onFinish={(values) => mutation.mutate(values)} className="cp-upload-form">
         <Form.Item label="业务分类"><Space><Tag color="blue">无需选择（SAP 归类待接入）</Tag><Tag color="cyan">{testStage}数据</Tag></Space></Form.Item>
         <Form.Item label="选择解析工具" name="factory_code" rules={[{ required: true }]}><Select options={formalFactoryOptions[testStage]} /></Form.Item>
@@ -479,7 +458,6 @@ export function StageDataWorkbench({ businessDomain, testStage, searchParams, on
                     </Card>
                   )}
                 </div>
-                <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>系统不会修改共享目录原文件；提交时会按上述指纹校验后复制只读快照，再由 Worker 二次校验。</Typography.Paragraph>
               </>}
             </Card>
           </Form.Item>

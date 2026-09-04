@@ -115,9 +115,8 @@ describe("PersonalDashboard data scopes", () => {
     renderDashboard();
 
     expect(screen.getByText("个人驾驶舱")).toBeInTheDocument();
-    expect(screen.getByText(/测试员 · 仅展示当前权限范围/)).toBeInTheDocument();
     expect(screen.queryByText(/Demo|演示数据/)).not.toBeInTheDocument();
-    expect(screen.getByText(/归属于当前登录人/)).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("仅展示当前权限范围");
     await waitFor(() => expect(getQualityManagementSummary).toHaveBeenCalledWith(expect.objectContaining({
       access_scope: "PERSONAL",
       data_domain_id: undefined,
@@ -174,7 +173,7 @@ describe("PersonalDashboard data scopes", () => {
     })));
   });
 
-  it("keeps unified CP and FT entries plus quick analysis", async () => {
+  it("keeps unified CP and FT entries plus personal analysis tools", async () => {
     vi.mocked(listMyDataDomains).mockResolvedValue([]);
     vi.mocked(getQualityManagementSummary).mockResolvedValue(summary);
     const navigate = vi.fn();
@@ -182,7 +181,7 @@ describe("PersonalDashboard data scopes", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /FT 数据/ }));
     fireEvent.click(screen.getByRole("button", { name: /CP 数据/ }));
-    fireEvent.click(screen.getByRole("button", { name: /快速分析/ }));
+    fireEvent.click(screen.getByRole("button", { name: /个人分析工具/ }));
     expect(navigate.mock.calls).toEqual([
       ["/ft"],
       ["/cp"],

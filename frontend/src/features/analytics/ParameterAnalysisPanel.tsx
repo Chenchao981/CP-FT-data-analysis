@@ -17,6 +17,7 @@ import {
 } from "../../api/datasets";
 import { ApiError } from "../../api/auth";
 import { EChart, type EChartEventMap } from "../../components/EChart";
+import { AnalysisResultFrame } from "../../components/AnalysisResultFrame";
 import { drilldownKeyFromChartEvent } from "./chartDrilldown";
 import { ANALYSIS_COMPONENT_DEFAULTS, type ParameterAnalysisViewConfig } from "./context/analysisViewConfig";
 import type { AnalysisDisplayState } from "./context/analysisViewState";
@@ -504,8 +505,9 @@ export function ParameterAnalysisPanel({
   const ruleApprovalPending = apiError?.code === "ANALYSIS_RULE_NOT_APPROVED";
   const nonEligibleCapabilities = capabilityRows.filter((row) => row.analysis.capability?.status !== "ELIGIBLE");
 
-  return <Card
+  return <AnalysisResultFrame
     title="参数统计与分布"
+    scope="FORMAL"
     extra={<Tag color="blue">当前 {datasets.length} 个数据集 · 最多 20 个参数</Tag>}
     className="production-table-card"
   >
@@ -551,7 +553,6 @@ export function ParameterAnalysisPanel({
           placeholder="至少选择一种分析"
           className="full-width"
         />
-        <Typography.Text type="secondary">描述统计可直接执行；其他方法自动使用当前数据绑定的有效规则。</Typography.Text>
       </Col>
     </Row>
     {analyses.some((analysis) => analysis !== "DESCRIPTIVE") && <>
@@ -560,7 +561,6 @@ export function ParameterAnalysisPanel({
         type={exactRulesComplete ? "success" : "warning"}
         showIcon
         message={exactRulesComplete ? "所选方法已具备分析规则" : "部分方法没有找到唯一可用规则"}
-        description={exactRulesComplete ? "执行时服务器会再次核对厂家、产品和参数适用范围。" : "请联系管理员启用对应规则；普通用户不需要填写规则编号。"}
       />
       <Collapse style={{ marginTop: 12 }} size="small" items={[{ key: "rules", label: "高级设置：查看或调试规则版本", children: <>
         <Row gutter={[12, 12]}>
@@ -569,16 +569,12 @@ export function ParameterAnalysisPanel({
         {analyses.includes("NORMAL_FIT") && <><Col xs={24} md={12}><Typography.Text strong>Normal Fit Rule Code</Typography.Text><Input aria-label="Normal Fit Rule Code" value={normalFitRuleCode} onChange={(event) => onConfigChange({ normalFit: { ...config.normalFit, ruleCode: event.target.value.toUpperCase() } })} /></Col><Col xs={24} md={12}><Typography.Text strong>Normal Fit Version</Typography.Text><Input aria-label="Normal Fit Rule Version" value={normalFitRuleVersion} onChange={(event) => onConfigChange({ normalFit: { ...config.normalFit, versionCode: event.target.value } })} /></Col></>}
         {analyses.includes("CAPABILITY") && <><Col xs={24} md={8}><Typography.Text strong>Capability Method</Typography.Text><Select aria-label="Capability Method" value={capabilityMethod} options={[{ value: "CPK_POOLED_WITHIN_RUN_V1", label: "Pooled within Run" }, { value: "CPK_POOLED_WITHIN_LOT_WAFER_V1", label: "Pooled within Lot-Wafer" }]} onChange={(value) => onConfigChange({ capability: { ...config.capability, method: value } })} className="full-width" /></Col><Col xs={24} md={8}><Typography.Text strong>Capability Rule Code</Typography.Text><Input aria-label="Capability Rule Code" value={capabilityRuleCode} onChange={(event) => onConfigChange({ capability: { ...config.capability, ruleCode: event.target.value.toUpperCase() } })} /></Col><Col xs={24} md={8}><Typography.Text strong>Capability Version</Typography.Text><Input aria-label="Capability Rule Version" value={capabilityRuleVersion} onChange={(event) => onConfigChange({ capability: { ...config.capability, versionCode: event.target.value } })} /></Col></>}
         </Row>
-        <Typography.Text type="secondary">规则编号和版本仅供管理员调试；算法参数由服务器中的已批准版本提供。</Typography.Text>
       </> }]} />
     </>}
     <Space wrap style={{ marginTop: 12 }}>
       <Button type="primary" aria-label="执行参数分析" loading={mutation.isPending} disabled={!canRun} onClick={execute}>执行参数分析</Button>
-      <Typography.Text type="secondary">
-        沿用页面顶部的批次、晶圆、Bin、结果、数据源、测试机、程序和测试条件；切换页面不会自动执行高成本计算。
-      </Typography.Text>
     </Space>
-    <Card size="small" title="纯显示控制（不改变后端分析请求）" style={{ marginTop: 12 }}>
+    <Card size="small" title="显示范围" style={{ marginTop: 12 }}>
       <Row gutter={[12, 12]}>
         <Col xs={24} sm={12} xl={6}>
           <Typography.Text strong>Y 轴最小值</Typography.Text>
@@ -600,19 +596,15 @@ export function ParameterAnalysisPanel({
             className="full-width"
           />
         </Col>
-        <Col xs={24} xl={12}>
-          <Typography.Text type="secondary">应用于 Box、Histogram、Normal Fit 的 Y 轴；清空恢复自动范围，只改变显示与导出上下文。</Typography.Text>
-        </Col>
       </Row>
     </Card>
     {!parameters.length && <Alert type="info" showIcon message="请选择 1–20 个分析参数后点击执行" style={{ marginTop: 12 }} />}
     {!analyses.length && <Alert type="warning" showIcon message="至少选择一种分析类型" style={{ marginTop: 12 }} />}
-    {!exactRulesComplete && <Alert type="warning" showIcon message="所选统计方法还没有可用规则" description="请联系管理员在质量管理中启用对应规则后刷新。" style={{ marginTop: 12 }} />}
+    {!exactRulesComplete && <Alert type="warning" showIcon message="所选统计方法没有可用规则" style={{ marginTop: 12 }} />}
     {isStale && <Alert
       type="warning"
       showIcon
-      message="当前结果已过期"
-      description="Dataset、筛选、分析参数或分析类型已变化。旧结果仍保留供核对，请点击“执行参数分析”生成当前条件结果。"
+      message="当前结果已过期，请重新执行"
       style={{ marginTop: 12 }}
     />}
 
@@ -693,7 +685,6 @@ export function ParameterAnalysisPanel({
           <Select aria-label="箱线图参数" value={boxParameter} options={selectOptions(resultParameters)} onChange={(value) => onConfigChange({ boxParameter: value })} style={{ minWidth: 220 }} />
           {boxRows.length ? <>
             <EChart option={boxOption} ariaLabel={`${boxParameter} 按 Dataset 的箱线图`} onEvents={chartEvents} />
-            <Typography.Text type="secondary">图形五数使用下须、Q1、中位数、Q3、上须；红点是服务端有界、确定性离群 evidence，点击按稳定 Unit key 打开 Detail。</Typography.Text>
             {boxRows.map((row) => row.analysis.box_plot?.outlier_sampling).filter(Boolean).map((sampling, index) => <Tag key={`${sampling!.method}-${index}`}>离群 evidence {sampling!.returned_points}/{sampling!.original_points}{sampling!.sampled ? "（已采样）" : "（完整）"}</Tag>)}
             <Table rowKey="key" columns={boxColumns} dataSource={boxRows} pagination={false} scroll={{ x: 1240 }} size="small" />
           </> : <Empty description="当前参数不适用于箱线图" />}
@@ -707,23 +698,21 @@ export function ParameterAnalysisPanel({
             <Select aria-label="直方图参数" value={histogramParameter} options={selectOptions(resultParameters)} onChange={(value) => onConfigChange({ histogramParameter: value })} style={{ minWidth: 180 }} />
           </Space>
           {histogram ? <>
-            {(histogramLsl == null && histogramUsl == null) && <Alert type="warning" showIcon message="当前参数没有可用 Released Formal Spec" description="系统不会用 Program Limit 猜测正式 Spec；OOS 区域保持 NO_SPEC。" />}
+            {(histogramLsl == null && histogramUsl == null) && <Alert type="warning" showIcon message="当前参数没有可用正式规格" />}
             <EChart option={histogramOption} ariaLabel={`${histogramParameter} 在 ${histogramRow?.datasetLabel} 的后端分箱直方图`} onEvents={histogramEvents} />
-            <Typography.Text type="secondary">后端返回 {histogram.bin_count} 个分箱（请求 {histogram.requested_bin_count}）；范围 {formatNumber(histogram.range_min)} 至 {formatNumber(histogram.range_max)}；方法 {histogram.method}。前端未重新分箱。</Typography.Text>
-            <Typography.Text type="secondary">红色为完全 OOS 区间，橙色为跨越 Spec 的区间；点击非空区间进入服务端按参数与区间限定的完整 Unit 总体。</Typography.Text>
+            <Space wrap><Tag>{histogram.bin_count} 个分箱</Tag><Tag>{formatNumber(histogram.range_min)} – {formatNumber(histogram.range_max)}</Tag><Tag>{histogram.method}</Tag></Space>
           </> : <Empty description="当前 Dataset 与参数组合不适用于直方图" />}
         </Space>
       </Card>}
 
       {normalFitRows.length > 0 && <Card size="small" title="Normal Fit（服务端 MLE 拟合线）">
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-          <Alert type="info" showIcon message="曲线点与 MLE 参数均由服务端返回" description="直方图是 Count，Normal Fit 是 Probability Density；前端不做量纲换算、不重新拟合，因此分开显示。" />
           <Space wrap>
             <Select aria-label="Normal Fit Dataset" value={normalFitDataset} options={resultDatasets.map(([value, label]) => ({ value, label }))} onChange={(value) => onConfigChange({ normalFitDataset: value })} style={{ minWidth: 220 }} />
             <Select aria-label="Normal Fit 参数" value={normalFitParameter} options={selectOptions(resultParameters)} onChange={(value) => onConfigChange({ normalFitParameter: value })} style={{ minWidth: 180 }} />
           </Space>
           {normalFit?.status === "AVAILABLE" && normalFit.points.length > 0
-            ? <><>{(normalFitLsl == null && normalFitUsl == null) && <Alert type="warning" showIcon message="当前参数没有可用 Released Formal Spec" description="Normal Fit 仅显示拟合事实，不使用 Program Limit 推断 OOS 边界。" />}</><EChart option={normalFitOption} ariaLabel={`${normalFitParameter} 在 ${normalFitRow?.datasetLabel} 的服务端 Normal Fit 曲线`} onEvents={chartEvents} /><Typography.Text type="secondary">服务端返回 {normalFit.points.length} 个曲线点；Mean {formatNumber(normalFit.mean)}，MLE Stddev {formatNumber(normalFit.standard_deviation)}，方法 {normalFit.method}。底部 observed evidence 可点击进入 Detail。</Typography.Text></>
+            ? <><>{(normalFitLsl == null && normalFitUsl == null) && <Alert type="warning" showIcon message="当前参数没有可用正式规格" />}</><EChart option={normalFitOption} ariaLabel={`${normalFitParameter} 在 ${normalFitRow?.datasetLabel} 的服务端 Normal Fit 曲线`} onEvents={chartEvents} /><Space wrap><Tag>{normalFit.points.length} 个曲线点</Tag><Tag>Mean {formatNumber(normalFit.mean)}</Tag><Tag>Stddev {formatNumber(normalFit.standard_deviation)}</Tag><Tag>{normalFit.method}</Tag></Space></>
             : <Alert type="warning" showIcon message="Normal Fit 不适用" description={normalFit?.reason_code ?? "当前 Dataset / 参数无服务端拟合结果"} />}
           <Table rowKey="key" columns={normalFitColumns} dataSource={normalFitRows} pagination={false} scroll={{ x: 1275 }} size="small" />
         </Space>
@@ -736,7 +725,6 @@ export function ParameterAnalysisPanel({
           message={capabilityRows.some((row) => row.analysis.capability?.reason_codes.includes("CAPABILITY_RULE_REQUIRED"))
             ? "统计规则尚未批准，能力指数保持关闭"
             : "部分 Capability 指标不适用或未请求"}
-          description="请以服务端返回的 Ppk/Cpk 状态、原因码和规则码为准；NOT_REQUESTED 和空指标是受控门禁结果，前端不会补成 0 或当作请求失败。"
           style={{ marginBottom: 12 }}
         />}
         <Table rowKey="key" columns={capabilityColumns} dataSource={capabilityRows} pagination={false} scroll={{ x: 1750 }} size="small" />
@@ -744,5 +732,5 @@ export function ParameterAnalysisPanel({
 
       {!rows.length && <Empty description="当前筛选没有可分析的数据" />}
     </Space>}
-  </Card>;
+  </AnalysisResultFrame>;
 }

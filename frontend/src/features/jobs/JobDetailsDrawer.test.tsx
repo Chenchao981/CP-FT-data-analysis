@@ -188,8 +188,7 @@ describe("JobDetailsDrawer", () => {
       },
     });
 
-    expect(await screen.findByText("任务仍在队列中")).toBeInTheDocument();
-    expect(screen.getByText(/AUDIT_READ/)).toBeInTheDocument();
+    expect(await screen.findByText(/排队等待：/)).toBeInTheDocument();
     expect(screen.queryByText("Worker 在线")).not.toBeInTheDocument();
   }, 15_000);
 

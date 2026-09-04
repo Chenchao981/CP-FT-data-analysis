@@ -950,11 +950,121 @@ class SqlAnalyticsService:
                     (int(row["dataset_id"]), int(row["version_no"]))
                 ] = dataset_bin_versions
             bin_versions.update(dataset_bin_versions)
+        applicable_rule_versions = SqlAnalyticsService._applicable_rule_versions(
+            connection,
+            context_rows,
+            tuple(request.parameters),
+        )
         return AnalyticsRuleContext(
             spec_versions=spec_versions,
             bin_mapping_versions=tuple(sorted(bin_versions)),
             evaluation_rule_versions=(),
+            applicable_rule_versions=applicable_rule_versions,
         )
+
+    @staticmethod
+    def _activation_matches_context(
+        activation: Mapping[str, Any],
+        context: Mapping[str, Any],
+        parameters: tuple[str, ...],
+    ) -> bool:
+        if str(activation["test_stage"]) != str(context["test_stage"]):
+            return False
+        for key in ("supplier_id", "product_id"):
+            scoped = activation[key]
+            actual = context[key]
+            if scoped is not None and (actual is None or int(scoped) != int(actual)):
+                return False
+        pattern = activation["parameter_pattern"]
+        if pattern is None:
+            return True
+        if not parameters:
+            return False
+        pattern_text = str(pattern)
+        if pattern_text.endswith("*"):
+            prefix = pattern_text[:-1]
+            return all(parameter.startswith(prefix) for parameter in parameters)
+        return all(parameter == pattern_text for parameter in parameters)
+
+    @staticmethod
+    def _applicable_rule_versions(
+        connection: Connection,
+        context_rows: tuple[Mapping[str, Any], ...],
+        parameters: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        """Resolve unambiguous server-owned defaults for an exact analysis Context."""
+
+        activations = tuple(
+            connection.execute(
+                text(
+                    "SELECT rs.rule_code,rv.version_code,"
+                    "rv.evaluation_rule_version_id,ra.test_stage,ra.supplier_id,"
+                    "ra.product_id,ra.parameter_pattern "
+                    "FROM evaluation.rule_set rs "
+                    "JOIN evaluation.rule_version rv ON "
+                    "rv.evaluation_rule_set_id=rs.evaluation_rule_set_id "
+                    "JOIN evaluation.rule_activation ra ON "
+                    "ra.evaluation_rule_version_id=rv.evaluation_rule_version_id "
+                    "WHERE rs.active=1 AND rv.status='RELEASED' "
+                    "AND rv.activation_status='ENABLED' AND ra.active=1 "
+                    "AND (rv.effective_from_utc IS NULL OR rv.effective_from_utc<=SYSUTCDATETIME()) "
+                    "AND (rv.effective_to_utc IS NULL OR rv.effective_to_utc>SYSUTCDATETIME()) "
+                    "AND (ra.effective_from_utc IS NULL OR ra.effective_from_utc<=SYSUTCDATETIME()) "
+                    "AND (ra.effective_to_utc IS NULL OR ra.effective_to_utc>SYSUTCDATETIME())"
+                )
+            )
+            .mappings()
+            .all()
+        )
+        grouped: dict[tuple[int, str, str], list[Mapping[str, Any]]] = defaultdict(list)
+        for activation in activations:
+            grouped[
+                (
+                    int(activation["evaluation_rule_version_id"]),
+                    str(activation["rule_code"]),
+                    str(activation["version_code"]),
+                )
+            ].append(activation)
+
+        resolved: list[str] = []
+        for (version_id, rule_code, version_code), scopes in grouped.items():
+            approval_rows = (
+                connection.execute(
+                    text(
+                        "SELECT approval_role,decision FROM ("
+                        "SELECT approval_role,decision,ROW_NUMBER() OVER("
+                        "PARTITION BY approval_role ORDER BY decided_at_utc DESC,"
+                        "rule_approval_id DESC) AS rn "
+                        "FROM evaluation.rule_approval_record "
+                        "WHERE evaluation_rule_version_id=:version_id"
+                        ") latest WHERE rn=1"
+                    ),
+                    {"version_id": version_id},
+                )
+                .mappings()
+                .all()
+            )
+            approvals = {
+                str(row["approval_role"]): str(row["decision"])
+                for row in approval_rows
+            }
+            if approvals != {
+                "BUSINESS": "APPROVED",
+                "TECHNICAL": "APPROVED",
+                "QUALITY": "APPROVED",
+            }:
+                continue
+            if all(
+                any(
+                    SqlAnalyticsService._activation_matches_context(
+                        activation, context, parameters
+                    )
+                    for activation in scopes
+                )
+                for context in context_rows
+            ):
+                resolved.append(f"RULE:{rule_code}:{version_code}")
+        return tuple(sorted(set(resolved)))
 
     def overview(self, request: AnalyticsOverviewRequest) -> AnalyticsOverviewResult:
         filter_summary = _hashes(request)
@@ -1636,9 +1746,10 @@ class SqlAnalyticsService:
             }
             if evaluation_versions:
                 rule_context = AnalyticsRuleContext(
-                    rule_context.spec_versions,
-                    rule_context.bin_mapping_versions,
-                    tuple(sorted(evaluation_versions)),
+                    spec_versions=rule_context.spec_versions,
+                    bin_mapping_versions=rule_context.bin_mapping_versions,
+                    evaluation_rule_versions=tuple(sorted(evaluation_versions)),
+                    applicable_rule_versions=rule_context.applicable_rule_versions,
                 )
             known_total = pass_count + fail_count
             if known_total == 0:
@@ -2056,9 +2167,10 @@ class SqlAnalyticsService:
 
             if evaluation_versions:
                 rule_context = AnalyticsRuleContext(
-                    rule_context.spec_versions,
-                    rule_context.bin_mapping_versions,
-                    tuple(sorted(evaluation_versions)),
+                    spec_versions=rule_context.spec_versions,
+                    bin_mapping_versions=rule_context.bin_mapping_versions,
+                    evaluation_rule_versions=tuple(sorted(evaluation_versions)),
+                    applicable_rule_versions=rule_context.applicable_rule_versions,
                 )
 
         known_total = pass_count + fail_count

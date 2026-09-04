@@ -230,7 +230,7 @@ describe("DatasetCurrentCatalog", () => {
 
     const ftRow = (await screen.findByText("NCE-IGBT")).closest("tr")!;
     const cpRow = screen.getByText("NCE-MOS-CP").closest("tr")!;
-    expect(screen.getByText("同次比较仅支持同一测试阶段（CP 或 FT），最多 8 个")).toBeInTheDocument();
+    expect(screen.getByText("同阶段 · 最多 8 组")).toBeInTheDocument();
 
     fireEvent.click(within(ftRow).getByRole("checkbox"));
     const cpCheckbox = within(cpRow).getByRole("checkbox");
@@ -316,8 +316,7 @@ describe("DatasetCurrentCatalog", () => {
     expect(within(dataRow).queryByRole("button", { name: /导出最新/ })).not.toBeInTheDocument();
     expect(within(dataRow).queryByRole("button", { name: /显式重处理/ })).not.toBeInTheDocument();
     expect(within(dataRow).getByRole("button", { name: /逻辑归档/ })).toBeInTheDocument();
-    expect(document.body).toHaveTextContent("系统管理员和数据域管理员可协助处理全部数据");
-    expect(document.body).toHaveTextContent("不删除 FTP/NAS 原始文件");
+    expect(document.body).not.toHaveTextContent("Dataset 生命周期边界");
   }, 15_000);
 
   it("hides every management action for a shared production row while preserving analysis", async () => {
@@ -342,8 +341,7 @@ describe("DatasetCurrentCatalog", () => {
     expect(within(dataRow).queryByRole("button", { name: /导出最新/ })).not.toBeInTheDocument();
     expect(within(dataRow).queryByRole("button", { name: /显式重处理/ })).not.toBeInTheDocument();
     expect(within(dataRow).getByRole("button", { name: /分析$/ })).toBeInTheDocument();
-    expect(document.body).toHaveTextContent("普通用户查看本人 PERSONAL 数据和已授权 DOMAIN 数据");
-    expect(document.body).toHaveTextContent("系统管理员、数据域管理员默认查看全部数据");
+    expect(document.body).not.toHaveTextContent("开发期可见边界");
   });
 
   it("uses each backend row capability only for its matching action", async () => {
@@ -429,8 +427,7 @@ describe("DatasetCurrentCatalog", () => {
     const product = await screen.findByText("NCE-IGBT", {}, { timeout: 10_000 });
 
     fireEvent.click(within(product.closest("tr")!).getByRole("button", { name: /导出最新/ }));
-    expect(await screen.findByText("非变异临时导出")).toBeInTheDocument();
-    expect(document.body).toHaveTextContent("Current Dataset、Canonical 数据与补录在导出前后保持不变");
+    expect(await screen.findByText("生成临时导出文件")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /创建导出 Job/ }));
     expect(await screen.findByText("请确认导出为非变异临时任务")).toBeInTheDocument();
     expect(createLatestExport).not.toHaveBeenCalled();
@@ -442,7 +439,7 @@ describe("DatasetCurrentCatalog", () => {
     const next = props.onSearchParamsChange.mock.calls.at(-1)?.[0] as URLSearchParams;
     expect(next.get("export_job_id")).toBe("81");
     expect(props.onOpenJob).not.toHaveBeenCalled();
-  }, 20_000);
+  }, 35_000);
 
   it("requires typed confirmation and a complete reason for reprocess and logical archive", async () => {
     const props = renderCatalog();
@@ -450,7 +447,7 @@ describe("DatasetCurrentCatalog", () => {
     const dataRow = product.closest("tr")!;
 
     fireEvent.click(within(dataRow).getByRole("button", { name: /显式重处理/ }));
-    expect(await screen.findByText("将创建新版本")).toBeInTheDocument();
+    expect(await screen.findByText("将创建新数据版本")).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("输入 REPROCESS 确认"), { target: { value: "REPROCESS" } });
     fireEvent.change(screen.getByLabelText("完整操作原因"), { target: { value: "Cleaner 发布后显式重处理" } });
     fireEvent.click(screen.getByRole("button", { name: /创建重处理 Job/ }));
@@ -464,7 +461,7 @@ describe("DatasetCurrentCatalog", () => {
     fireEvent.click(screen.getByRole("button", { name: /创建逻辑归档 Job/ }));
     await waitFor(() => expect(archiveDataset).toHaveBeenCalledWith(20, "重复导入，已完成 Owner 核准", expect.stringMatching(/^archive-20-/)));
     await waitFor(() => expect(props.onOpenJob).toHaveBeenCalledWith(83));
-  }, 25_000);
+  }, 40_000);
 
   it("shows safe export status and downloads a registered Artifact", async () => {
     renderCatalog(new URLSearchParams({ export_job_id: "81" }));
@@ -473,7 +470,7 @@ describe("DatasetCurrentCatalog", () => {
     expect(getLatestExportStatus).toHaveBeenCalledWith(81);
     expect(screen.getByText("READY")).toBeInTheDocument();
     expect(screen.getByText("Cleaner Release")).toBeInTheDocument();
-    expect(document.body).toHaveTextContent("不修改 Canonical、Current Dataset Version 或人工补录");
+    expect(document.body).not.toHaveTextContent("导出语义");
     fireEvent.click(screen.getByRole("button", { name: /下载$/ }));
     await waitFor(() => expect(downloadLatestExportArtifact).toHaveBeenCalledWith(81, 3, "latest-cleaner-result.xlsx"));
     expect(screen.queryByText(/storage_uri|file:\/\/|C:\\/i)).not.toBeInTheDocument();

@@ -256,7 +256,7 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
     { title: "产品", dataIndex: "product_name", width: 190, fixed: "left", ellipsis: true, render: (value) => value || "待补录" },
     { title: "Lot", key: "lot_scope", width: 160, ellipsis: true, render: (_, row) => displayLot(row) },
     { title: "厂家", dataIndex: "factory_code", width: 110, render: (value) => factoryNames[String(value).toLowerCase()] ?? value },
-    { title: "范围", key: "scope", width: 125, render: (_, row) => `${row.business_domain === "ENGINEERING" ? "工程" : "量产"} / ${row.test_stage}` },
+    { title: "测试阶段", dataIndex: "test_stage", width: 105, render: (value) => <Tag color={value === "CP" ? "blue" : "purple"}>{value}</Tag> },
     { title: "状态", dataIndex: "status", width: 105, render: (value) => <Tag color={value === "PUBLISHED" ? "success" : "default"}>{value}</Tag> },
     { title: "Unit/Die", dataIndex: "unit_count", width: 110, render: (value) => value == null ? "—" : value },
     { title: "Pass", dataIndex: "pass_count", width: 100, render: (value) => value == null ? "—" : value },
@@ -284,29 +284,13 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
   return <div className="workbench production-workbench">
     {messageContext}
     <div className="page-heading">
-      <div>
-        <Typography.Text type="secondary">正式事实 / Dataset Current</Typography.Text>
-        <Typography.Title level={2}>历史正式数据</Typography.Title>
-        <Typography.Text type="secondary">按业务身份检索当前正式版本，多选后进入比较；日常操作无需手填 Dataset、Job 或 Run 内部编号。</Typography.Text>
-      </div>
+      <Typography.Title level={2}>产品与批次</Typography.Title>
       <Button icon={<ReloadOutlined />} loading={query.isFetching} onClick={() => void query.refetch()}>刷新</Button>
     </div>
-    <Alert
-      type="info"
-      showIcon
-      className="review-alert"
-      message="Dataset 生命周期边界"
-      description={<Space direction="vertical" size={2}>
-        <Typography.Text><strong>导出最新</strong>：由后端选择最新 Cleaner 生成有 TTL 的临时 Artifact；不调用 Canonical Importer，不创建或切换 Dataset Version，不改动人工补录。</Typography.Text>
-        <Typography.Text><strong>显式重处理</strong>：生成新 Dataset Version，只有全量校验成功后才原子切换 Current；失败时旧 Current 仍可用。</Typography.Text>
-        <Typography.Text><strong>逻辑归档</strong>：个人用户可操作本人数据；系统管理员和数据域管理员可协助处理全部数据。不删除 FTP/NAS 原始文件或 Source Receipt。</Typography.Text>
-        <Typography.Text><strong>开发期可见边界</strong>：普通用户查看本人 PERSONAL 数据和已授权 DOMAIN 数据；系统管理员、数据域管理员默认查看全部数据。</Typography.Text>
-      </Space>}
-    />
     <Card
       className="review-filter-card"
       extra={<Space wrap>
-        <Typography.Text type="secondary">同次比较仅支持同一测试阶段（CP 或 FT），最多 8 个</Typography.Text>
+        <Tag>同阶段 · 最多 8 组</Tag>
         {selectedRows.length ? <Button type="primary" icon={<BarChartOutlined />} onClick={() => selectedRows.length === 1 ? onOpenAnalytics(selectedRows[0].dataset_id, selectedRows[0].version_no) : onOpenComparison?.(selectedRows.map((row) => ({ datasetId: row.dataset_id, versionNo: row.version_no })))} disabled={selectedRows.length > 1 && !onOpenComparison}>{selectedRows.length > 1 ? `比较分析（${selectedRows.length}）` : "分析所选数据"}</Button> : null}
       </Space>}
     >
@@ -319,8 +303,7 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
           <Col xs={24} sm={12} lg={6}><Form.Item label="Cleaner 版本" name="cleaner_version"><Input allowClear /></Form.Item></Col>
           <Col xs={24} sm={12} lg={6}><Form.Item label="上传账号" name="owner_login"><Input allowClear /></Form.Item></Col>
           <Col xs={24} sm={12} lg={6}><Form.Item label="厂家" name="factory_code"><Select allowClear showSearch placeholder="全部厂家" options={Object.entries(factoryNames).map(([value, label]) => ({ value, label }))} /></Form.Item></Col>
-          <Col xs={12} sm={6} lg={3}><Form.Item label="业务域" name="business_domain"><Select allowClear options={[{ label: "工程", value: "ENGINEERING" }, { label: "量产", value: "PRODUCTION" }]} /></Form.Item></Col>
-          <Col xs={12} sm={6} lg={3}><Form.Item label="阶段" name="test_stage"><Select allowClear options={[{ label: "CP", value: "CP" }, { label: "FT", value: "FT" }]} /></Form.Item></Col>
+          <Col xs={12} sm={6} lg={3}><Form.Item label="测试阶段" name="test_stage"><Select allowClear options={[{ label: "CP", value: "CP" }, { label: "FT", value: "FT" }]} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={6}><Form.Item label="状态" name="status"><Select allowClear options={[{ label: "PUBLISHED", value: "PUBLISHED" }]} /></Form.Item></Col>
           <Col xs={24} sm={12} lg={6}><Form.Item label="开始时间（上海，含）" name="from_local"><Input type="datetime-local" allowClear /></Form.Item></Col>
           <Col xs={24} sm={12} lg={6}><Form.Item label="结束时间（上海，不含）" name="to_local"><Input type="datetime-local" allowClear /></Form.Item></Col>
@@ -328,7 +311,7 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
         </Row>
       </Form>
     </Card>
-    {query.isError && <Alert type="error" showIcon message="Dataset Current 目录加载失败" description="本页不展示底层连接、路径或账号详情；请稍后刷新。" className="review-alert" />}
+    {query.isError && <Alert type="error" showIcon message="产品与批次加载失败" className="review-alert" />}
     <Card className="production-table-card">
       <Table
         rowKey={(row) => `${row.dataset_id}-${row.version_no}`}
@@ -378,9 +361,9 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
         <Descriptions.Item label="Dataset">{action ? `#${action.row.dataset_id} / V${action.row.version_no}` : "—"}</Descriptions.Item>
         <Descriptions.Item label="产品 / Lot">{action ? `${action.row.product_name || "—"} / ${displayLot(action.row)}` : "—"}</Descriptions.Item>
       </Descriptions>
-      {action?.kind === "EXPORT" && <Alert type="info" showIcon message="非变异临时导出" description="导出只生成临时文件并登记 SHA-256/TTL；Current Dataset、Canonical 数据与补录在导出前后保持不变。" style={{ marginBottom: 16 }} />}
-      {action?.kind === "REPROCESS" && <Alert type="warning" showIcon message="将创建新版本" description="新版本全量校验成功后才会取代旧 Current；Cleaner、入库或切换失败时，旧 Current 不变。" style={{ marginBottom: 16 }} />}
-      {action?.kind === "ARCHIVE" && <Alert type="error" showIcon message="仅逻辑归档，不删除源文件" description="本人数据可自行处理；系统管理员和数据域管理员可协助操作全部数据。FTP/NAS 原始文件与 Source Receipt 均不在删除范围。" style={{ marginBottom: 16 }} />}
+      {action?.kind === "EXPORT" && <Alert type="info" showIcon message="生成临时导出文件" style={{ marginBottom: 16 }} />}
+      {action?.kind === "REPROCESS" && <Alert type="warning" showIcon message="将创建新数据版本" style={{ marginBottom: 16 }} />}
+      {action?.kind === "ARCHIVE" && <Alert type="error" showIcon message="仅逻辑归档，不删除源文件" style={{ marginBottom: 16 }} />}
       {actionError && <Alert type="error" showIcon message="生命周期操作失败" description={actionError} style={{ marginBottom: 16 }} />}
       <Form<LifecycleActionValues>
         form={actionForm}
@@ -411,7 +394,6 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
       onOk={() => productForm.submit()}
       destroyOnHidden
     >
-      <Alert type="info" showIcon message="人工补录与 Cleaner 原值分离" description="本操作保存可追溯的业务有效值，用于后续检索和管理汇总，不改写原始文件或 Cleaner 原始解析值。" style={{ marginBottom: 16 }} />
       <Form<ProductEnrichmentValues>
         form={productForm}
         layout="vertical"
@@ -438,9 +420,8 @@ export function DatasetCurrentCatalog({ searchParams, onSearchParamsChange, onOp
       destroyOnHidden
       extra={<Space><Button onClick={() => exportJobId && onOpenJob(exportJobId)}>Job 详情</Button><Button icon={<ReloadOutlined />} loading={exportStatus.isFetching} disabled={!canExport} onClick={() => void exportStatus.refetch()}>刷新</Button></Space>}
     >
-      {!canExport ? <Alert type="error" showIcon message="无权查看导出状态" description="需要 EXPORT_DATA 权限。" /> : exportStatus.isLoading ? <Typography.Text type="secondary">正在读取导出状态…</Typography.Text> : exportStatus.isError ? <Alert type="error" showIcon message="导出状态加载失败" description="本页不展示底层存储路径或连接详情；请稍后刷新。" /> : exportStatus.data ? <Space direction="vertical" size={16} className="full-width">
-        <Alert type="info" showIcon message="导出语义" description="本 Job 只生成有 TTL 的临时 Artifact，不修改 Canonical、Current Dataset Version 或人工补录。" />
-        {exportStatus.data.error_code && <Alert type="error" showIcon message={`导出错误分类：${exportStatus.data.error_code}`} description="失败仅影响本次导出，不影响 Current Dataset。" />}
+      {!canExport ? <Alert type="error" showIcon message="无权查看导出状态" /> : exportStatus.isLoading ? <Typography.Text type="secondary">正在读取导出状态…</Typography.Text> : exportStatus.isError ? <Alert type="error" showIcon message="导出状态加载失败" /> : exportStatus.data ? <Space direction="vertical" size={16} className="full-width">
+        {exportStatus.data.error_code && <Alert type="error" showIcon message={`导出错误：${exportStatus.data.error_code}`} />}
         {downloadError && <Alert type="error" showIcon message="Artifact 下载失败" description={downloadError} />}
         <Descriptions bordered size="small" column={2}>
           <Descriptions.Item label="处理状态"><Tag>{exportStatus.data.status}</Tag></Descriptions.Item>

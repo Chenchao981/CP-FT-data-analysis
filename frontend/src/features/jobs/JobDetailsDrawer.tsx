@@ -124,8 +124,7 @@ export function JobDetailsDrawer({ jobId, open, onClose, onSelectJob, onOpenAnal
         <Alert
           showIcon
           type="info"
-          message="任务仍在队列中"
-          description={`后端队列等待：${queueAgeText(job.queue_age_seconds)}。本页不会仅凭等待时长猜测 Worker 在线状态；具备 AUDIT_READ 权限的人员可在“运行一致性”查看 Worker 观测结果。`}
+          message={`排队等待：${queueAgeText(job.queue_age_seconds)}`}
         />
       )}
       {job.error_code && (
@@ -165,7 +164,6 @@ export function JobDetailsDrawer({ jobId, open, onClose, onSelectJob, onOpenAnal
 
       <div>
         <Typography.Title level={5}>来源血缘</Typography.Title>
-        <Typography.Paragraph type="secondary">仅展示后端安全合约返回的文件身份与验证依据，不展示物理路径或 URI。</Typography.Paragraph>
         <Table
           rowKey={(row) => String(row.source_file_id ?? `${row.ordinal_no ?? "source"}-${row.original_file_name ?? "unknown"}`)}
           size="small"

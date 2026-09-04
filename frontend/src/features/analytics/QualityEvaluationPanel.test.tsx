@@ -66,7 +66,7 @@ describe("QualityEvaluationPanel", () => {
   it("has no default rule or method and renders the server zero-approval gate", async () => {
     vi.mocked(evaluateQuality).mockRejectedValueOnce(new ApiError(409, { code: "ANALYSIS_RULE_NOT_APPROVED", message: "requested rule is not approved", retryable: false, recommended_action: "approve and activate exact version" }, "failed"));
     renderPanel();
-    expect(screen.getByText("当前数据还没有可自动使用的分析规则")).toBeInTheDocument();
+    expect(screen.getByText("当前数据没有可用分析规则")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /执行 Quality 分析/ })).toBeDisabled();
     expect(evaluateQuality).not.toHaveBeenCalled();
 
@@ -98,7 +98,7 @@ describe("QualityEvaluationPanel", () => {
     await select("SPC Phase", "PHASE_I_BASELINE");
     fireEvent.click(screen.getByRole("button", { name: /执行 Quality 分析/ }));
 
-    expect(await screen.findByText("SPC_I_MR · 服务端权威结果")).toBeInTheDocument();
+    expect(await screen.findByText("SPC_I_MR")).toBeInTheDocument();
     expect(screen.getByText("SPC_I_MR_V1")).toBeInTheDocument();
     const chart = screen.getByRole("img", { name: "SPC I-MR Chart" });
     fireEvent.click(chart);
@@ -219,6 +219,6 @@ describe("QualityEvaluationPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /执行 Quality 分析/ }));
     expect(await screen.findByRole("img", { name: "SBL Quality Trend Chart" })).toBeInTheDocument();
     expect(screen.getByRole("img", { name: "SBL Fail Bin Pareto" })).toBeInTheDocument();
-    expect(screen.getByText(/Fail Bin Pareto 的 count\/rank\/share\/cumulative 均来自服务端/)).toBeInTheDocument();
+    expect(screen.getByText("SBL_GROUPED_LIMIT_V1")).toBeInTheDocument();
   }, 60_000);
 });

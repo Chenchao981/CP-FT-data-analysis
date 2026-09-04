@@ -105,10 +105,7 @@ export function DataDomainManagement() {
   ];
 
   return <div className="workbench">
-    <div className="page-heading"><div>
-      <Typography.Title level={2}>数据域授权</Typography.Title>
-      <Typography.Text type="secondary">系统采集数据属于数据域；只有这里的显式有效授权决定谁能查看。角色、部门和任务分配都不会隐式授予数据权。</Typography.Text>
-    </div></div>
+    <div className="page-heading"><Typography.Title level={2}>数据域授权</Typography.Title></div>
     <ProTable<DataDomain>
       rowKey="data_domain_id"
       search={false}

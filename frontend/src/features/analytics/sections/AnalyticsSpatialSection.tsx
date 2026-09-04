@@ -341,7 +341,7 @@ export function AnalyticsSpatialSection({ context, focusDatasetId, overview, ove
 
   const parameterOptions = selectOptions([...(overview?.options.parameters ?? []), ...context.parameters, parameter]);
   return <Space direction="vertical" size="large" style={{ width: "100%" }}>
-    {!isCp && overview && <Alert type="info" showIcon message="Spatial 只适用于 CP Dataset" description={`当前测试阶段为 ${overview.dataset_context.test_stage}，后端会以 ANALYSIS_STAGE_INCOMPATIBLE 失败关闭。`} />}
+    {!isCp && overview && <Alert type="info" showIcon message="空间分析仅适用于 CP 数据" />}
     <Card title="晶圆空间分析" extra={<Tag color="blue">CP 数据</Tag>}>
       <Row gutter={[12, 12]}>
         <Col xs={24} md={12} xl={6}><Typography.Text strong>Mode</Typography.Text><Select aria-label="Spatial Mode" value={mode} options={modeOptions} onChange={(value) => onConfigChange({ mode: value })} className="full-width" /></Col>
@@ -349,18 +349,17 @@ export function AnalyticsSpatialSection({ context, focusDatasetId, overview, ove
         <Col xs={24} md={12} xl={6}><Typography.Text strong>Max Response Items（100–50000）</Typography.Text><InputNumber aria-label="Spatial 最大点数" min={100} max={50_000} precision={0} step={100} value={maxPoints} onChange={(value) => onConfigChange({ maxPoints: value ?? 20_000 })} className="full-width" /></Col>
       </Row>
       {mode === "ZONE_COMPARISON" && <>
-        <Alert style={{ marginTop: 12 }} type={ruleCode && ruleVersion ? "success" : "warning"} showIcon message={ruleCode && ruleVersion ? `当前区域规则：${ruleCode}@${ruleVersion}` : "没有找到唯一可用的区域规则"} description={ruleCode && ruleVersion ? "执行时服务器会再次核对当前产品和参数适用范围。" : "请联系管理员启用区域规则后刷新。"} />
+        <Alert style={{ marginTop: 12 }} type={ruleCode && ruleVersion ? "success" : "warning"} showIcon message={ruleCode && ruleVersion ? `当前区域规则：${ruleCode}@${ruleVersion}` : "没有可用的区域规则"} />
         <Collapse style={{ marginTop: 12 }} size="small" items={[{ key: "rule", label: "高级设置：查看或调试规则版本", children: <Row gutter={[12, 12]}>
           <Col xs={24} md={12}><Typography.Text strong>规则编号</Typography.Text><Input aria-label="Spatial Rule Code" value={ruleCode} onChange={(event) => onConfigChange({ rule: { ...config.rule, ruleCode: event.target.value.trim().toUpperCase() } })} placeholder="系统自动匹配" /></Col>
           <Col xs={24} md={12}><Typography.Text strong>规则版本</Typography.Text><Input aria-label="Spatial Rule Version" value={ruleVersion} onChange={(event) => onConfigChange({ rule: { ...config.rule, versionCode: event.target.value.trim() } })} placeholder="系统自动匹配" /></Col>
         </Row> }]} />
       </>}
-      <Space wrap style={{ marginTop: 12 }}><Button type="primary" aria-label="执行 Spatial 分析" disabled={!canRun} loading={mutation.isPending} onClick={execute}>执行 Spatial 分析</Button><Typography.Text type="secondary">以当前 Dataset 和全部权威筛选请求后端；前端显示设置不改变事实。</Typography.Text></Space>
-      {singleWaferModes.has(mode) && !explicitSingleWafer && <Alert type="warning" showIcon message="该 Mode 要求明确的单 Wafer" description="请在统一 Context 中各选择 1 个 Lot 和 1 个 Wafer；前端不猜测空筛选最终会命中几片 Wafer。" style={{ marginTop: 12 }} />}
-      {mode === "COMPOSITE_FAILURE" && !explicitMultiWafer && <Alert type="warning" showIcon message="Composite Failure 要求多 Wafer" description="请在统一 Context 中明确选择至少 2 个 Wafer。" style={{ marginTop: 12 }} />}
-      {needsBinMapping && !hasBinMapping && <Alert type="warning" showIcon message="Bin Mapping 尚未就绪" description="BIN_MAP 和 PARAMETER_FAIL_OVERLAY 要求当前 Dataset 绑定版本化 Bin Mapping。当前 rule_context.bin_mapping_versions 为空，前端失败关闭，不使用原始 Bin 冒充批准映射。" style={{ marginTop: 12 }} />}
-      {mode === "ZONE_COMPARISON" && <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>区域布局、方向和标签均由服务器中的已批准规则返回，页面不会自行推断。</Typography.Paragraph>}
-      {isStale && <Alert type="warning" showIcon message="Spatial 结果已过期" description="Context、Mode、参数、Max Points 或 Rule 已变化；需手动重新执行。" style={{ marginTop: 12 }} />}
+      <Space wrap style={{ marginTop: 12 }}><Button type="primary" aria-label="执行 Spatial 分析" disabled={!canRun} loading={mutation.isPending} onClick={execute}>执行 Spatial 分析</Button></Space>
+      {singleWaferModes.has(mode) && !explicitSingleWafer && <Alert type="warning" showIcon message="请选择 1 个 Lot 和 1 个 Wafer" style={{ marginTop: 12 }} />}
+      {mode === "COMPOSITE_FAILURE" && !explicitMultiWafer && <Alert type="warning" showIcon message="请选择至少 2 个 Wafer" style={{ marginTop: 12 }} />}
+      {needsBinMapping && !hasBinMapping && <Alert type="warning" showIcon message="Bin Mapping 尚未就绪" style={{ marginTop: 12 }} />}
+      {isStale && <Alert type="warning" showIcon message="空间分析结果已过期，请重新执行" style={{ marginTop: 12 }} />}
       {mutation.isError && <Alert type="error" showIcon message={binMappingGate ? "Spatial Bin Mapping 未绑定" : ruleGate ? "Spatial Rule 未批准或合同无效" : "Spatial 分析失败"} description={<Space direction="vertical" size={2}><Typography.Text>{mutation.error instanceof Error ? mutation.error.message : "未知错误"}</Typography.Text><Typography.Text>错误码：{apiError?.code ?? "UNKNOWN_ERROR"}</Typography.Text><Typography.Text>建议操作：{apiError?.recommendedAction ?? (binMappingGate ? "先为 Dataset 绑定已批准的版本化 Bin Mapping" : "请核对 CP/Wafer/Coordinate/Rule 合同")}</Typography.Text></Space>} style={{ marginTop: 12 }} />}
     </Card>
 
@@ -389,18 +388,17 @@ export function AnalyticsSpatialSection({ context, focusDatasetId, overview, ove
           <Checkbox checked={displayState.brushEnabled} onChange={(event) => onDisplayStateChange({ brushEnabled: event.target.checked })}>Brush</Checkbox>
           {result.parameter && <Checkbox checked={displayState.showSpecOverlay} onChange={(event) => onDisplayStateChange({ showSpecOverlay: event.target.checked })}>Spec OOS Overlay</Checkbox>}
           {result.parameter && <Checkbox checked={showMissing} onChange={(event) => onConfigChange({ showMissing: event.target.checked })}>Missing Measurement</Checkbox>}
-          {colorDomain && <Typography.Text type="secondary">服务端 Color Domain：Min {colorDomain.minimum} / P02 {colorDomain.p02} / P98 {colorDomain.p98} / Max {colorDomain.maximum}。自定义范围只改变颜色，tooltip 保留原值。</Typography.Text>}
+          {colorDomain && <Tag>颜色范围 {colorDomain.minimum} – {colorDomain.maximum}</Tag>}
         </Space>
       </Card>
       <Card title={`${result.mode}${result.parameter ? ` · ${result.parameter}` : ""}`}>
         {!zoneContractValid && <Alert type="error" showIcon message="Zone 几何合同不完整" description="服务端必须同时返回批准规则的边界和每个点的 Zone 身份；当前结果失败关闭。" />}
         {!compositeMemberContractValid && <Alert type="error" showIcon message="Composite 成员下钻合同不完整" description="聚合点 observed_count 必须与服务端返回的全部稳定 member_drilldown_keys 一一对账；当前结果失败关闭。" />}
         {visiblePoints.length && spatialContractValid ? <EChart option={option} ariaLabel={`${result.mode} Spatial Map`} onEvents={chartEvents} /> : spatialContractValid ? <Empty description="当前显示条件无点" /> : null}
-        <Typography.Text type="secondary">Stack 聚合点携带全部服务端 Unit 成员，点击先打开成员列表；Overlay 使用同一响应内的服务端 Wafer layer。显隐、Y/颜色范围、Brush 和 Spec 圈选不重算服务端统计。</Typography.Text>
       </Card>
-      {selectedMembers && <Card size="small" title={selectedMembers.title} extra={<Button size="small" onClick={() => setSelectedMembers(null)}>关闭成员列表</Button>}><Typography.Text type="secondary">共 {selectedMembers.keys.length} 个服务端稳定 Unit key；逐个打开现有 Drawer，不使用代表 Unit。</Typography.Text><Space wrap style={{ marginTop: 12 }}>{selectedMembers.keys.map((key) => <Button key={key} size="small" aria-label={`打开成员 ${key}`} onClick={() => onOpenDrilldown(key)}>{key}</Button>)}</Space></Card>}
-      {result.zones.length > 0 && <Card title="Radial Zone Comparison（后端批准 Rule 结果）"><Typography.Text type="secondary">Center/Mid/Edge 径向边界与全部成员 Unit 均来自同一批准规则版本。</Typography.Text><Table rowKey="zone" columns={zoneColumns} dataSource={result.zones} pagination={false} scroll={{ x: 1260 }} /></Card>}
-      {(result.quadrants?.length ?? 0) > 0 && result.zone_geometry && <Card title="Quadrant Comparison（后端批准 Rule 结果）" extra={<Space wrap><Tag>Rotation {result.zone_geometry.quadrant_axis_rotation_degrees}°</Tag><Tag>Y {result.zone_geometry.quadrant_y_direction}</Tag><Tag>CCW {result.zone_geometry.quadrant_labels_ccw.join(" → ")}</Tag></Space>}><Typography.Text type="secondary">标签顺序从批准的旋转后 +X 轴开始，每个 90° 半开区间逆时针排列；轴上的点归入从该轴开始的象限。</Typography.Text><Table rowKey="quadrant" columns={quadrantColumns} dataSource={result.quadrants} pagination={false} scroll={{ x: 1300 }} /></Card>}
+      {selectedMembers && <Card size="small" title={`${selectedMembers.title}（${selectedMembers.keys.length}）`} extra={<Button size="small" onClick={() => setSelectedMembers(null)}>关闭成员列表</Button>}><Space wrap>{selectedMembers.keys.map((key) => <Button key={key} size="small" aria-label={`打开成员 ${key}`} onClick={() => onOpenDrilldown(key)}>{key}</Button>)}</Space></Card>}
+      {result.zones.length > 0 && <Card title="径向区域对比"><Table rowKey="zone" columns={zoneColumns} dataSource={result.zones} pagination={false} scroll={{ x: 1260 }} /></Card>}
+      {(result.quadrants?.length ?? 0) > 0 && result.zone_geometry && <Card title="象限对比" extra={<Space wrap><Tag>Rotation {result.zone_geometry.quadrant_axis_rotation_degrees}°</Tag><Tag>Y {result.zone_geometry.quadrant_y_direction}</Tag><Tag>CCW {result.zone_geometry.quadrant_labels_ccw.join(" → ")}</Tag></Space>}><Table rowKey="quadrant" columns={quadrantColumns} dataSource={result.quadrants} pagination={false} scroll={{ x: 1300 }} /></Card>}
     </>}
   </Space>;
 }

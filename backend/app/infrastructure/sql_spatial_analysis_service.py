@@ -1143,6 +1143,7 @@ class SqlSpatialAnalysisService:
                 evaluation_rule_versions=(
                     f"RULE:{request.rule_code}:{request.rule_version}",
                 ),
+                applicable_rule_versions=rule_context.applicable_rule_versions,
             )
 
         (

@@ -174,11 +174,7 @@ export function ProductCrosswalkWorkbench({ searchParams, onSearchParamsChange }
   return <div className="workbench production-workbench">
     {messageContext}{modalContext}
     <div className="page-heading">
-      <div>
-        <Typography.Text type="secondary">主数据治理 / 产品身份</Typography.Text>
-        <Typography.Title level={2}>产品映射</Typography.Title>
-        <Typography.Text type="secondary">来源观测的 TMS 产品身份与 SAP Business One 企业物料映射严格分层，只有 APPROVED 记录才是企业映射。</Typography.Text>
-      </div>
+      <Typography.Title level={2}>产品映射</Typography.Title>
       <Button icon={<ReloadOutlined />} loading={query.isFetching} onClick={() => void query.refetch()}>刷新</Button>
     </div>
     <Card className="review-filter-card">
@@ -192,7 +188,7 @@ export function ProductCrosswalkWorkbench({ searchParams, onSearchParamsChange }
         </Row>
       </Form>
     </Card>
-    {query.isError && <Alert type="error" showIcon message="产品映射加载失败" description="本页不展示底层连接或账号详情；请稍后刷新或联系管理员。" className="review-alert" />}
+    {query.isError && <Alert type="error" showIcon message="产品映射加载失败，请稍后刷新" className="review-alert" />}
     <Card className="production-table-card">
       <Table
         rowKey="crosswalk_id"
@@ -221,7 +217,7 @@ export function ProductCrosswalkWorkbench({ searchParams, onSearchParamsChange }
       confirmLoading={submitting}
       destroyOnHidden
     >
-      <Alert type="info" showIcon message={`来源产品标识(TMS)：${decision?.row.tms_product_code ?? "—"}`} style={{ marginBottom: 16 }} />
+      <Typography.Text strong>来源产品标识：{decision?.row.tms_product_code ?? "—"}</Typography.Text>
       <Form<DecisionFormValues> form={decisionForm} layout="vertical" preserve={false} onFinish={submitDecision}>
         {decision?.kind === "APPROVE" && <>
           <Form.Item label="企业系统"><Input value="SAP Business One (SAP_B1)" disabled /></Form.Item>

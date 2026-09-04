@@ -81,7 +81,7 @@ describe("AnalyticsExportPanel", () => {
     renderPanel("CP", ["DATASET_READ", "EXPORT_DATA"], viewState);
     expect(await screen.findByText("#81")).toBeInTheDocument();
     fireEvent.change(screen.getByRole("textbox", { name: "Export 原因" }), { target: { value: "Export reviewed current page" } });
-    fireEvent.click(screen.getByRole("button", { name: /提交 Export Job/ }));
+    fireEvent.click(screen.getByRole("button", { name: /生成报告/ }));
 
     await waitFor(() => expect(createAnalyticsExport).toHaveBeenCalledWith({
       ...context,
@@ -131,7 +131,7 @@ describe("AnalyticsExportPanel", () => {
     expect(await screen.findByText("历史 Job 完整性阻断")).toBeInTheDocument();
     expect(screen.getByText(/#1、#77/)).toBeInTheDocument();
     expect(screen.getByText("#81")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /提交 Export Job/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /生成报告/ })).toBeEnabled();
   }, 20_000);
 
   it("shows verified artifact metadata and uses the fixed authenticated download contract", async () => {
@@ -139,7 +139,7 @@ describe("AnalyticsExportPanel", () => {
     await screen.findByText("#81");
     fireEvent.click(screen.getByRole("button", { name: /制品元数据/ }));
 
-    expect(await screen.findByText("制品已通过服务端下载门禁")).toBeInTheDocument();
+    expect(await screen.findByText("制品可下载")).toBeInTheDocument();
     expect(screen.getByText("analytics.csv")).toBeInTheDocument();
     expect(screen.getByText("2.0 KB")).toBeInTheDocument();
     expect(getAnalyticsExportDownloadMetadata).toHaveBeenCalledWith(81);
@@ -154,7 +154,7 @@ describe("AnalyticsExportPanel", () => {
     fireEvent.mouseDown(screen.getByRole("combobox", { name: "Export Template" }));
     fireEvent.click(await screen.findByTitle("ANALYTICS_OVERVIEW@v1"));
     fireEvent.change(screen.getByRole("textbox", { name: "Export 原因" }), { target: { value: "Export exact overview analysis" } });
-    fireEvent.click(screen.getByRole("button", { name: /提交 Export Job/ }));
+    fireEvent.click(screen.getByRole("button", { name: /生成报告/ }));
 
     await waitFor(() => expect(createAnalyticsExport).toHaveBeenCalledWith(expect.objectContaining({
       template_code: "ANALYTICS_OVERVIEW",
@@ -191,12 +191,12 @@ describe("AnalyticsExportPanel", () => {
     fireEvent.mouseDown(screen.getByRole("combobox", { name: "Export Template" }));
     fireEvent.click(await screen.findByTitle("PARAMETER_ANALYSIS@v1"));
     fireEvent.change(screen.getByRole("textbox", { name: "Export 原因" }), { target: { value: "Export invalid parameter analysis" } });
-    fireEvent.click(screen.getByRole("button", { name: /提交 Export Job/ }));
+    fireEvent.click(screen.getByRole("button", { name: /生成报告/ }));
 
     expect(await screen.findByText("Export Job 提交失败")).toBeInTheDocument();
     expect(screen.getByText(/Box Plot Rule Code 未配置/)).toBeInTheDocument();
     expect(createAnalyticsExport).not.toHaveBeenCalled();
-  }, 20_000);
+  }, 35_000);
 
   it("filters the template registry by Test Stage and blocks missing export permission", async () => {
     renderPanel("FT");

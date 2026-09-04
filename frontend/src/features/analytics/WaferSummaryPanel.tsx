@@ -136,13 +136,12 @@ export function WaferSummaryPanel({ context, testStage, page, pageSize, onPagina
     onPaginationChange(pagination.current ?? page, pagination.pageSize ?? pageSize);
   };
 
-  if (testStage && !isCp) return <Alert type="info" showIcon message="Wafer Summary 只适用于 CP Dataset" description={`当前阶段为 ${testStage}，未请求后端 Wafer Summary。`} />;
+  if (testStage && !isCp) return <Alert type="info" showIcon message="Wafer Summary 仅适用于 CP 数据" />;
 
   return <Card title="Wafer Summary" extra={<Space><Tag>后端分页</Tag><Tag>后端排序</Tag></Space>}>
     <Space wrap style={{ marginBottom: 12 }}>
       <Select aria-label="Wafer Summary 排序字段" value={sortBy} options={sortOptions} onChange={(value) => changeSort(value)} style={{ minWidth: 160 }} />
       <Select aria-label="Wafer Summary 排序方向" value={sortDirection} options={directionOptions} onChange={(value) => changeSort(sortBy, value)} style={{ minWidth: 150 }} />
-      <Typography.Text type="secondary">参数列来自统一 Context；Mean/Min/Max/Measured/Missing/OOS 全部使用后端汇总。</Typography.Text>
     </Space>
     {query.isError && <Alert type="error" showIcon message="Wafer Summary 加载失败" description={query.error.message} style={{ marginBottom: 12 }} />}
     {query.data?.warnings.length ? <Alert type="warning" showIcon message="服务端提示" description={query.data.warnings.join("、")} style={{ marginBottom: 12 }} /> : null}

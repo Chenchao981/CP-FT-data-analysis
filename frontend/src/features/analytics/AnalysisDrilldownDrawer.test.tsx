@@ -39,7 +39,7 @@ describe("AnalysisDrilldownDrawer", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(<QueryClientProvider client={client}><AnalysisDrilldownDrawer context={context} drilldownKey="UNIT:1" onClose={vi.fn()} /></QueryClientProvider>);
 
-    expect(await screen.findByText("NO_SPEC / Formal Spec 门禁")).toBeInTheDocument();
+    expect(await screen.findByText("部分测量项没有正式规格")).toBeInTheDocument();
     expect(screen.getAllByText("raw.csv").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Tester Program Limit（非正式规格）").length).toBeGreaterThan(0);
     expect(screen.getByText("1 / 2")).toBeInTheDocument();

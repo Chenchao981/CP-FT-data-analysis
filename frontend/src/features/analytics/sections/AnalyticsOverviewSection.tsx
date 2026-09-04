@@ -181,7 +181,6 @@ export function AnalyticsOverviewSection({ overview, overviewLoading, overviewEr
       <Col xs={12} md={6}><Card><Statistic title="UNKNOWN + ABORT" value={overview.counts.unknown_count + overview.counts.abort_count} /><Button type="link" onClick={() => onOpenAggregateDrilldown({ filters: { overall_results: ["UNKNOWN", "ABORT"] } })}>未知结果明细</Button></Card></Col>
       <Col xs={12} md={6}><Card><Statistic title="未知占比" value={overview.counts.unknown_abort_rate == null ? undefined : overview.counts.unknown_abort_rate * 100} precision={3} suffix="%" /><Typography.Text type="secondary">分母 {overview.counts.unknown_abort_denominator}</Typography.Text></Card></Col>
     </Row>
-    <Typography.Text type="secondary">Yield 分母固定为 PASS + FAIL；UNKNOWN / ABORT 单独展示，零已知分母时良率保持空值。</Typography.Text>
     <Card title="基础风险摘要" extra={<Tag>数据事实与持久化评价</Tag>}>
       {overview.risk_summary.length
         ? <Table rowKey="code" columns={riskColumns} dataSource={overview.risk_summary} pagination={false} size="small" scroll={{ x: 1300 }} />
@@ -193,7 +192,7 @@ export function AnalyticsOverviewSection({ overview, overviewLoading, overviewEr
     </Card>
     <Card title="Yield Trend">
       {yieldAvailable
-        ? overview.yield_trend.length ? <><EChart option={yieldOption} ariaLabel="服务端良率趋势" onEvents={chartEvents} /><Typography.Text type="secondary">顺序由后端 {overview.yield_trend[0]?.order_basis} 固定；点选将 Dataset、Lot、Wafer 和 Source 写回统一 Context 后进入该聚合总体明细。</Typography.Text></> : <Empty description="当前 Context 无良率点" />
+        ? overview.yield_trend.length ? <EChart option={yieldOption} ariaLabel="服务端良率趋势" onEvents={chartEvents} /> : <Empty description="当前 Context 无良率点" />
         : <Alert type="info" showIcon message="Yield 能力不可用" description={yieldCapability?.message ?? yieldCapability?.reason_code ?? "服务端未声明 YIELD capability"} />}
     </Card>
     <Card title="Bin Pareto">
@@ -201,7 +200,6 @@ export function AnalyticsOverviewSection({ overview, overviewLoading, overviewEr
         ? overview.bin_pareto.length ? <><EChart option={paretoOption} ariaLabel="服务端 Bin Pareto" onEvents={chartEvents} /><Table rowKey={(row) => `${row.dataset_id}:${row.version_no}:${row.mapping_set_id}:${row.bin_type}:${row.bin_code}`} columns={binColumns} dataSource={overview.bin_pareto} pagination={false} size="small" scroll={{ x: 1120 }} /></> : <Empty description="当前 Context 无 Bin 结果" />
         : <Alert type="info" showIcon message="Bin Pareto 能力不可用" description={paretoCapability?.message ?? paretoCapability?.reason_code ?? "服务端未声明 BIN_PARETO capability"} />}
     </Card>
-    <Typography.Text type="secondary">图表数值来自后端合同；前端仅做格式化和绘图，不重算良率或累计占比。</Typography.Text>
   </Space>;
 }
 

@@ -93,6 +93,7 @@ vi.mock("./features/dashboard/PersonalDashboard", () => ({
   </div>,
 }));
 vi.mock("./features/data-domains/DataDomainManagement", () => ({ DataDomainManagement: () => <div>data-domains</div> }));
+vi.mock("./features/sources/SourceCenter", () => ({ SourceCenter: () => <div>source-center</div> }));
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,
@@ -180,13 +181,23 @@ describe("App navigation and deep links", () => {
     render(<App />);
 
     expect(await screen.findByText("catalog:page=2&page_size=50&product_name=NCE-IGBT")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "历史正式数据" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "产品与批次" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "运行一致性" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "catalog-page-3" }));
     await waitFor(() => expect(window.location.pathname).toBe("/datasets/current"));
     expect(window.location.search).toBe("?page=3&product_name=NCE-MOS");
     expect(await screen.findByText("catalog:page=3&product_name=NCE-MOS")).toBeInTheDocument();
+  }, 15_000);
+
+  it("opens the formal FTP/NAS source center for task creators", async () => {
+    vi.mocked(useAuth).mockReturnValue(authFor(["TASK_CREATE"]));
+    window.history.replaceState({}, "", "/data-sources");
+
+    render(<App />);
+
+    expect(await screen.findByText("source-center")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "数据源中心" })).toBeInTheDocument();
   }, 15_000);
 
   it("restores analytics selection and Job drawer, then follows browser history to a fixed entry", async () => {
@@ -297,7 +308,7 @@ describe("App navigation and deep links", () => {
     render(<App />);
 
     expect(await screen.findByText("quality:from_utc=2026-08-01T00%3A00%3A00Z&product_name=NCE-MOS:analytics-true")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "质量管理摘要" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "良率与质量" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "产品映射" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "运行一致性" })).not.toBeInTheDocument();
 
@@ -321,13 +332,13 @@ describe("App navigation and deep links", () => {
 
     expect(await screen.findByText("crosswalk:status=PENDING&page=1")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "产品映射" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "质量管理摘要" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "良率与质量" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "crosswalk-page" }));
     await waitFor(() => expect(window.location.search).toBe("?status=PENDING&page=2"));
     expect(await screen.findByText("crosswalk:status=PENDING&page=2")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("link", { name: "质量管理摘要" }));
+    fireEvent.click(screen.getByRole("link", { name: "良率与质量" }));
     expect(await screen.findByText("quality-govern-true")).toBeInTheDocument();
     expect(screen.getByText("quality-management-false")).toBeInTheDocument();
   }, 15_000);

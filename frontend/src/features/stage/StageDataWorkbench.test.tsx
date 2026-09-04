@@ -194,11 +194,11 @@ describe("StageDataWorkbench Lot input states", () => {
     }
   }, 30_000);
 
-  it("explains shared production visibility and identifies Batch, uploader, and duplicate receipts", async () => {
+  it("identifies Batch, uploader, and duplicate receipts without a page-level explanation", async () => {
     renderWorkbench();
 
     await screen.findByText("done.xlsx", {}, { timeout: 15_000 });
-    expect(screen.getByText("量产正式结果面向全员共享查询")).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("量产正式结果面向全员共享查询");
     expect(screen.getByText("相同内容已上传")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "清洗结果" }));
@@ -209,9 +209,10 @@ describe("StageDataWorkbench Lot input states", () => {
     expect(within(resultRow).getByText("操作员（operator）")).toBeInTheDocument();
   }, 30_000);
 
-  it("explains that engineering data is visible only to its uploader", async () => {
+  it("keeps the engineering route concise", async () => {
     renderWorkbench({ businessDomain: "ENGINEERING", testStage: "FT" });
-    expect(await screen.findByText("工程数据仅上传人本人可见", {}, { timeout: 15_000 })).toBeInTheDocument();
+    expect(await screen.findByText("FT数据", {}, { timeout: 15_000 })).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("工程数据仅上传人本人可见");
   }, 30_000);
 
   it("opens Lot input only for authorized users and clears it when the CP/FT route changes", async () => {
@@ -276,7 +277,7 @@ describe("StageDataWorkbench Lot input states", () => {
     fireEvent.change(screen.getByLabelText("Lot"), { target: { value: "LOT-202608" } });
     fireEvent.change(screen.getByLabelText("开始时间（上海，含）"), { target: { value: "2026-08-01T08:30" } });
     fireEvent.change(screen.getByLabelText("结束时间（上海，不含）"), { target: { value: "2026-09-01T00:00" } });
-    fireEvent.click(screen.getByRole("button", { name: /服务端检索/ }));
+    fireEvent.click(screen.getByRole("button", { name: /检索/ }));
 
     await waitFor(() => expect(listStageUploadsPage).toHaveBeenLastCalledWith(
       "PRODUCTION",
@@ -339,7 +340,7 @@ describe("StageDataWorkbench Lot input states", () => {
 
     fireEvent.change(screen.getByLabelText("产品"), { target: { value: "NCE-MOS" } });
     fireEvent.change(screen.getByLabelText("Lot"), { target: { value: "LOT-STATE" } });
-    fireEvent.click(screen.getByRole("button", { name: /服务端检索/ }));
+    fireEvent.click(screen.getByRole("button", { name: /检索/ }));
 
     await waitFor(() => expect(screen.getByTestId("stage-search")).toHaveTextContent("product_name=NCE-MOS"));
     const filterSearch = new URLSearchParams(screen.getByTestId("stage-search").textContent ?? "");
@@ -376,9 +377,8 @@ describe("StageDataWorkbench Lot input states", () => {
     });
     renderWorkbench();
 
-    expect(await screen.findByText("队列等待观测（当前页）", {}, { timeout: 15_000 })).toBeInTheDocument();
+    expect(await screen.findByText("当前页最长等待：73 秒", {}, { timeout: 15_000 })).toBeInTheDocument();
     expect(screen.getAllByText(/73 秒/).length).toBeGreaterThan(0);
-    expect(screen.getByText(/AUDIT_READ/)).toBeInTheDocument();
     expect(screen.queryByText("Worker 在线")).not.toBeInTheDocument();
   }, 30_000);
 
@@ -473,8 +473,7 @@ describe("StageDataWorkbench Lot input states", () => {
     const onOpenJob = vi.fn();
     renderWorkbench({ businessDomain: "PRODUCTION", testStage: "FT", onOpenJob });
     fireEvent.click(await screen.findByRole("button", { name: /上传数据/ }));
-    expect(await screen.findByText("量产数据允许重复上传")).toBeInTheDocument();
-    expect(screen.getByText(/本次提交仍会创建独立 Batch/)).toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent("量产数据允许重复上传");
     fireEvent.click(screen.getByRole("radio", { name: /受控服务器目录/ }));
 
     expect(await screen.findByText("日月新量产灰度目录")).toBeInTheDocument();

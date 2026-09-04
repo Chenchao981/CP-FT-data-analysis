@@ -173,18 +173,17 @@ export function AnalyticsExportPanel({ context, ruleContext, testStage, focusDat
     </Space> },
   ], []);
 
-  if (!canExport) return <Card title="Analytics Export"><Alert type="warning" showIcon message="无导出权限" description="Analytics Export 需要 DATASET_READ + EXPORT_DATA。前端不会发起越权请求。" /></Card>;
-  if (!selectedTemplate) return <Card title="Analytics Export"><Alert type="error" showIcon message="当前 Test Stage 没有已注册导出模板" /></Card>;
+  if (!canExport) return <Card title="一键生成报告"><Alert type="warning" showIcon message="无导出权限" /></Card>;
+  if (!selectedTemplate) return <Card title="一键生成报告"><Alert type="error" showIcon message="当前测试阶段没有可用报告模板" /></Card>;
 
   const metadata = metadataQuery.data;
-  return <Card title="Analytics Export（服务端异步生成）" extra={<Button icon={<ReloadOutlined />} onClick={() => void listQuery.refetch()} loading={listQuery.isFetching}>刷新</Button>}>
+  return <Card title="一键生成 HTML / PDF / XLSX 报告" extra={<Button icon={<ReloadOutlined />} onClick={() => void listQuery.refetch()} loading={listQuery.isFetching}>刷新</Button>}>
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-      <Alert type="info" showIcon message="导出事实与显示状态均由服务端冻结" description="请求携带 Dataset 版本、完整筛选、参数、Rule Context 和当前图表显示选项；显示选项有独立 Presentation Hash，不会改变数据事实。" />
       {(listQuery.data?.integrity_blocked_count ?? 0) > 0 && <Alert
         type="error"
         showIcon
         message="历史 Job 完整性阻断"
-        description={`本页有 ${listQuery.data!.integrity_blocked_count} 个历史 Job 的冻结上下文无法通过完整性校验，已从正常列表隔离：${listQuery.data!.integrity_blocked_job_ids.map((id) => `#${id}`).join("、")}。这些 Job 不会被改写或伪造；其精确查看与下载仍会 fail-closed。其他正常 Job 和新建导出不受影响。`}
+        description={`${listQuery.data!.integrity_blocked_count} 个：${listQuery.data!.integrity_blocked_job_ids.map((id) => `#${id}`).join("、")}`}
       />}
       {success && <Alert type="success" showIcon closable onClose={() => setSuccess(undefined)} message={success} />}
       {createMutation.error && <Alert type="error" showIcon message="Export Job 提交失败" description={createMutation.error.message} />}
@@ -207,7 +206,7 @@ export function AnalyticsExportPanel({ context, ruleContext, testStage, focusDat
           <Form.Item label="Format" name="exportFormat" rules={[{ required: true }]}><Select aria-label="Export Format" options={selectedTemplate.formats.map((value) => ({ label: value, value }))} style={{ width: 130 }} /></Form.Item>
           <Form.Item label="制品保留小时" name="artifactTtlHours" rules={[{ required: true, type: "number", min: 1, max: 168 }]}><InputNumber aria-label="Export TTL" min={1} max={168} /></Form.Item>
           <Form.Item label="导出原因" name="reason" rules={[{ required: true, min: 8, max: 1000 }]}><Input aria-label="Export 原因" maxLength={1000} style={{ width: 320 }} /></Form.Item>
-          <Form.Item label=" "><Button htmlType="submit" type="primary" icon={<ExportOutlined />} loading={createMutation.isPending}>提交 Export Job</Button></Form.Item>
+          <Form.Item label=" "><Button htmlType="submit" type="primary" icon={<ExportOutlined />} loading={createMutation.isPending}>生成报告</Button></Form.Item>
         </Space>
       </Form>
       <Typography.Text type="secondary">Idempotency Key：<Typography.Text code>{idempotencyKey}</Typography.Text>{watchedScope === "CURRENT_PAGE" ? ` · 当前页 ${page} / ${pageSize} 行` : ""}</Typography.Text>
@@ -233,7 +232,7 @@ export function AnalyticsExportPanel({ context, ruleContext, testStage, focusDat
             { key: "reason", label: "Reason Code", children: metadata.reason_code },
           ]} />
           {metadata.download_enabled
-            ? <Alert type="success" showIcon message="制品已通过服务端下载门禁" description="文件通过固定认证端点下载；服务端在返回前校验 Job 状态、TTL、制品记录和完整性。" />
+            ? <Alert type="success" showIcon message="制品可下载" />
             : <Alert type="warning" showIcon message="制品不可下载" description={`Reason Code：${metadata.reason_code}`} />}
           {downloadMutation.error && <Alert type="error" showIcon message="制品下载失败" description={downloadMutation.error.message} />}
           <Table rowKey="export_artifact_id" size="small" pagination={false} dataSource={metadata.artifacts} columns={[

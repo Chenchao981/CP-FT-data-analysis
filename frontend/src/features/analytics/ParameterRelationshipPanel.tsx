@@ -18,6 +18,7 @@ import {
   type ParameterTrendPoint,
 } from "../../api/parameterRelationship";
 import { EChart, type EChartEventMap } from "../../components/EChart";
+import { AnalysisResultFrame } from "../../components/AnalysisResultFrame";
 import { drilldownKeyFromChartEvent } from "./chartDrilldown";
 import { ANALYSIS_COMPONENT_DEFAULTS, type ParameterRelationshipViewConfig } from "./context/analysisViewConfig";
 import type { AnalysisDisplayState } from "./context/analysisViewState";
@@ -476,9 +477,10 @@ export function ParameterRelationshipPanel({
   const correlationCapability = mutation.data?.capabilities.find((item) => item.code === "PARAMETER_CORRELATION");
   const parameterChoices = selectOptions([...parameterOptions, ...suggestedParameters, xParameter, ...yParameters].filter(Boolean));
 
-  return <Card
+  return <AnalysisResultFrame
     title="参数关系与趋势"
-    extra={<Tag color="blue">X 1 个 · Y 1–5 个 · 后端权威计算</Tag>}
+    scope="FORMAL"
+    extra={<Tag color="blue">X 1 个 · Y 1–5 个</Tag>}
     className="production-table-card"
   >
     <Row gutter={[12, 12]}>
@@ -509,7 +511,6 @@ export function ParameterRelationshipPanel({
         type={correlationRuleCode && correlationRuleVersion ? "success" : "warning"}
         showIcon
         message={correlationRuleCode && correlationRuleVersion ? `当前相关性规则：${correlationRuleCode}@${correlationRuleVersion}` : "没有找到唯一可用的相关性规则"}
-        description={correlationRuleCode && correlationRuleVersion ? "服务器会在执行时核对当前厂家、产品和参数范围。" : "请联系管理员启用规则后刷新。"}
       />
       <Collapse style={{ marginTop: 12 }} size="small" items={[{ key: "rule", label: "高级设置：查看或调试规则版本", children: <Row gutter={[12, 12]}>
         <Col xs={24} md={12}><Typography.Text strong>规则编号</Typography.Text><Input aria-label="Correlation Rule Code" value={correlationRuleCode} onChange={(event) => onConfigChange({ correlation: { ...config.correlation, ruleCode: event.target.value.toUpperCase() } })} placeholder="系统自动匹配" /></Col>
@@ -518,11 +519,10 @@ export function ParameterRelationshipPanel({
     </>}
     <Space wrap style={{ marginTop: 12 }}>
       <Button type="primary" aria-label="执行参数关系分析" loading={mutation.isPending} disabled={!canRun} onClick={execute}>执行参数关系分析</Button>
-      <Typography.Text type="secondary">完整沿用统一 Context 的 8 组筛选；结果的配对、采样、OOS 保留和 Correlation 均由后端决定。</Typography.Text>
     </Space>
     {!xParameter && <Alert type="info" showIcon message="请选择 X 参数" style={{ marginTop: 12 }} />}
     {!yParameters.length && <Alert type="info" showIcon message="请选择至少 1 个 Y 参数" style={{ marginTop: 12 }} />}
-    {isStale && <Alert type="warning" showIcon message="当前参数关系结果已过期" description="Context、X/Y、分析类型、分组或 Max Points 已变化；旧结果保留供核对，需手动重新执行。" style={{ marginTop: 12 }} />}
+    {isStale && <Alert type="warning" showIcon message="参数关系结果已过期，请重新执行" style={{ marginTop: 12 }} />}
     {mutation.isError && <Alert
       type="error"
       showIcon
@@ -591,7 +591,6 @@ export function ParameterRelationshipPanel({
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
           <Select aria-label="Scatter Y 参数" value={scatterY} options={selectOptions(returnedYParameters)} onChange={(value) => onConfigChange({ scatterDataset: "", scatterY: value })} style={{ minWidth: 220 }} />
           {selectedScatter.length ? <EChart option={scatterOption} ariaLabel={`${xParameter} / ${scatterY} Scatter`} onEvents={chartEvents} /> : <Empty description="当前显示条件无 Scatter 点" />}
-          <Typography.Text type="secondary">红色点是后端按 Released Formal Spec 或测量状态标记的 X/Y out-of-spec；虚线只来自唯一且兼容的 Released Formal Spec，绝不回退 Program Limit；点击只使用后端 drilldown_key 钻取。</Typography.Text>
         </Space>
       </Card>}
 
@@ -599,7 +598,7 @@ export function ParameterRelationshipPanel({
         <Space direction="vertical" size="middle" style={{ width: "100%" }}>
           <Select aria-label="Trend 参数" value={trendParameter} options={selectOptions(returnedTrendParameters)} onChange={(value) => onConfigChange({ trendParameter: value })} style={{ minWidth: 220 }} />
           {selectedTrend.length ? <EChart option={trendOption} ariaLabel={`${trendParameter} Trend`} onEvents={chartEvents} /> : <Empty description="当前显示条件无 Trend 点" />}
-          <Typography.Text type="secondary">X 轴使用后端稳定 ordinal；来源 Sequence 只在 Tooltip 中展示，重复值不会被合并。排序口径：{mutation.data.trend_order_basis}。</Typography.Text>
+          <Tag>排序 {mutation.data.trend_order_basis}</Tag>
         </Space>
       </Card>}
 
@@ -624,18 +623,17 @@ export function ParameterRelationshipPanel({
               />
             </Col>
             <Col xs={24} xl={8}>
-              <Typography.Text type="secondary">后端返回已选 2–6 参数的完整对称 N×N Matrix；阈值只筛选显示，不改 Pearson 或 Pairwise N。点击任意非对角单元格进入对应 Scatter。</Typography.Text>
             </Col>
           </Row>
           {correlationHeatmapData.length
             ? <EChart option={correlationOption} ariaLabel="Correlation Heatmap" onEvents={correlationEvents} />
             : <Empty description={`|r| ≥ ${displayState.correlationMinAbs} 的可用 Correlation 为 0`} />}
-          <Typography.Text type="secondary">Heatmap 显示 {correlationHeatmapData.length} / {scopeCorrelations.length} 个当前 Matrix 单元；下表保留所有 Dataset/分组的 Pairwise N、状态、方法和不可评估原因。</Typography.Text>
+          <Tag>显示 {correlationHeatmapData.length} / {scopeCorrelations.length}</Tag>
         <Table rowKey={(row) => `${row.dataset_id}:${row.version_no}:${row.group_key}:${row.x_parameter}:${row.y_parameter}`} columns={correlationColumns} dataSource={allCorrelations} pagination={false} size="small" scroll={{ x: 1620 }} locale={{ emptyText: <Empty description="后端未返回 Correlation 结果" /> }} />
         </Space>
       </Card>}
 
       {!identityRows.length && !allScatterPoints.length && !allTrendPoints.length && !allCorrelations.length && <Empty description="当前范围无参数关系结果" />}
     </Space>}
-  </Card>;
+  </AnalysisResultFrame>;
 }

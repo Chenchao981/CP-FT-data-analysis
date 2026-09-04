@@ -1,6 +1,6 @@
 import { BarChartOutlined, CheckSquareOutlined } from "@ant-design/icons";
 import { useQuery } from "@tanstack/react-query";
-import { Alert, Button, Card, Checkbox, Col, Empty, Radio, Row, Select, Space, Spin, Tag, Typography, message } from "antd";
+import { Alert, Button, Card, Checkbox, Col, Empty, Radio, Row, Select, Space, Spin, Typography, message } from "antd";
 import { useEffect, useMemo, useState } from "react";
 
 import { getAnalyticsShellContext } from "../../api/analytics";
@@ -29,15 +29,15 @@ export interface StageAnalysisLauncherProps {
 const MAX_DATASETS = 8;
 const MAX_PARAMETERS = 20;
 
-const chartOptions: Array<{ label: string; value: StageChartType; description: string }> = [
-  { label: "描述统计", value: "DESCRIPTIVE", description: "数量、均值、标准差与范围" },
-  { label: "箱线图", value: "BOX_PLOT", description: "批次间分布与离群点" },
-  { label: "直方图", value: "HISTOGRAM", description: "参数分布与规格位置" },
-  { label: "正态拟合", value: "NORMAL_FIT", description: "观察值与正态拟合" },
-  { label: "能力分析", value: "CAPABILITY", description: "Cp/Cpk 等能力指标" },
-  { label: "散点图", value: "SCATTER", description: "两个参数的关系" },
-  { label: "趋势图", value: "TREND", description: "参数随顺序变化" },
-  { label: "相关性矩阵", value: "CORRELATION", description: "多参数相关程度" },
+const chartOptions: Array<{ label: string; value: StageChartType }> = [
+  { label: "描述统计", value: "DESCRIPTIVE" },
+  { label: "箱线图", value: "BOX_PLOT" },
+  { label: "直方图", value: "HISTOGRAM" },
+  { label: "正态拟合", value: "NORMAL_FIT" },
+  { label: "能力分析", value: "CAPABILITY" },
+  { label: "散点图", value: "SCATTER" },
+  { label: "趋势图", value: "TREND" },
+  { label: "相关性矩阵", value: "CORRELATION" },
 ];
 
 const hasDataset = (row: StageResultRow) => row.dataset_id != null && row.dataset_version_no != null;
@@ -87,22 +87,23 @@ export function StageAnalysisLauncher({ testStage, rows, loading, currentLogin, 
   }, [product]);
 
   const contextQuery = useQuery({
-    queryKey: ["stage-analysis-options", testStage, selectedDatasets, lots],
+    queryKey: ["stage-analysis-options", testStage, selectedDatasets, lots, parameters],
     queryFn: () => getAnalyticsShellContext({
       datasets: selectedDatasets,
       filters: {
         lot_ids: [...lots], wafer_ids: [], bin_codes: [], overall_results: [], source_ids: [],
         tester_ids: [], program_versions: [], test_conditions: [],
       },
-      parameters: [],
+      parameters: [...parameters],
       focus_dataset_id: selectedDatasets[0].dataset_id,
       max_points: 100,
     }),
     enabled: selectedDatasets.length > 0,
+    placeholderData: (previous) => previous,
     retry: false,
   });
   const availableParameters = useMemo(() => contextQuery.data?.options.parameters ?? [], [contextQuery.data?.options.parameters]);
-  const ruleVersions = contextQuery.data?.rule_context?.evaluation_rule_versions ?? [];
+  const ruleVersions = contextQuery.data?.rule_context?.applicable_rule_versions ?? [];
   const chartAvailable = (chartType: StageChartType) => {
     if (chartType === "DESCRIPTIVE" || chartType === "SCATTER" || chartType === "TREND") return true;
     return resolveContextRule(ruleVersions, chartType) !== null;
@@ -141,9 +142,8 @@ export function StageAnalysisLauncher({ testStage, rows, loading, currentLogin, 
   const personalCount = analyzableRows.filter((row) => !isServerResult(row, currentLogin) && row.uploader_login === currentLogin).length;
   const serverCount = analyzableRows.filter((row) => isServerResult(row, currentLogin)).length;
 
-  return <Card className="stage-analysis-launcher" title={<Space><BarChartOutlined /><span>选择数据并绘制图表</span></Space>} extra={<Tag color="blue">点击绘制后才计算</Tag>}>
+  return <Card className="stage-analysis-launcher" title={<Space><BarChartOutlined /><span>选择数据并绘制图表</span></Space>}>
     {contextHolder}
-    <Typography.Paragraph type="secondary">按“数据来源 → 产品 → 多批次 → 多参数 → 图形”选择。页面不会自动计算和绘图，避免打开 CP/FT 页面时卡顿。</Typography.Paragraph>
     <div className="stage-analysis-steps">
       <section>
         <Typography.Text strong>1. 数据来源</Typography.Text>
@@ -158,13 +158,13 @@ export function StageAnalysisLauncher({ testStage, rows, loading, currentLogin, 
           <Select aria-label={`${testStage}分析产品`} showSearch allowClear value={product} options={products.map((value) => ({ label: value, value }))} onChange={setProduct} className="full-width" placeholder="先选择产品" notFoundContent={loading ? <Spin size="small" /> : "当前来源没有可分析数据"} />
         </Col>
         <Col xs={24} lg={14}>
-          <Typography.Text strong>3. 批次号（可多选，最多 {MAX_DATASETS} 个数据集）</Typography.Text>
+          <Typography.Text strong>3. 批次号（最多 {MAX_DATASETS} 个）</Typography.Text>
           <Select aria-label={`${testStage}分析批次`} mode="multiple" allowClear maxCount={MAX_DATASETS} value={lots} options={lotOptions} onChange={(values) => setLots(values.slice(0, MAX_DATASETS))} className="full-width" placeholder={product ? "选择一个或多个批次" : "请先选择产品"} disabled={!product} />
         </Col>
       </Row>
       {selectedDatasets.length > 0 && <section>
         <Space wrap className="stage-analysis-section-title">
-          <Typography.Text strong>4. 参数（复选框多选）</Typography.Text>
+          <Typography.Text strong>4. 参数</Typography.Text>
           <Button size="small" icon={<CheckSquareOutlined />} disabled={!availableParameters.length} onClick={() => setParameters(availableParameters.slice(0, MAX_PARAMETERS))}>全选{availableParameters.length > MAX_PARAMETERS ? `前 ${MAX_PARAMETERS} 项` : ""}</Button>
           <Button size="small" disabled={!parameters.length} onClick={() => setParameters([])}>清空</Button>
           <Typography.Text type="secondary">已选 {parameters.length} / {Math.min(availableParameters.length, MAX_PARAMETERS)}</Typography.Text>
@@ -178,15 +178,13 @@ export function StageAnalysisLauncher({ testStage, rows, loading, currentLogin, 
         <Checkbox.Group value={chartTypes} onChange={(values) => setChartTypes(values as StageChartType[])} className="stage-chart-checkbox-grid">
           {chartOptions.map((option) => {
             const available = chartAvailable(option.value);
-            return <Checkbox key={option.value} value={option.value} disabled={!available}><span>{option.label}</span><Typography.Text type="secondary"> · {available ? option.description : "当前数据未配置对应规则"}</Typography.Text></Checkbox>;
+            return <Checkbox key={option.value} value={option.value} disabled={!available}>{option.label}{!available ? "（不可用）" : ""}</Checkbox>;
           })}
         </Checkbox.Group>
-        {relationSelected && <Typography.Text type="secondary">散点/趋势首屏使用已选的前 2 个参数（第 1 个为 X，第 2 个为 Y）并限制 500 点，先快速出图；进入分析页后可继增加 Y 参数和采样点数。</Typography.Text>}
       </section>}
     </div>
     <Space wrap className="stage-analysis-actions">
       <Button type="primary" size="large" icon={<BarChartOutlined />} disabled={!canDraw} onClick={draw}>绘制所选图表</Button>
-      <Typography.Text type="secondary">将打开统一分析页并只执行本次选择；数据与算法仍由服务器端处理。</Typography.Text>
     </Space>
   </Card>;
 }

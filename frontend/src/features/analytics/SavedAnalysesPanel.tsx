@@ -94,7 +94,7 @@ export function SavedAnalysesPanel({ context, ruleContext, page, pageSize, focus
       change_reason: values.reason,
     }),
     onSuccess: async (record) => {
-      setSuccess(`Saved Analysis #${record.saved_analysis_id} / Revision ${record.current_revision_no} 已保存`);
+      setSuccess(`分析方案 #${record.saved_analysis_id} / 版本 ${record.current_revision_no} 已保存`);
       form.resetFields();
       await refresh();
     },
@@ -108,7 +108,7 @@ export function SavedAnalysesPanel({ context, ruleContext, page, pageSize, focus
     }),
     onSuccess: async (record) => {
       setSelected(record);
-      setSuccess(`Saved Analysis #${record.saved_analysis_id} 已更新至 Revision ${record.current_revision_no}`);
+      setSuccess(`分析方案 #${record.saved_analysis_id} 已更新至版本 ${record.current_revision_no}`);
       setRevisionReason("");
       await refresh();
     },
@@ -119,7 +119,7 @@ export function SavedAnalysesPanel({ context, ruleContext, page, pageSize, focus
       reason: deleteReason.trim(),
     }),
     onSuccess: async (record) => {
-      setSuccess(`Saved Analysis #${record.saved_analysis_id} 已逻辑删除`);
+      setSuccess(`分析方案 #${record.saved_analysis_id} 已逻辑删除`);
       setSelected(null);
       setDeleteReason("");
       await refresh();
@@ -139,21 +139,20 @@ export function SavedAnalysesPanel({ context, ruleContext, page, pageSize, focus
     </Space> },
   ], [canWrite, onRestore]);
 
-  return <Card title="Saved Analysis（版本化 Context）" extra={<Button icon={<ReloadOutlined />} onClick={() => void query.refetch()} loading={query.isFetching}>刷新</Button>}>
+  return <Card title="图表组合方案" extra={<Button icon={<ReloadOutlined />} onClick={() => void query.refetch()} loading={query.isFetching}>刷新</Button>}>
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
-      <Alert type="info" showIcon message="只允许 CURRENT 一键恢复" description="NON_CURRENT、RULE_CHANGED、ACCESS_REVOKED 会保留可审计记录，但前端不会静默改用新 Dataset 或新规则。" />
-      {!canWrite && <Alert type="warning" showIcon message="只读模式" description="当前角色可查看和恢复 Saved Analysis；新建、修订、删除还需要 ANALYSIS_RUN。" />}
+      {!canWrite && <Alert type="warning" showIcon message="只读模式" />}
       {success && <Alert type="success" showIcon closable onClose={() => setSuccess(undefined)} message={success} />}
-      {operationError && <Alert type="error" showIcon message="Saved Analysis 操作失败" description={operationError.message} />}
+      {operationError && <Alert type="error" showIcon message="分析方案操作失败" description={operationError.message} />}
       {canWrite && <Form<CreateValues> form={form} layout="vertical" initialValues={{ section: "overview" }} onFinish={(values) => createMutation.mutate({ ...values, analysisName: values.analysisName.trim(), reason: values.reason.trim() })}>
         <Space align="start" wrap>
           <Form.Item label="名称" name="analysisName" rules={[{ required: true, min: 1, max: 300 }]}><Input aria-label="Saved Analysis 名称" maxLength={300} style={{ width: 240 }} /></Form.Item>
           <Form.Item label="恢复目标 Section" name="section" rules={[{ required: true }]}><Select aria-label="Saved Analysis Section" options={sectionOptions} style={{ width: 180 }} /></Form.Item>
           <Form.Item label="变更原因" name="reason" rules={[{ required: true, min: 8, max: 1000 }]}><Input aria-label="Saved Analysis 变更原因" maxLength={1000} style={{ width: 320 }} /></Form.Item>
-          <Form.Item label=" "><Button htmlType="submit" type="primary" icon={<SaveOutlined />} loading={createMutation.isPending}>保存当前 Context</Button></Form.Item>
+          <Form.Item label=" "><Button htmlType="submit" type="primary" icon={<SaveOutlined />} loading={createMutation.isPending}>保存当前图表组合</Button></Form.Item>
         </Space>
       </Form>}
-      <Table<SavedAnalysisRecord> rowKey="saved_analysis_id" columns={columns} dataSource={query.data?.items ?? []} loading={query.isLoading} pagination={false} scroll={{ x: 1000 }} locale={{ emptyText: query.isError ? query.error.message : "暂无 Saved Analysis" }} />
+      <Table<SavedAnalysisRecord> rowKey="saved_analysis_id" columns={columns} dataSource={query.data?.items ?? []} loading={query.isLoading} pagination={false} scroll={{ x: 1000 }} locale={{ emptyText: query.isError ? query.error.message : "暂无图表组合方案" }} />
       {(query.data?.total ?? 0) > 0 && <Pagination current={listPage} pageSize={listPageSize} total={query.data?.total ?? 0} showSizeChanger pageSizeOptions={[10, 20, 50]} onChange={(nextPage, nextSize) => { setListPage(nextPage); setListPageSize(nextSize); }} />}
       {selected && <Card size="small" title={`管理 #${selected.saved_analysis_id} / R${selected.current_revision_no}`}>
         <Space direction="vertical" style={{ width: "100%" }}>
