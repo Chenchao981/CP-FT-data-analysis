@@ -669,11 +669,23 @@ inputs = [Path(item) for item in json.loads(os.environ['TMS_EXISTING_CLEANER_INP
 output = os.environ['TMS_EXISTING_CLEANER_OUTPUT']
 if all(path.is_file() and path.suffix.lower() in ('.xls', '.xlsx') for path in inputs):
     with tempfile.TemporaryDirectory(prefix='tms_cp_guoyu_files_') as temporary:
-        directory = Path(temporary) / 'SOURCE' / 'EDS'
-        directory.mkdir(parents=True)
+        product_directories = set()
         for path in inputs:
+            lot_directory = path.parent
+            if lot_directory.name.upper().startswith('EDS') or lot_directory.name.upper() in ('DATA', '数据'):
+                lot_directory = lot_directory.parent
+            product_directory = lot_directory.parent
+            product_name = product_directory.name or 'SOURCE'
+            lot_name = lot_directory.name or 'SOURCE'
+            product_directories.add(product_name)
+            directory = Path(temporary) / product_name / lot_name / 'EDS'
+            directory.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, directory / path.name)
-        result = process_guoyu_directory(str(directory.parent), output)
+        if len(product_directories) != 1:
+            raise ValueError('Guoyu FRD single-file inputs must belong to one product directory')
+        result = process_guoyu_directory(
+            str(Path(temporary) / next(iter(product_directories))), output
+        )
 else:
     with prepare_archive_input(
         inputs,

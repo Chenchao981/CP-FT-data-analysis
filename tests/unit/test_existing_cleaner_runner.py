@@ -9,12 +9,22 @@ from pathlib import Path
 import pytest
 from app.domain.cleaner_registry import CleanerRelease
 from app.infrastructure.existing_cleaner_runner import (
+    _CP_GUOYU_SCRIPT,
     _FT_DIANJI_POWERTECH_SCRIPT,
     _FT_RIYUEGUANG_DC_SCRIPT,
     _FT_RIYUEXIN_DC_SCRIPT,
     CleanerInputRequired,
     ExistingCleanerRunner,
 )
+
+
+def test_guoyu_single_file_adapter_preserves_product_and_batch_directories() -> None:
+    assert "lot_directory = path.parent" in _CP_GUOYU_SCRIPT
+    assert "lot_directory = lot_directory.parent" in _CP_GUOYU_SCRIPT
+    assert "product_directory = lot_directory.parent" in _CP_GUOYU_SCRIPT
+    assert "Path(temporary) / product_name / lot_name / 'EDS'" in _CP_GUOYU_SCRIPT
+    assert "process_guoyu_directory(" in _CP_GUOYU_SCRIPT
+    assert "str(Path(temporary) / next(iter(product_directories)))" in _CP_GUOYU_SCRIPT
 
 
 def _runtime(tmp_path: Path) -> tuple[Path, Path, Path]:
