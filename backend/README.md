@@ -46,12 +46,8 @@ Import-TmsRuntimeConfig -Path (Join-Path $PWD '.env.runtime.ps1')
 # 新厂家/新包应按厂家单独登记，避免把其他已验收路由静默切到当前共享包：
 & .\.conda-env\python.exe scripts\g0\bootstrap_existing_cleaner_releases.py --factory DIANJI
 
-# 持续更新的包先登记为不可执行候选；DRAFT 不会被正式入库或个人工具选中：
-& .\.conda-env\python.exe scripts\g0\bootstrap_existing_cleaner_releases.py --factory LION --release-status DRAFT
-
-# Golden 对账后先做只读校验；只有显式加 --promote 才会切换为 RELEASED：
-& .\.conda-env\python.exe scripts\g0\promote_cleaner_release.py --release-id <candidate-release-id> --expected-sha256 <approved-sha256>
-& .\.conda-env\python.exe scripts\g0\promote_cleaner_release.py --release-id <candidate-release-id> --expected-sha256 <approved-sha256> --promote
+# CP/FT 工具发布目录中的包视为正式版；TMS 校验 SHA 后直接登记使用：
+& .\.conda-env\python.exe scripts\g0\bootstrap_existing_cleaner_releases.py --factory LION
 ```
 
 接口：

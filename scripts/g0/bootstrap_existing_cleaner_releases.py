@@ -283,21 +283,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Explicitly register every configured Cleaner definition",
     )
-    parser.add_argument(
-        "--release-status",
-        choices=("DRAFT", "RELEASED"),
-        default="RELEASED",
-        help=(
-            "Register a non-runnable DRAFT candidate or a runnable RELEASED "
-            "version; defaults to RELEASED for backward compatibility"
-        ),
-    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
-    release_status = str(args.release_status).strip().upper()
     database_url = os.environ.get("TMS_DATABASE_URL")
     if not database_url:
         raise RuntimeError("TMS_DATABASE_URL is required")
@@ -465,7 +455,6 @@ def main(argv: list[str] | None = None) -> None:
                 "timeout_seconds": definition.timeout_seconds,
                 "max_output_bytes": definition.max_output_bytes,
                 "approved_by": approved_by,
-                "release_status": release_status,
             }
             if release_id is None:
                 release_id = connection.execute(
@@ -476,9 +465,8 @@ def main(argv: list[str] | None = None) -> None:
                         "adapter_code,input_contract_version,output_contract_version,"
                         "execution_config_json,timeout_seconds,max_output_bytes) "
                         "OUTPUT INSERTED.cleaner_release_id VALUES("
-                        ":profile_id,:cleaner_code,:version,:checksum,:artifact_uri,:release_status,"
-                        "CASE WHEN :release_status='RELEASED' THEN :approved_by ELSE NULL END,"
-                        "CASE WHEN :release_status='RELEASED' THEN SYSUTCDATETIME() ELSE NULL END,"
+                        ":profile_id,:cleaner_code,:version,:checksum,:artifact_uri,'RELEASED',"
+                        ":approved_by,SYSUTCDATETIME(),"
                         ":runtime_uri,:entrypoint,:adapter_code,"
                         ":input_contract,:output_contract,:config,:timeout_seconds,"
                         ":max_output_bytes)"
@@ -487,7 +475,7 @@ def main(argv: list[str] | None = None) -> None:
                 ).scalar_one()
             else:
                 expected_contract = {
-                    "status": release_status,
+                    "status": "RELEASED",
                     "artifact_uri": values["artifact_uri"],
                     "runtime_uri": values["runtime_uri"],
                     "entrypoint": values["entrypoint"],
@@ -530,7 +518,7 @@ def main(argv: list[str] | None = None) -> None:
                     "stage": definition.stage,
                     "factory": definition.factory,
                     "version": version,
-                    "status": release_status,
+                    "status": "RELEASED",
                     "artifact_uri": str(artifact),
                     "output_contract": definition.output_contract,
                     "timeout_seconds": definition.timeout_seconds,

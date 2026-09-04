@@ -62,11 +62,6 @@ def test_bootstrap_requires_explicit_factory_selection() -> None:
     selected = _parse_args(["--factory", "DIANJI"])
     assert selected.factory == ["DIANJI"]
     assert selected.all is False
-    assert selected.release_status == "RELEASED"
-
-    draft = _parse_args(["--factory", "LION", "--release-status", "DRAFT"])
-    assert draft.factory == ["LION"]
-    assert draft.release_status == "DRAFT"
 
     repeated = _parse_args(
         ["--factory", "RIYUEXIN", "--factory", "DIANJI"]
