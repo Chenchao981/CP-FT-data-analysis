@@ -15,7 +15,7 @@ def _read(relative_path: str) -> str:
 def test_0025_is_single_head_and_allows_cp_ft_quick_sessions() -> None:
     config = Config(str(ROOT / "db" / "alembic" / "alembic.ini"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["sql2014_0025"]
+    assert script.get_heads() == ["sql2014_0026"]
     revision = script.get_revision("sql2014_0025")
     assert revision is not None
     assert revision.down_revision == "sql2014_0024"

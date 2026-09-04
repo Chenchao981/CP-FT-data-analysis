@@ -52,8 +52,8 @@ def parse_args() -> argparse.Namespace:
 def assert_lifecycle_write_target(database: dict[str, str]) -> None:
     if database.get("database") != "TMS_G0_DEV":
         raise RuntimeError("Analytics Export lifecycle E2E requires TMS_G0_DEV")
-    if database.get("schema_revision") != "sql2014_0025":
-        raise RuntimeError("Analytics Export lifecycle E2E requires sql2014_0025")
+    if database.get("schema_revision") != "sql2014_0026":
+        raise RuntimeError("Analytics Export lifecycle E2E requires sql2014_0026")
 
 
 def main() -> None:

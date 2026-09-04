@@ -25,8 +25,8 @@ from app.infrastructure.existing_cleaner_runner import (
     ExistingCleanerRunner,
 )
 from app.infrastructure.ft_xlsx_scatter_writer import FtXlsxScatterWriter
-from app.infrastructure.quick_pat_runner import QuickPatRunner
 from app.infrastructure.quick_result_export import QuickResultExportStore
+from app.infrastructure.quick_tool_runner import QuickToolRunner
 from app.infrastructure.source_catalog import SourceCatalog
 from app.infrastructure.sql_cleaner_registry import SqlCleanerRegistry
 from app.infrastructure.sql_stage_data_service import SqlStageDataService
@@ -46,13 +46,13 @@ class QuickPatHandler:
         quick_analysis: QuickAnalysisService,
         source_catalog: SourceCatalog,
         *,
-        runner: QuickPatRunner | None = None,
+        runner: QuickToolRunner | None = None,
         work_root: str | Path | None = None,
     ) -> None:
         self._registry = registry
         self._quick_analysis = quick_analysis
         self._source_catalog = source_catalog
-        self._runner = runner or QuickPatRunner()
+        self._runner = runner or QuickToolRunner()
         self._work_root = Path(
             work_root
             or os.getenv("TMS_QUICK_WORK_ROOT", r"F:\CP-FT数据分析\data\workspace")
@@ -69,7 +69,12 @@ class QuickPatHandler:
             self._quick_analysis.mark_running(session.analysis_session_id)
             if datetime.now(UTC) >= session.expires_at_utc:
                 raise RuntimeError("Quick PAT session expired before execution")
-            if session.analysis_type != "QUICK_PAT":
+            if session.analysis_type not in {
+                "QUICK_PAT",
+                "QUICK_CLEAN",
+                "QUICK_CHART",
+                "QUICK_SYL_SBL",
+            }:
                 raise RuntimeError(
                     f"unsupported Quick Analysis type: {session.analysis_type}"
                 )
@@ -99,11 +104,15 @@ class QuickPatHandler:
                     )
                 source, current_manifest = build_direct_path_manifest(
                     session.source_relative_path,
-                    allowed_suffixes=_direct_path_suffixes(release.adapter_code),
-                    allowed_single_file_suffixes=_direct_path_single_file_suffixes(
-                        release.adapter_code
+                    allowed_suffixes=_direct_path_suffixes(
+                        release.adapter_code, session.analysis_type
                     ),
-                    path_policy=_direct_path_manifest_policy(release.adapter_code),
+                    allowed_single_file_suffixes=_direct_path_single_file_suffixes(
+                        release.adapter_code, session.analysis_type
+                    ),
+                    path_policy=_direct_path_manifest_policy(
+                        release.adapter_code, session.analysis_type
+                    ),
                 )
             else:
                 root = self._source_catalog.require_scope(
@@ -142,6 +151,7 @@ class QuickPatHandler:
                 self._work_root / str(job.job_id) / f"attempt-{job.attempt_count}"
             )
             result = self._runner.run_release(
+                analysis_type=session.analysis_type,
                 release=release,
                 input_directory=source,
                 output_root=output_root,
@@ -151,11 +161,15 @@ class QuickPatHandler:
             if is_direct_path:
                 _completed_source, completed_manifest = build_direct_path_manifest(
                     session.source_relative_path,
-                    allowed_suffixes=_direct_path_suffixes(release.adapter_code),
-                    allowed_single_file_suffixes=_direct_path_single_file_suffixes(
-                        release.adapter_code
+                    allowed_suffixes=_direct_path_suffixes(
+                        release.adapter_code, session.analysis_type
                     ),
-                    path_policy=_direct_path_manifest_policy(release.adapter_code),
+                    allowed_single_file_suffixes=_direct_path_single_file_suffixes(
+                        release.adapter_code, session.analysis_type
+                    ),
+                    path_policy=_direct_path_manifest_policy(
+                        release.adapter_code, session.analysis_type
+                    ),
                 )
                 binding_changed = False
             else:
@@ -186,12 +200,12 @@ class QuickPatHandler:
                     (
                         artifact.path
                         for artifact in result.artifacts
-                        if artifact.role == "pat_report"
+                        if artifact.role in {"result_package", "pat_report"}
                     ),
                     None,
                 )
                 if report is None:
-                    raise RuntimeError("Quick PAT did not produce a report for export")
+                    raise RuntimeError("personal tool did not produce a result for export")
                 exported = self._result_export.export_report(
                     session.analysis_session_id, report
                 )
@@ -212,14 +226,24 @@ class QuickPatHandler:
             raise
         except Exception as exc:
             self._quick_analysis.mark_failed(
-                session.analysis_session_id, "QUICK_PAT_FAILED", str(exc)
+                session.analysis_session_id,
+                (
+                    "QUICK_PAT_FAILED"
+                    if session.analysis_type == "QUICK_PAT"
+                    else "QUICK_TOOL_FAILED"
+                ),
+                str(exc),
             )
             raise
         finally:
             self._result_export.discard(session.analysis_session_id)
 
 
-def _direct_path_suffixes(adapter_code: str) -> tuple[str, ...]:
+def _direct_path_suffixes(
+    adapter_code: str, analysis_type: str = "QUICK_PAT"
+) -> tuple[str, ...]:
+    if analysis_type == "QUICK_SYL_SBL":
+        return (".xls", ".xlsx")
     if adapter_code == "JIEQUN_FT_QUICK_PAT_PYZ":
         return (".csv",)
     if adapter_code == "RIYUEXIN_FT_QUICK_PAT_PYZ":
@@ -237,7 +261,11 @@ def _direct_path_suffixes(adapter_code: str) -> tuple[str, ...]:
     raise ValueError(f"unsupported direct-path PAT adapter: {adapter_code}")
 
 
-def _direct_path_manifest_policy(adapter_code: str) -> str:
+def _direct_path_manifest_policy(
+    adapter_code: str, analysis_type: str = "QUICK_PAT"
+) -> str:
+    if analysis_type == "QUICK_SYL_SBL":
+        return "ALL_MATCHING_SUFFIXES_V1"
     if adapter_code == "RIYUEXIN_FT_QUICK_PAT_PYZ":
         return "RIYUEXIN_RAW_DIRECTORY_V1"
     if adapter_code == "RIYUEGUANG_FT_QUICK_PAT_PYZ":
@@ -248,7 +276,11 @@ def _direct_path_manifest_policy(adapter_code: str) -> str:
     return "ALL_MATCHING_SUFFIXES_V1"
 
 
-def _direct_path_single_file_suffixes(adapter_code: str) -> tuple[str, ...]:
+def _direct_path_single_file_suffixes(
+    adapter_code: str, analysis_type: str = "QUICK_PAT"
+) -> tuple[str, ...]:
+    if analysis_type == "QUICK_SYL_SBL":
+        return (".xls", ".xlsx")
     if adapter_code == "HUAHONG_CP_PYZ":
         return (".zip", ".7z")
     if adapter_code in {"JETECH_CP_PYZ", "LION_CP_PYZ", "GUOYU_CP_PYZ"}:

@@ -2,7 +2,7 @@
 
 > 正式数据执行主线为 Route A；一次性PAT使用隔离的Quick Analysis Workspace。两条通道共享SQL队列和Worker，但只有正式导入写入Canonical。
 
-当前仓库唯一 Alembic head 为 `sql2014_0025`。开发库是否已升级必须在线核对数据库、服务器和 Revision；其他环境不能根据仓库文件名推断已升级。
+当前仓库唯一 Alembic head 为 `sql2014_0026`。开发库是否已升级必须在线核对数据库、服务器和 Revision；其他环境不能根据仓库文件名推断已升级。
 
 ## 开发环境
 

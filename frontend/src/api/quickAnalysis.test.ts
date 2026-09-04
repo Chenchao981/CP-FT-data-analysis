@@ -74,6 +74,7 @@ describe("quick analysis api", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
       path: preview.path,
       tool_code: preview.tool_code,
+      operation_code: "PAT",
     });
     expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/quick-analysis/direct-path/pat");
     expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toEqual({
@@ -96,6 +97,7 @@ describe("quick analysis api", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
       path: String.raw`F:\data`,
       tool_code: "HUAHONG_CP_QUICK_PAT_EXISTING",
+      operation_code: "PAT",
     });
   });
 

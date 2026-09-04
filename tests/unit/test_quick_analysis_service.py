@@ -154,7 +154,9 @@ def test_domain_grant_is_checked_again_before_success_is_recorded(
     assert captured.value.code == "QUICK_DATA_DOMAIN_ACCESS_REVOKED"
 
 
-def test_expired_result_is_not_downloadable(tmp_path: Path) -> None:
+def test_successful_result_remains_in_personal_history_after_session_deadline(
+    tmp_path: Path,
+) -> None:
     service = InMemoryQuickAnalysisService()
     alice = _principal(10, "alice")
     session = service.create(alice, _request(datetime.now(UTC) - timedelta(seconds=1)))
@@ -178,8 +180,6 @@ def test_expired_result_is_not_downloadable(tmp_path: Path) -> None:
     )
     assert (
         service.get_for_principal(session.analysis_session_id, alice).status
-        == QuickAnalysisStatus.EXPIRED
+        == QuickAnalysisStatus.SUCCESS
     )
-    with pytest.raises(DomainError) as captured:
-        service.result_artifact(session.analysis_session_id, alice)
-    assert captured.value.code == "QUICK_RESULT_EXPIRED"
+    assert service.result_artifact(session.analysis_session_id, alice).path == str(report)

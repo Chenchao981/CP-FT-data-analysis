@@ -56,13 +56,13 @@ class QuickResultExportStore:
             payload = json.loads(request_path.read_text(encoding="utf-8"))
             output_directory = Path(payload["output_directory"]).resolve()
         except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise RuntimeError("Quick PAT output request is invalid") from exc
+            raise RuntimeError("personal tool output request is invalid") from exc
         if not output_directory.is_dir():
-            raise RuntimeError("Quick PAT output directory is no longer available")
+            raise RuntimeError("personal tool output directory is no longer available")
 
         source = Path(report_path).resolve()
-        if not source.is_file() or source.suffix.lower() != ".xlsx":
-            raise RuntimeError("Quick PAT report is unavailable for local export")
+        if not source.is_file() or source.suffix.lower() not in {".xlsx", ".zip", ".html"}:
+            raise RuntimeError("personal tool result is unavailable for local export")
         target = self._unique_target(output_directory, source.name)
         shutil.copy2(source, target)
         return target.resolve()
@@ -87,4 +87,4 @@ class QuickResultExportStore:
             numbered = output_directory / f"{stem}_{serial:03d}{suffix}"
             if not numbered.exists():
                 return numbered
-        raise RuntimeError("Quick PAT output directory has too many duplicate reports")
+        raise RuntimeError("personal tool output directory has too many duplicate results")

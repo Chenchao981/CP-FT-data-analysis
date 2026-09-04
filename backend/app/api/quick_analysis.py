@@ -31,6 +31,7 @@ from app.domain.quick_analysis import (
     LOCAL_QUICK_PAT_OUTPUT_CONTRACT,
     LOCAL_QUICK_PAT_TOOL_CODE,
     CreateDirectPathPatRequest,
+    CreateDirectPathTaskRequest,
     CreateQuickPatRequest,
     DirectPathBrowseRequest,
     DirectPathPreviewRequest,
@@ -156,6 +157,43 @@ def _direct_path_visible_suffixes(contract: dict[str, object]) -> tuple[str, ...
             )
         )
     )
+
+
+def _direct_path_operation_contract(
+    contract: dict[str, object], operation_code: str
+) -> dict[str, object]:
+    operation = operation_code.strip().upper()
+    stage = str(contract["test_stage"])
+    factory = str(contract["factory_code"])
+    supported = {"PAT", "CLEAN"}
+    if stage == "CP" or factory in {"RIYUEXIN", "JIEQUN", "DIANJI"}:
+        supported.add("CHART")
+    if factory in {"RIYUEXIN", "JIEQUN", "DIANJI"}:
+        supported.add("SYL_SBL")
+    if operation not in supported:
+        raise DomainError(
+            "QUICK_OPERATION_UNSUPPORTED",
+            "当前厂家尚未提供所选个人分析功能",
+            422,
+        )
+    if operation == "SYL_SBL":
+        return {
+            **contract,
+            "allowed_suffixes": (".xls", ".xlsx"),
+            "single_file_suffixes": (".xls", ".xlsx"),
+            "manifest_policy": "ALL_MATCHING_SUFFIXES_V1",
+            "tool_name": f"{contract['tool_name']} · SBL/SYL",
+        }
+    return contract
+
+
+def _analysis_type(operation_code: str) -> str:
+    return {
+        "PAT": "QUICK_PAT",
+        "CLEAN": "QUICK_CLEAN",
+        "CHART": "QUICK_CHART",
+        "SYL_SBL": "QUICK_SYL_SBL",
+    }[operation_code.strip().upper()]
 
 
 def _direct_path_release(request: Request, tool_code: str):
@@ -288,7 +326,9 @@ def preview_direct_path(
     request: Request,
     _principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
 ) -> dict[str, object]:
-    contract = _direct_path_tool(payload.tool_code)
+    contract = _direct_path_operation_contract(
+        _direct_path_tool(payload.tool_code), payload.operation_code
+    )
     release = _direct_path_release(request, payload.tool_code)
     if payload.tool_code == LOCAL_QUICK_PAT_TOOL_CODE:
         validate_local_quick_pat_release(release)
@@ -300,6 +340,12 @@ def preview_direct_path(
         ),
         path_policy=str(contract["manifest_policy"]),
     )
+    if payload.operation_code == "SYL_SBL" and not source.is_file():
+        raise DomainError(
+            "QUICK_SYL_SBL_FILE_REQUIRED",
+            "SBL/SYL 必须明确选择一个良率 Excel 文件",
+            422,
+        )
     return {
         "path": str(source),
         "source_label": manifest.source_label,
@@ -329,7 +375,9 @@ def browse_local_path(
     payload: DirectPathBrowseRequest,
     _principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
 ) -> dict[str, object]:
-    contract = _direct_path_tool(payload.tool_code)
+    contract = _direct_path_operation_contract(
+        _direct_path_tool(payload.tool_code), payload.operation_code
+    )
     return browse_direct_path(
         payload.path,
         allowed_suffixes=tuple(contract["allowed_suffixes"]),
@@ -345,7 +393,27 @@ def create_direct_path_pat(
     request: Request,
     principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
 ) -> dict[str, object]:
-    contract = _direct_path_tool(payload.tool_code)
+    payload.operation_code = "PAT"
+    return _create_direct_path_task(payload, request, principal)
+
+
+@router.post("/direct-path/tasks", status_code=status.HTTP_201_CREATED)
+def create_direct_path_task(
+    payload: CreateDirectPathTaskRequest,
+    request: Request,
+    principal: Principal = Depends(require_permission("ANALYSIS_RUN")),  # noqa: B008
+) -> dict[str, object]:
+    return _create_direct_path_task(payload, request, principal)
+
+
+def _create_direct_path_task(
+    payload: CreateDirectPathTaskRequest | CreateDirectPathPatRequest,
+    request: Request,
+    principal: Principal,
+) -> dict[str, object]:
+    contract = _direct_path_operation_contract(
+        _direct_path_tool(payload.tool_code), payload.operation_code
+    )
     source, manifest = build_direct_path_manifest(
         payload.path,
         allowed_suffixes=tuple(contract["allowed_suffixes"]),
@@ -354,6 +422,12 @@ def create_direct_path_pat(
         ),
         path_policy=str(contract["manifest_policy"]),
     )
+    if payload.operation_code == "SYL_SBL" and not source.is_file():
+        raise DomainError(
+            "QUICK_SYL_SBL_FILE_REQUIRED",
+            "SBL/SYL 必须明确选择一个良率 Excel 文件",
+            422,
+        )
     if not manifest.matches_confirmation(
         mode=payload.source_manifest_mode,
         sha256=payload.source_manifest_sha256,
@@ -372,7 +446,7 @@ def create_direct_path_pat(
     session = quick_service(request).create(
         principal,
         NewQuickAnalysisSession(
-            analysis_type="QUICK_PAT",
+            analysis_type=_analysis_type(payload.operation_code),
             test_stage=str(contract["test_stage"]),
             factory_code=str(contract["factory_code"]),
             # LOCAL_AGENT is retained as the SQL compatibility value for personal
@@ -409,10 +483,13 @@ def create_direct_path_pat(
                 requested_by=principal.login_name,
                 requested_by_user_id=principal.user_id,
                 reason=(
-                    "直接读取当前 TMS 主机可访问目录并调用既有 "
-                    f"{contract['test_stage']} PAT 工具"
+                    "直接读取当前 TMS 主机可访问路径并调用既有 "
+                    f"{contract['test_stage']} {payload.operation_code} 工具"
                 ),
-                idempotency_key=f"direct-path-pat:{session.analysis_session_id}",
+                idempotency_key=(
+                    f"direct-path-{payload.operation_code.lower()}:"
+                    f"{session.analysis_session_id}"
+                ),
             ),
             principal,
         )
@@ -834,17 +911,17 @@ def download_quick_pat(
         ) == os.path.normcase(str(work_root))
     except ValueError:
         contained = False
-    if not contained or path.suffix.lower() != ".xlsx":
-        raise DomainError("QUICK_RESULT_PATH_INVALID", "PAT 结果存储路径无效", 409)
+    if not contained or path.suffix.lower() not in {".xlsx", ".zip", ".html"}:
+        raise DomainError("QUICK_RESULT_PATH_INVALID", "分析结果存储路径无效", 409)
     if not path.is_file():
-        raise DomainError("QUICK_RESULT_MISSING", "PAT 结果已不在存储位置", 404)
+        raise DomainError("QUICK_RESULT_MISSING", "分析结果已不在存储位置", 404)
     if (
         path.stat().st_size != artifact.size_bytes
         or _sha256_file(path) != artifact.sha256
     ):
         raise DomainError(
             "QUICK_RESULT_INTEGRITY_MISMATCH",
-            "PAT 结果文件与登记的大小或 SHA-256 不一致，已停止下载",
+            "分析结果文件与登记的大小或 SHA-256 不一致，已停止下载",
             409,
         )
     return FileResponse(path, filename=path.name)

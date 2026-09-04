@@ -58,7 +58,7 @@ from app.infrastructure.sql_spatial_analysis_service import SqlSpatialAnalysisSe
 from app.infrastructure.sql_wafer_summary_service import SqlWaferSummaryService
 
 EXPECTED_DATABASE = "TMS_G0_DEV"
-EXPECTED_SCHEMA_REVISION = "sql2014_0025"
+EXPECTED_SCHEMA_REVISION = "sql2014_0026"
 DEFAULT_WARMUP = 2
 DEFAULT_ITERATIONS = 30
 DEFAULT_CONCURRENCY = (1, 5)

@@ -18,6 +18,7 @@ from app.domain.quick_analysis import (
     QuickAnalysisSession,
     QuickAnalysisStatus,
     QuickAnalysisWorkItem,
+    primary_result_artifact,
 )
 from app.domain.quick_capacity import QuickCapacityPolicy
 from app.infrastructure.sql_visibility import (
@@ -47,9 +48,10 @@ LEFT JOIN ingestion.processing_job j ON j.analysis_session_id=s.analysis_session
 OUTER APPLY (
     SELECT TOP (1) pa.file_name,pa.file_size
     FROM ingestion.processing_artifact pa
-    WHERE pa.job_id=j.job_id AND pa.artifact_role='pat_report'
+    WHERE pa.job_id=j.job_id AND pa.artifact_role IN('result_package','pat_report')
       AND pa.physical_status='PRESENT'
-    ORDER BY pa.processing_artifact_id DESC
+    ORDER BY CASE WHEN pa.artifact_role='result_package' THEN 0 ELSE 1 END,
+             pa.processing_artifact_id DESC
 ) a
 """
 
@@ -400,17 +402,27 @@ class SqlQuickAnalysisService:
         self, analysis_session_id: int, principal: Principal
     ) -> QuickAnalysisSession:
         scope = " AND " + quick_read_scope_sql(session_alias="s")
-        with self._engine.connect() as connection:
-            row = (
-                connection.execute(
-                    text(
-                        SESSION_SELECT + " WHERE s.analysis_session_id=:session" + scope
-                    ),
-                    visibility_parameters(principal) | {"session": analysis_session_id},
-                )
-                .mappings()
-                .one_or_none()
-            )
+        for attempt in range(3):
+            try:
+                with self._engine.connect() as connection:
+                    row = (
+                        connection.execute(
+                            text(
+                                SESSION_SELECT
+                                + " WHERE s.analysis_session_id=:session"
+                                + scope
+                            ),
+                            visibility_parameters(principal)
+                            | {"session": analysis_session_id},
+                        )
+                        .mappings()
+                        .one_or_none()
+                    )
+                break
+            except DBAPIError as exc:
+                if attempt >= 2 or not _is_sql_server_deadlock(exc):
+                    raise
+                time.sleep(0.05 * (attempt + 1))
         if row is None:
             raise DomainError(
                 "QUICK_ANALYSIS_NOT_FOUND", "快速分析会话不存在或无权访问", 404
@@ -558,8 +570,8 @@ class SqlQuickAnalysisService:
         summary: dict[str, Any],
         artifacts: tuple[QuickAnalysisArtifact, ...],
     ) -> None:
-        if not any(item.role == "pat_report" for item in artifacts):
-            raise ValueError("pat_report artifact is required")
+        if primary_result_artifact(artifacts) is None:
+            raise ValueError("one primary result artifact is required")
         with self._engine.begin() as connection:
             session = self._locked_execution_session(connection, analysis_session_id)
             job_matches = connection.execute(
@@ -677,27 +689,38 @@ class SqlQuickAnalysisService:
         self, analysis_session_id: int, principal: Principal
     ) -> QuickAnalysisArtifact:
         scope = " AND " + quick_read_scope_sql(session_alias="s")
-        with self._engine.connect() as connection:
-            row = (
-                connection.execute(
-                    text(
-                        "SELECT TOP (1) pa.artifact_role,pa.storage_uri,pa.file_size,pa.sha256 "
-                        "FROM workspace.analysis_session s "
-                        "JOIN ingestion.processing_job j ON j.analysis_session_id=s.analysis_session_id "
-                        "JOIN ingestion.processing_artifact pa ON pa.job_id=j.job_id "
-                        "WHERE s.analysis_session_id=:session AND s.status='SUCCESS' "
-                        "AND pa.artifact_role='pat_report' "
-                        "AND pa.physical_status='PRESENT'"
-                        + scope
-                        + " ORDER BY pa.processing_artifact_id DESC"
-                    ),
-                    visibility_parameters(principal) | {"session": analysis_session_id},
-                )
-                .mappings()
-                .one_or_none()
-            )
+        for attempt in range(3):
+            try:
+                with self._engine.connect() as connection:
+                    row = (
+                        connection.execute(
+                            text(
+                                "SELECT TOP (1) pa.artifact_role,pa.storage_uri,"
+                                "pa.file_size,pa.sha256 "
+                                "FROM workspace.analysis_session s "
+                                "JOIN ingestion.processing_job j ON "
+                                "j.analysis_session_id=s.analysis_session_id "
+                                "JOIN ingestion.processing_artifact pa ON pa.job_id=j.job_id "
+                                "WHERE s.analysis_session_id=:session AND s.status='SUCCESS' "
+                                "AND pa.artifact_role IN('result_package','pat_report') "
+                                "AND pa.physical_status='PRESENT'"
+                                + scope
+                                + " ORDER BY CASE WHEN pa.artifact_role='result_package' "
+                                "THEN 0 ELSE 1 END,pa.processing_artifact_id DESC"
+                            ),
+                            visibility_parameters(principal)
+                            | {"session": analysis_session_id},
+                        )
+                        .mappings()
+                        .one_or_none()
+                    )
+                break
+            except DBAPIError as exc:
+                if attempt >= 2 or not _is_sql_server_deadlock(exc):
+                    raise
+                time.sleep(0.05 * (attempt + 1))
         if row is None:
-            raise DomainError("QUICK_RESULT_NOT_FOUND", "PAT 结果尚不可下载", 404)
+            raise DomainError("QUICK_RESULT_NOT_FOUND", "分析结果尚不可下载", 404)
         return QuickAnalysisArtifact(
             str(row["artifact_role"]),
             str(row["storage_uri"]),

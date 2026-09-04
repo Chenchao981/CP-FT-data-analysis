@@ -184,7 +184,7 @@ def test_production_preflight_accepts_strong_separated_runtime(tmp_path: Path) -
 
     assert completed.returncode == 0, completed.stderr + completed.stdout
     assert "VALID" in completed.stdout
-    assert "sql2014_0025" in completed.stdout
+    assert "sql2014_0026" in completed.stdout
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows production runtime contract")
@@ -514,7 +514,7 @@ def test_release_is_reproducible_inspected_and_launcher_smoked(tmp_path: Path) -
         == hashlib.sha256(second.read_bytes()).digest()
     )
     assert first_manifest == second_manifest
-    assert first_manifest["schema_revision"] == "sql2014_0025"
+    assert first_manifest["schema_revision"] == "sql2014_0026"
     inspected = inspect_release_archive(first)
     assert inspected == first_manifest
     with zipfile.ZipFile(first) as archive:
@@ -634,20 +634,20 @@ def test_release_runtime_smoke_accepts_only_exact_dev_ready_target() -> None:
         {
             "status": "ready",
             "database": "TMS_G0_DEV",
-            "schema_revision": "sql2014_0025",
+            "schema_revision": "sql2014_0026",
         }
     ) == {
         "status": "ready",
         "database": "TMS_G0_DEV",
-        "schema_revision": "sql2014_0025",
+        "schema_revision": "sql2014_0026",
     }
     for payload in (
         {
             "status": "starting",
             "database": "TMS_G0_DEV",
-            "schema_revision": "sql2014_0025",
+            "schema_revision": "sql2014_0026",
         },
-        {"status": "ready", "database": "NCE_TMS", "schema_revision": "sql2014_0025"},
+        {"status": "ready", "database": "NCE_TMS", "schema_revision": "sql2014_0026"},
         {
             "status": "ready",
             "database": "TMS_G0_DEV",

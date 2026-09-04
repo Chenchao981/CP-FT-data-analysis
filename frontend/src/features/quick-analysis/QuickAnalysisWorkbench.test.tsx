@@ -202,11 +202,11 @@ describe("QuickAnalysisWorkbench", () => {
 
     const button = await screen.findByRole(
       "button",
-      { name: /下载 PAT/ },
+      { name: /下载结果/ },
       { timeout: 5_000 },
     );
     fireEvent.click(button);
-    expect(await screen.findByText("PAT 下载失败")).toBeInTheDocument();
+    expect(await screen.findByText("结果下载失败")).toBeInTheDocument();
     expect(document.body).toHaveTextContent("如仍失败请联系系统管理员");
   }, 15_000);
 

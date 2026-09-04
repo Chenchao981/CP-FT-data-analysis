@@ -65,7 +65,7 @@ def main() -> int:
                     text("SELECT version_num FROM dbo.alembic_version")
                 ).scalar_one()
             )
-            if revision != "sql2014_0025":
+            if revision != "sql2014_0026":
                 raise RuntimeError(f"unexpected scratch schema revision: {revision}")
             required_objects = {
                 "iam.data_domain",

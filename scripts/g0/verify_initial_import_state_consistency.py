@@ -76,7 +76,7 @@ def main() -> None:
             revision = connection.execute(
                 text("SELECT version_num FROM alembic_version")
             ).scalar_one()
-            if revision != "sql2014_0025":
+            if revision != "sql2014_0026":
                 raise RuntimeError(f"unexpected schema revision: {revision}")
             active_initial_imports = int(
                 connection.execute(

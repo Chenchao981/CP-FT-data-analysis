@@ -48,6 +48,7 @@ class DirectPathPreviewRequest(BaseModel):
         "LION_CP_QUICK_PAT_EXISTING",
         "GUOYU_CP_QUICK_PAT_EXISTING",
     ] = "JIEQUN_FT_QUICK_PAT_EXISTING"
+    operation_code: Literal["PAT", "CLEAN", "CHART", "SYL_SBL"] = "PAT"
 
 
 class DirectPathBrowseRequest(BaseModel):
@@ -65,12 +66,17 @@ class DirectPathBrowseRequest(BaseModel):
         "LION_CP_QUICK_PAT_EXISTING",
         "GUOYU_CP_QUICK_PAT_EXISTING",
     ] = "JIEQUN_FT_QUICK_PAT_EXISTING"
+    operation_code: Literal["PAT", "CLEAN", "CHART", "SYL_SBL"] = "PAT"
 
 
 class CreateDirectPathPatRequest(DirectPathPreviewRequest):
     source_manifest_mode: Literal["LOCAL_PATH_SIZE_MTIME_V1"]
     source_manifest_sha256: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
     output_directory: str | None = Field(default=None, min_length=1, max_length=1000)
+
+
+class CreateDirectPathTaskRequest(CreateDirectPathPatRequest):
+    pass
 
 
 class TemporaryFtpPreviewRequest(BaseModel):
@@ -408,6 +414,16 @@ class QuickAnalysisArtifact:
     sha256: str
 
 
+def primary_result_artifact(
+    artifacts: tuple[QuickAnalysisArtifact, ...],
+) -> QuickAnalysisArtifact | None:
+    for role in ("result_package", "pat_report"):
+        artifact = next((item for item in artifacts if item.role == role), None)
+        if artifact is not None:
+            return artifact
+    return None
+
+
 class InMemoryQuickAnalysisService:
     def __init__(
         self,
@@ -604,12 +620,9 @@ class InMemoryQuickAnalysisService:
         with self._lock:
             item = self._required(analysis_session_id)
             self._assert_execution_authorized(item)
-            report = next(
-                (artifact for artifact in artifacts if artifact.role == "pat_report"),
-                None,
-            )
+            report = primary_result_artifact(artifacts)
             if report is None:
-                raise ValueError("pat_report artifact is required")
+                raise ValueError("one primary result artifact is required")
             self._artifacts[analysis_session_id] = artifacts
             self._items[analysis_session_id] = replace(
                 item,
@@ -672,17 +685,12 @@ class InMemoryQuickAnalysisService:
     ) -> QuickAnalysisArtifact:
         session = self.get_for_principal(analysis_session_id, principal)
         if session.status == QuickAnalysisStatus.EXPIRED:
-            raise DomainError("QUICK_RESULT_EXPIRED", "PAT 结果已过期", 410)
-        artifact = next(
-            (
-                item
-                for item in self._artifacts.get(analysis_session_id, ())
-                if item.role == "pat_report"
-            ),
-            None,
+            raise DomainError("QUICK_RESULT_EXPIRED", "分析结果已过期", 410)
+        artifact = primary_result_artifact(
+            self._artifacts.get(analysis_session_id, ())
         )
         if artifact is None:
-            raise DomainError("QUICK_RESULT_NOT_FOUND", "PAT 结果尚不可下载", 404)
+            raise DomainError("QUICK_RESULT_NOT_FOUND", "分析结果尚不可下载", 404)
         return artifact
 
     def _required(self, analysis_session_id: int) -> QuickAnalysisSession:

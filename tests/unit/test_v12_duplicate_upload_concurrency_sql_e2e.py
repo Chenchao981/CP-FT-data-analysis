@@ -19,13 +19,13 @@ class _FakeConnection:
 
 def test_v12_concurrency_database_guard_is_exact() -> None:
     verifier._assert_database_identity(
-        {"database": "TMS_G0_DEV", "schema_revision": "sql2014_0025"}
+        {"database": "TMS_G0_DEV", "schema_revision": "sql2014_0026"}
     )
-    with pytest.raises(RuntimeError, match="restricted to TMS_G0_DEV/sql2014_0025"):
+    with pytest.raises(RuntimeError, match="restricted to TMS_G0_DEV/sql2014_0026"):
         verifier._assert_database_identity(
-            {"database": "TMS_PROD", "schema_revision": "sql2014_0025"}
+            {"database": "TMS_PROD", "schema_revision": "sql2014_0026"}
         )
-    with pytest.raises(RuntimeError, match="restricted to TMS_G0_DEV/sql2014_0025"):
+    with pytest.raises(RuntimeError, match="restricted to TMS_G0_DEV/sql2014_0026"):
         verifier._assert_database_identity(
             {"database": "TMS_G0_DEV", "schema_revision": "sql2014_0018"}
         )
@@ -57,7 +57,7 @@ def test_v12_concurrency_e2e_has_exact_cleanup_and_no_filesystem_writes() -> Non
     ).read_text(encoding="utf-8")
 
     assert 'EXPECTED_DATABASE = "TMS_G0_DEV"' in source
-    assert 'EXPECTED_SCHEMA_REVISION = "sql2014_0025"' in source
+    assert 'EXPECTED_SCHEMA_REVISION = "sql2014_0026"' in source
     assert "ThreadPoolExecutor(max_workers=2)" in source
     assert "Barrier(2)" in source
     assert "WITH (UPDLOCK,HOLDLOCK)" in source

@@ -485,3 +485,58 @@ def test_quick_session_page_retries_one_sql_server_deadlock(monkeypatch) -> None
     assert page.total == 0
     assert page.items == ()
     assert engine.connect_calls == 2
+
+
+@pytest.mark.parametrize(
+    ("method_name", "error_code"),
+    [
+        ("get_for_principal", "QUICK_ANALYSIS_NOT_FOUND"),
+        ("result_artifact", "QUICK_RESULT_NOT_FOUND"),
+    ],
+)
+def test_quick_session_detail_and_download_retry_one_sql_server_deadlock(
+    monkeypatch, method_name: str, error_code: str
+) -> None:
+    class Connection:
+        def __init__(self, engine):
+            self.engine = engine
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, *_args, **_kwargs):
+            self.engine.execute_calls += 1
+            if self.engine.execute_calls == 1:
+                raise DBAPIError(
+                    "SELECT",
+                    {},
+                    RuntimeError("SQL Server deadlock victim (1205)"),
+                    False,
+                )
+            return _EmptyResult()
+
+    class Engine:
+        def __init__(self):
+            self.execute_calls = 0
+            self.connect_calls = 0
+
+        def connect(self):
+            self.connect_calls += 1
+            return Connection(self)
+
+    engine = Engine()
+    monkeypatch.setattr(
+        "app.infrastructure.sql_quick_analysis_service.time.sleep",
+        lambda _delay: None,
+    )
+    service = SqlQuickAnalysisService(engine)  # type: ignore[arg-type]
+    principal = Principal(8, "owner", "Owner", (), frozenset())
+
+    with pytest.raises(DomainError) as error:
+        getattr(service, method_name)(41, principal)
+
+    assert error.value.code == error_code
+    assert engine.connect_calls == 2

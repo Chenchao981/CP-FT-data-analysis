@@ -26,7 +26,7 @@ $workerReadyFile = Join-Path $stateDirectory 'worker.ready.json'
 $apiUrl = 'http://127.0.0.1:8000/api/v1/health/ready'
 $frontendUrl = 'http://127.0.0.1:5173/'
 $expectedDatabase = 'TMS_G0_DEV'
-$expectedSchemaRevision = 'sql2014_0025'
+$expectedSchemaRevision = 'sql2014_0026'
 
 . (Join-Path $PSScriptRoot 'TmsRuntime.Common.ps1')
 . (Join-Path $PSScriptRoot 'TmsLocalRuntime.Common.ps1')

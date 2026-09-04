@@ -47,7 +47,7 @@ export interface QuickAnalysisSession {
   access_scope: "PERSONAL" | "DOMAIN";
   data_domain_id: number | null;
   data_domain_code: string | null;
-  analysis_type: "QUICK_PAT";
+  analysis_type: "QUICK_PAT" | "QUICK_CLEAN" | "QUICK_CHART" | "QUICK_SYL_SBL";
   test_stage: "CP" | "FT";
   factory_code: string;
   source_root_code: string;
@@ -65,7 +65,7 @@ export interface QuickAnalysisSession {
   record_count: number | null;
   summary: {
     schema_version?: number;
-    analysis_type?: "QUICK_PAT";
+    analysis_type?: QuickAnalysisSession["analysis_type"];
     test_stage?: "CP" | "FT";
     factory_code?: string;
     input_contract?: string;
@@ -77,6 +77,9 @@ export interface QuickAnalysisSession {
     execution_mode?: "SERVER_CATALOG" | "LOCAL_AGENT";
     tool_code?: string;
     exported_result_path?: string;
+    generated_file_count?: number;
+    generated_files?: string[];
+    raw_source_retained?: boolean;
     parameters?: QuickPatParameterSummary[];
   } | null;
   result_file_name: string | null;
@@ -193,16 +196,26 @@ export type DirectPathToolCode =
   | "LION_CP_QUICK_PAT_EXISTING"
   | "GUOYU_CP_QUICK_PAT_EXISTING";
 
-export const previewDirectPath = (path: string, toolCode: DirectPathToolCode) =>
+export type DirectPathOperationCode = "PAT" | "CLEAN" | "CHART" | "SYL_SBL";
+
+export const previewDirectPath = (
+  path: string,
+  toolCode: DirectPathToolCode,
+  operationCode: DirectPathOperationCode = "PAT",
+) =>
   apiRequest<DirectPathPreview>(`${base}/direct-path/preview`, {
     method: "POST",
-    body: JSON.stringify({ path, tool_code: toolCode }),
+    body: JSON.stringify({ path, tool_code: toolCode, operation_code: operationCode }),
   });
 
-export const browseDirectPath = (path: string, toolCode: DirectPathToolCode) =>
+export const browseDirectPath = (
+  path: string,
+  toolCode: DirectPathToolCode,
+  operationCode: DirectPathOperationCode = "PAT",
+) =>
   apiRequest<DirectPathBrowseResult>(`${base}/direct-path/browse`, {
     method: "POST",
-    body: JSON.stringify({ path, tool_code: toolCode }),
+    body: JSON.stringify({ path, tool_code: toolCode, operation_code: operationCode }),
   });
 
 export const createDirectPathPat = (
@@ -214,6 +227,23 @@ export const createDirectPathPat = (
     body: JSON.stringify({
       path: preview.path,
       tool_code: preview.tool_code,
+      source_manifest_mode: preview.mode,
+      source_manifest_sha256: preview.sha,
+      output_directory: outputDirectory?.trim() || undefined,
+    }),
+  });
+
+export const createDirectPathTask = (
+  preview: DirectPathPreview,
+  operationCode: DirectPathOperationCode,
+  outputDirectory?: string,
+) =>
+  apiRequest<QuickAnalysisSession>(`${base}/direct-path/tasks`, {
+    method: "POST",
+    body: JSON.stringify({
+      path: preview.path,
+      tool_code: preview.tool_code,
+      operation_code: operationCode,
       source_manifest_mode: preview.mode,
       source_manifest_sha256: preview.sha,
       output_directory: outputDirectory?.trim() || undefined,

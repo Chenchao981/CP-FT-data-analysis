@@ -110,8 +110,8 @@ def main() -> None:
         else args.test_stage
     )
     database = check_database()
-    if database["schema_revision"] != "sql2014_0025":
-        raise RuntimeError("analytics export smoke requires sql2014_0025")
+    if database["schema_revision"] != "sql2014_0026":
+        raise RuntimeError("analytics export smoke requires sql2014_0026")
     engine = get_engine()
     with engine.connect() as connection:
         row = (

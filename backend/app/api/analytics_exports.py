@@ -24,7 +24,7 @@ def _services(request: Request) -> tuple[AnalyticsExportService, DatasetService]
     if exports is None or datasets is None:
         raise DomainError(
             "DATABASE_NOT_CONFIGURED",
-            "analytics export operations require TMS_DATABASE_URL/sql2014_0025",
+            "analytics export operations require TMS_DATABASE_URL/sql2014_0026",
             503,
         )
     return exports, datasets

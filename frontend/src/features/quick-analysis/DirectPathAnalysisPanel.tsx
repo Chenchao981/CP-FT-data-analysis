@@ -34,15 +34,16 @@ import { useMemo, useState } from "react";
 
 import {
   browseDirectPath,
-  createDirectPathPat,
+  createDirectPathTask,
   previewDirectPath,
   type DirectPathBrowseItem,
   type DirectPathPreview,
+  type DirectPathOperationCode,
   type DirectPathToolCode,
 } from "../../api/quickAnalysis";
 
 type WorkbenchStage = "CP" | "FT";
-type OperationCode = "CLEAN" | "CHART" | "PAT" | "SYL_SBL" | "DIE_COUNT";
+type OperationCode = DirectPathOperationCode | "DIE_COUNT";
 type BrowserPurpose = "INPUT" | "OUTPUT";
 
 interface OperationConfig {
@@ -65,7 +66,7 @@ const operation = (
   code: OperationCode,
   name: string,
   icon: React.ReactNode,
-  available = false,
+  available = true,
 ): OperationConfig => ({ code, name, icon, available });
 
 const patOperation = operation(
@@ -111,7 +112,7 @@ const FACTORIES: Record<WorkbenchStage, FactoryConfig[]> = {
         operation("CLEAN", "数据清洗", <DatabaseOutlined />),
         operation("CHART", "图表分析", <BarChartOutlined />),
         patOperation,
-        operation("DIE_COUNT", "管芯数汇总", <FileExcelOutlined />),
+        operation("DIE_COUNT", "管芯数汇总", <FileExcelOutlined />, false),
       ],
     },
     {
@@ -224,12 +225,20 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
   };
 
   const previewMutation = useMutation({
-    mutationFn: () => previewDirectPath(currentPaths.input, factory.toolCode),
+    mutationFn: () => previewDirectPath(
+      currentPaths.input,
+      factory.toolCode,
+      selected.code as DirectPathOperationCode,
+    ),
     onSuccess: (value) => setPreview(value),
     onError: (error) => { setPreview(undefined); messageApi.error(error.message); },
   });
   const browseMutation = useMutation({
-    mutationFn: (targetPath: string) => browseDirectPath(targetPath, factory.toolCode),
+    mutationFn: (targetPath: string) => browseDirectPath(
+      targetPath,
+      factory.toolCode,
+      selected.code as DirectPathOperationCode,
+    ),
     onSuccess: (value) => {
       setBrowserPath(value.path ?? "");
       setBrowserOpen(true);
@@ -237,9 +246,13 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
     onError: (error) => messageApi.error(error.message),
   });
   const runMutation = useMutation({
-    mutationFn: () => createDirectPathPat(preview!, currentPaths.output),
+    mutationFn: () => createDirectPathTask(
+      preview!,
+      selected.code as DirectPathOperationCode,
+      currentPaths.output,
+    ),
     onSuccess: (session) => {
-      messageApi.success(`个人 PAT ${session.analysis_session_id} 已进入后台队列，完成后结果保存到服务器历史记录`);
+      messageApi.success(`${selected.name}任务 ${session.analysis_session_id} 已进入后台队列`);
       onCreated();
     },
     onError: (error) => messageApi.error(error.message),
@@ -307,7 +320,7 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
     },
   ], [browserPurpose, browseMutation]);
 
-  const canRunPat = selected.code === "PAT" && Boolean(preview);
+  const canRun = selected.available && selected.code !== "DIE_COUNT" && Boolean(preview);
 
   return <div className="personal-tool-workbench">
     {contextHolder}
@@ -361,12 +374,12 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
             id="quick-input-path"
             aria-label="输入路径"
             value={currentPaths.input}
-            placeholder={String.raw`例如 F:\data\CP和FT源数据\...\产品目录或压缩包`}
+            placeholder={selected.code === "SYL_SBL" ? "选择一个良率 Excel 文件" : String.raw`例如 F:\data\CP和FT源数据\...\产品目录或压缩包`}
             onChange={(event) => updatePath("input", event.target.value)}
-            onPressEnter={() => selected.code === "PAT" && currentPaths.input.trim() && previewMutation.mutate()}
+            onPressEnter={() => selected.available && currentPaths.input.trim() && previewMutation.mutate()}
           />
           <Button icon={<FolderOpenOutlined />} loading={browseMutation.isPending && browserPurpose === "INPUT"} onClick={() => openBrowser("INPUT")}>预览选择</Button>
-          <Button icon={<SearchOutlined />} disabled={selected.code !== "PAT" || !currentPaths.input.trim()} loading={previewMutation.isPending} onClick={() => previewMutation.mutate()}>解析范围</Button>
+          <Button icon={<SearchOutlined />} disabled={!selected.available || selected.code === "DIE_COUNT" || !currentPaths.input.trim()} loading={previewMutation.isPending} onClick={() => previewMutation.mutate()}>解析范围</Button>
         </Space.Compact>
 
         <label htmlFor="quick-output-path">额外导出（可选）</label>
@@ -391,7 +404,7 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
           className={`${selected.code === item.code ? "operation-tile active" : "operation-tile"}${item.available ? "" : " pending"}`}
           aria-pressed={selected.code === item.code}
           disabled={!item.available}
-          onClick={() => { setSelectedOperation(item.code); setPreview(undefined); }}
+          onClick={() => { setSelectedOperation(item.code); setPreview(undefined); setBrowserPath(""); }}
         >
           <span className="operation-icon">{item.icon}</span>
           <span><strong>{item.name}</strong></span>
@@ -399,7 +412,7 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
         </button>)}
       </div>
 
-      {selected.code === "PAT" && preview && <Card
+      {selected.available && selected.code !== "DIE_COUNT" && preview && <Card
         size="small"
         type="inner"
         className="source-preview-card"
@@ -408,10 +421,10 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
           type="primary"
           size="large"
           icon={<PlayCircleOutlined />}
-          disabled={!canRunPat}
+          disabled={!canRun}
           loading={runMutation.isPending}
           onClick={() => runMutation.mutate()}
-        >开始后台 PAT</Button>}
+        >开始{selected.name}</Button>}
       >
         <Row gutter={[16, 16]}>
           <Col xs={24} md={8}><Statistic title="源文件" value={preview.file_count} /></Col>
@@ -422,7 +435,7 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
           <Tag color={preview.input_kind === "DIRECTORY" ? "blue" : "purple"}>{preview.input_kind === "DIRECTORY" ? "文件夹" : "单个文件"}</Tag>
           {preview.archive_count > 0 && <Tag color="purple">压缩包 {preview.archive_count} 个</Tag>}
           <Typography.Text><strong>输入：</strong><Typography.Text code copyable>{preview.path}</Typography.Text></Typography.Text>
-          <Typography.Text><strong>服务器结果：</strong>自动保存到个人历史</Typography.Text>
+          <Typography.Text><strong>服务器结果：</strong>自动保存到个人历史，原始文件不保留</Typography.Text>
           <Typography.Text><strong>额外导出：</strong><Typography.Text code copyable>{currentPaths.output || "不导出本地副本"}</Typography.Text></Typography.Text>
         </Space>
         <List
@@ -443,7 +456,7 @@ export function DirectPathAnalysisPanel({ onCreated }: { onCreated: () => void }
       onCancel={() => setBrowserOpen(false)}
       footer={<Space>
         <Button onClick={() => setBrowserOpen(false)}>取消</Button>
-        <Button type="primary" disabled={!browseMutation.data?.path} onClick={() => browseMutation.data?.path && chooseBrowserPath(browseMutation.data.path)}>
+        <Button type="primary" disabled={!browseMutation.data?.path || (browserPurpose === "INPUT" && selected.code === "SYL_SBL")} onClick={() => browseMutation.data?.path && chooseBrowserPath(browseMutation.data.path)}>
           {browserPurpose === "INPUT" ? "使用当前文件夹" : "选择当前文件夹"}
         </Button>
       </Space>}

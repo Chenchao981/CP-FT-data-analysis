@@ -48,7 +48,6 @@ import {
 } from "../../utils/dateTime";
 import { DirectPathAnalysisPanel } from "./DirectPathAnalysisPanel";
 import { LocalQuickAnalysisPanel } from "./LocalQuickAnalysisPanel";
-import { TemporaryFtpPanel } from "./TemporaryFtpPanel";
 import { PatResultView } from "../analytics/PatResultView";
 
 const statusColor: Record<string, string> = {
@@ -74,6 +73,12 @@ const size = (value?: number | null) => {
   return `${(value / 1024 / 1024 / 1024).toFixed(2)} GB`;
 };
 const count = (value?: number | null) => value == null ? "—" : value.toLocaleString("zh-CN");
+const analysisName: Record<QuickAnalysisSession["analysis_type"], string> = {
+  QUICK_PAT: "PAT 参数分析",
+  QUICK_CLEAN: "数据清洗",
+  QUICK_CHART: "图表分析",
+  QUICK_SYL_SBL: "SBL/SYL",
+};
 
 export function QuickAnalysisWorkbench() {
   const [rootCode, setRootCode] = useState<string>();
@@ -150,12 +155,13 @@ export function QuickAnalysisWorkbench() {
   const sessionColumns: ColumnsType<QuickAnalysisSession> = [
     { title: "会话", dataIndex: "analysis_session_id", width: 85, fixed: "left" },
     { title: "权限范围", dataIndex: "access_scope", width: 140, render: (value, row) => value === "PERSONAL" ? <Tag color="cyan">个人</Tag> : <Tag color="blue">数据域 {row.data_domain_code ?? `#${row.data_domain_id}`}</Tag> },
+    { title: "功能", dataIndex: "analysis_type", width: 130, render: (value) => analysisName[value as QuickAnalysisSession["analysis_type"]] ?? value },
     { title: "数据源", dataIndex: "source_root_code", width: 150, render: (value) => value === "LOCAL_AGENT" ? "本机 / 直连目录" : value },
     { title: "目录", dataIndex: "source_relative_path", width: 300, ellipsis: true },
     { title: "源文件", dataIndex: "source_file_count", width: 95, render: count },
     { title: "源数据量", dataIndex: "source_total_bytes", width: 115, render: size },
     { title: "状态", dataIndex: "status", width: 100, render: (value) => <Tag color={statusColor[value]}>{statusName[value] ?? value}</Tag> },
-    { title: "参数", dataIndex: "parameter_count", width: 85, render: count },
+    { title: "结果项", dataIndex: "parameter_count", width: 85, render: count },
     { title: "解析数据行", dataIndex: "record_count", width: 125, render: count },
     { title: "计算耗时", key: "elapsed", width: 105, render: (_, row) => row.summary?.elapsed_seconds == null ? "—" : `${row.summary.elapsed_seconds.toFixed(3)} 秒` },
     { title: "指定输出", key: "exported_result_path", width: 300, ellipsis: true, render: (_, row) => row.summary?.exported_result_path || "—" },
@@ -163,7 +169,7 @@ export function QuickAnalysisWorkbench() {
     { title: "创建时间", dataIndex: "created_at_utc", width: 175, render: formatUtcDateTime },
     { title: "结果保存", dataIndex: "retention_mode", width: 120, render: () => <Tag color="green">服务器历史</Tag> },
     { title: "错误", dataIndex: "error_message", width: 240, ellipsis: true, render: (value) => value || "—" },
-    { title: "操作", key: "actions", width: 100, fixed: "right", render: (_, row) => row.status === "SUCCESS" && row.result_file_name ? <Button type="link" size="small" icon={<DownloadOutlined />} loading={downloadMutation.isPending && downloadMutation.variables?.analysis_session_id === row.analysis_session_id} onClick={() => downloadMutation.mutate(row)}>下载 PAT</Button> : "—" },
+    { title: "操作", key: "actions", width: 100, fixed: "right", render: (_, row) => row.status === "SUCCESS" && row.result_file_name ? <Button type="link" size="small" icon={<DownloadOutlined />} loading={downloadMutation.isPending && downloadMutation.variables?.analysis_session_id === row.analysis_session_id} onClick={() => downloadMutation.mutate(row)}>下载结果</Button> : "—" },
   ];
   const selectedRoot = roots.data?.find((item) => item.code === rootCode);
 
@@ -213,11 +219,6 @@ export function QuickAnalysisWorkbench() {
               </>}
           </Card>,
         },
-        {
-          key: "temporary-ftp",
-          label: <Space><CloudServerOutlined />临时 FTP 预览</Space>,
-          children: <TemporaryFtpPanel />,
-        },
       ]}
     />
     <MetricStrip ariaLabel="个人工具任务状态" items={[
@@ -264,7 +265,7 @@ export function QuickAnalysisWorkbench() {
         ))}
       </Space>
       {sessions.isError && <Alert type="error" showIcon message="个人工具任务记录加载失败" description={sessions.error.message} />}
-      {downloadError && <Alert type="error" showIcon message="PAT 下载失败" description={`${downloadError}。请刷新记录后重试，如仍失败请联系系统管理员。`} style={{ marginBottom: 12 }} />}
+      {downloadError && <Alert type="error" showIcon message="结果下载失败" description={`${downloadError}。请刷新记录后重试，如仍失败请联系系统管理员。`} style={{ marginBottom: 12 }} />}
       <Table
         rowKey="analysis_session_id"
         columns={sessionColumns}
@@ -284,7 +285,7 @@ export function QuickAnalysisWorkbench() {
           setSessionPageSize(pagination.pageSize ?? 20);
         }}
         expandable={{
-          rowExpandable: (row) => row.status === "SUCCESS" && Boolean(row.summary?.parameters?.length),
+          rowExpandable: (row) => row.analysis_type === "QUICK_PAT" && row.status === "SUCCESS" && Boolean(row.summary?.parameters?.length),
           expandedRowRender: (row) => <PatResultView
             title={`${row.test_stage} · ${row.factory_code} · PAT分析结果`}
             labelTitle="测试参数"

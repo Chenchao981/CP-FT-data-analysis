@@ -209,6 +209,8 @@ class _OverviewConnection:
                 self.batch_evaluation_statement_count += 1
                 self.batch_evaluation_parameters = values
             return _Result(rows=[])
+        if "FROM evaluation.rule_set rs" in sql:
+            return _Result(rows=[])
         raise AssertionError(sql)
 
 

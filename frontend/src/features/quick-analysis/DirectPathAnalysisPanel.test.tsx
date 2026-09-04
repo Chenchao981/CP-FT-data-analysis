@@ -5,12 +5,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { browseDirectPath, createDirectPathPat, previewDirectPath } from "../../api/quickAnalysis";
+import { browseDirectPath, createDirectPathTask, previewDirectPath } from "../../api/quickAnalysis";
 import { DirectPathAnalysisPanel } from "./DirectPathAnalysisPanel";
 
 vi.mock("../../api/quickAnalysis", () => ({
   browseDirectPath: vi.fn(),
-  createDirectPathPat: vi.fn(),
+  createDirectPathTask: vi.fn(),
   previewDirectPath: vi.fn(),
 }));
 
@@ -73,7 +73,7 @@ describe("DirectPathAnalysisPanel", () => {
       ],
     });
     vi.mocked(previewDirectPath).mockResolvedValue(preview);
-    vi.mocked(createDirectPathPat).mockResolvedValue({ analysis_session_id: 27 } as never);
+    vi.mocked(createDirectPathTask).mockResolvedValue({ analysis_session_id: 27 } as never);
   });
 
   afterEach(() => {
@@ -100,23 +100,27 @@ describe("DirectPathAnalysisPanel", () => {
     await waitFor(() => expect(previewDirectPath).toHaveBeenCalledWith(
       String.raw`F:\cp-source\lot.zip`,
       "JETECH_CP_QUICK_PAT_EXISTING",
+      "PAT",
     ));
     expect(await screen.findByText("已确认解析范围：lot.zip")).toBeInTheDocument();
     expect(screen.getByText("压缩包 1 个")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /开始后台 PAT/ }));
-    await waitFor(() => expect(createDirectPathPat).toHaveBeenCalledWith(
+    fireEvent.click(screen.getByRole("button", { name: /开始PAT 参数分析/ }));
+    await waitFor(() => expect(createDirectPathTask).toHaveBeenCalledWith(
       preview,
+      "PAT",
       String.raw`F:\result`,
     ));
   }, 30_000);
 
-  it("separates CP and FT factories and disables unavailable operations", () => {
+  it("separates CP and FT factories and exposes implemented operations", () => {
     renderPanel();
 
     expect(screen.getByRole("button", { name: /日月新/ })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /华虹/ })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /FT 数据清洗/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /FT 数据清洗/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /FT 散点图/ })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /SBL & SYL/ })).toBeEnabled();
 
     fireEvent.click(screen.getByRole("button", { name: /CP 工具/ }));
     expect(screen.getByRole("button", { name: /华虹/ })).toBeInTheDocument();
@@ -132,8 +136,8 @@ describe("DirectPathAnalysisPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /解析范围/ }));
 
     expect(await screen.findByText("已确认解析范围：lot.zip")).toBeInTheDocument();
-    expect(screen.getByText("自动保存到个人历史")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /开始后台 PAT/ }));
-    await waitFor(() => expect(createDirectPathPat).toHaveBeenCalledWith(preview, ""));
+    expect(screen.getByText(/自动保存到个人历史/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /开始PAT 参数分析/ }));
+    await waitFor(() => expect(createDirectPathTask).toHaveBeenCalledWith(preview, "PAT", ""));
   }, 15_000);
 });
