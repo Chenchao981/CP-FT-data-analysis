@@ -680,6 +680,7 @@ def test_domain_member_job_creation_locks_current_authorization() -> None:
     assert "access_grant WITH (UPDLOCK,HOLDLOCK)" in authorization_sql
     assert "access_domain WITH (UPDLOCK,HOLDLOCK)" in authorization_sql
     assert "access_grant.expires_at_utc>SYSUTCDATETIME()" in authorization_sql
+    assert authorization_sql.count("(") == authorization_sql.count(")")
 
 
 def test_domain_member_job_creation_rejects_revoked_authorization() -> None:

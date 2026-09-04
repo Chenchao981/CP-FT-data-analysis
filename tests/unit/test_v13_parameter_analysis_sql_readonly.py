@@ -471,6 +471,18 @@ class CountingService:
         return self.response
 
 
+class SequenceService:
+    def __init__(self, responses: list[Any]) -> None:
+        self.responses = responses
+        self.calls = 0
+
+    def analyze_parameters(self, request) -> Any:
+        del request
+        response = self.responses[self.calls]
+        self.calls += 1
+        return response
+
+
 def test_invocations_default_shape_and_support_thirty_warm_runs() -> None:
     response = _response()
     service = CountingService(response)
@@ -491,6 +503,38 @@ def test_invocations_default_shape_and_support_thirty_warm_runs() -> None:
     assert all(item["sql_statement_count"] == 0 for item in evidence["invocations"])
     assert all("elapsed_ms" in item for item in evidence["invocations"])
     assert evidence["response_summary_sha256"]
+
+
+def test_invocations_ignore_sql_float_noise_below_reconciliation_tolerance() -> None:
+    first = _response()
+    second = _response()
+    second.items[0].parameters[0].descriptive.average += 4e-13
+    second.items[0].parameters[0].descriptive.sample_stddev -= 3e-13
+
+    _, evidence = _run_invocations(
+        SequenceService([first, second]),
+        _analysis_request(_candidate()),
+        ReadOnlyAudit(),
+        warm_runs=1,
+    )
+
+    assert evidence["status"] == "PASS"
+
+
+def test_invocations_reject_material_numeric_response_drift() -> None:
+    first = _response()
+    second = _response()
+    second.items[0].parameters[0].descriptive.average += 1e-5
+
+    _, evidence = _run_invocations(
+        SequenceService([first, second]),
+        _analysis_request(_candidate()),
+        ReadOnlyAudit(),
+        warm_runs=1,
+    )
+
+    assert evidence["status"] == "FAIL"
+    assert evidence["reason_code"] == "SERVICE_RESPONSE_DRIFT"
 
 
 def test_stage_absence_is_skip_not_pass() -> None:

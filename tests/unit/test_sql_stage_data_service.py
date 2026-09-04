@@ -204,6 +204,8 @@ def test_catalog_registration_rechecks_grant_and_writes_domain_ownership(
     assert "g.expires_at_utc>SYSUTCDATETIME()" in binding_sql
     assert "WITH (UPDLOCK,HOLDLOCK)" in binding_sql
     assert "SYSTEM_INGESTION" in binding_sql
+    assert "service_user.user_id" in binding_sql
+    assert "system_user" not in binding_sql.casefold()
     assert binding_params == {
         "data_domain_id": 17,
         "actor_user_id": 7,

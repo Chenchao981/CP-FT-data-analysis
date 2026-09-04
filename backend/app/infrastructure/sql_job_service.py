@@ -46,7 +46,7 @@ def _batch_job_input_scope_sql(*, batch_alias: str = "b") -> str:
             data_domain_column=f"{batch_alias}.data_domain_id",
             lock_authorization_rows=True,
         )
-        + "))))"
+        + ")))"
     )
 
 _LIFECYCLE_APPLOCK_BY_JOB_SQL = (

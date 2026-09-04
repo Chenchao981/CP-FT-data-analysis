@@ -279,7 +279,18 @@ def _client(
 
 
 class StubCleanerRegistry:
-    def latest_released(self, test_stage, factory_code):
+    def latest_released_for_contract(self, **contract):
+        test_stage = contract["test_stage"]
+        factory_code = contract["factory_code"]
+        assert contract["adapter_code"] in {
+            "HUAHONG_CP_PYZ",
+            "JETECH_CP_PYZ",
+            "LION_CP_PYZ",
+            "RIYUEXIN_FT_PYZ",
+            "RIYUEGUANG_FT_PYZ",
+            "DIANJI_FT_PYZ",
+        }
+        assert "QUICK_PAT" not in contract["adapter_code"]
         return CleanerRelease(
             cleaner_release_id=17 if test_stage == "CP" else 18,
             format_profile_id=7,

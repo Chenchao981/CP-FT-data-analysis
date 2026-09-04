@@ -972,7 +972,37 @@ def _response_digest(response: Any) -> str:
     if isinstance(payload, dict):
         payload = dict(payload)
         payload.pop("computed_at", None)
-    return _redacted_digest("v13-parameter-analysis-response", payload)
+    return _redacted_digest(
+        "v13-parameter-analysis-response",
+        _response_stability_value(payload),
+    )
+
+
+def _response_stability_value(value: Any) -> Any:
+    """Normalize SQL floating-point noise at the verifier's 1e-9 tolerance."""
+
+    if is_dataclass(value) and not isinstance(value, type):
+        return _response_stability_value(asdict(value))
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise VerificationError(
+                "SUMMARY_VALUE_INVALID", "参数分析响应出现非有限数值"
+            )
+        return format(value, ".9g")
+    if isinstance(value, Decimal):
+        return format(value, ".9g")
+    if isinstance(value, Mapping):
+        return {
+            str(key): _response_stability_value(item)
+            for key, item in sorted(value.items())
+        }
+    if isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
+        return [_response_stability_value(item) for item in value]
+    if hasattr(value, "__dict__"):
+        return _response_stability_value(vars(value))
+    return value
 
 
 def _run_invocations(

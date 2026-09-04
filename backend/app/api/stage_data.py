@@ -66,6 +66,50 @@ REGISTRY_FACTORY_CODES = {
     "riyueguang": "RIYUEGUANG",
     "dianji": "DIANJI",
 }
+FORMAL_CLEANER_CONTRACTS = {
+    ("CP", "HUAHONG"): {
+        "format_code": "HUAHONG_DCP_EXISTING",
+        "cleaner_code": "HUAHONG_CP_EXISTING",
+        "adapter_code": "HUAHONG_CP_PYZ",
+        "input_contract_version": "CP_ARCHIVE_OR_TXT_V1",
+        "output_contract_version": "CP_CSV_TRIPLET_V1",
+    },
+    ("CP", "JETECH"): {
+        "format_code": "JETECH_CP_EXISTING",
+        "cleaner_code": "JETECH_CP_EXISTING",
+        "adapter_code": "JETECH_CP_PYZ",
+        "input_contract_version": "CP_EXCEL_OR_ZIP_V1",
+        "output_contract_version": "CP_STANDARD_CSV_TRIPLET_V1",
+    },
+    ("CP", "LION"): {
+        "format_code": "LION_CP_EXISTING",
+        "cleaner_code": "LION_CP_EXISTING",
+        "adapter_code": "LION_CP_PYZ",
+        "input_contract_version": "CP_EXCEL_OR_ZIP_V1",
+        "output_contract_version": "CP_STANDARD_CSV_TRIPLET_V1",
+    },
+    ("FT", "RIYUEXIN"): {
+        "format_code": "RIYUEXIN_DC_EXISTING",
+        "cleaner_code": "RIYUEXIN_FT_EXISTING",
+        "adapter_code": "RIYUEXIN_FT_PYZ",
+        "input_contract_version": "FT_DIRECTORY_XLSX_V1",
+        "output_contract_version": "FT_XLSX_SCATTER_V1",
+    },
+    ("FT", "RIYUEGUANG"): {
+        "format_code": "RIYUEGUANG_DC_EXISTING",
+        "cleaner_code": "RIYUEGUANG_FT_EXISTING",
+        "adapter_code": "RIYUEGUANG_FT_PYZ",
+        "input_contract_version": "FT_DIRECTORY_XLSX_V1",
+        "output_contract_version": "FT_XLSX_SCATTER_V1",
+    },
+    ("FT", "DIANJI"): {
+        "format_code": "DIANJI_POWERTECH_DYNAMIC_EXISTING",
+        "cleaner_code": "DIANJI_FT_POWERTECH_EXISTING",
+        "adapter_code": "DIANJI_FT_PYZ",
+        "input_contract_version": "DIANJI_POWERTECH_DIRECTORY_V1",
+        "output_contract_version": "DIANJI_FT_SCATTER_V1",
+    },
+}
 UPLOAD_PAGE_STATUSES = frozenset(
     {
         "RECEIVED",
@@ -101,6 +145,23 @@ def cleaner_registry(request: Request):
             "DATABASE_NOT_CONFIGURED", "Cleaner Registry 尚未连接数据库", 503
         )
     return instance
+
+
+def _latest_formal_release(request: Request, test_stage: str, factory_code: str):
+    stage = test_stage.strip().upper()
+    factory = factory_code.strip().upper()
+    contract = FORMAL_CLEANER_CONTRACTS.get((stage, factory))
+    if contract is None:
+        raise DomainError(
+            "CAPABILITY_NOT_FORMAL_IMPORT",
+            "该厂家没有获批准的正式入库清洗合同",
+            422,
+        )
+    return cleaner_registry(request).latest_released_for_contract(
+        test_stage=stage,
+        factory_code=factory,
+        **contract,
+    )
 
 
 def job_service(request: Request):
@@ -732,7 +793,7 @@ def upload_stage_data(
         _cleanup_unregistered_uploads(stored, domain, stage)
         raise
     registry_factory = REGISTRY_FACTORY_CODES[factory]
-    release = cleaner_registry(request).latest_released(stage, registry_factory)
+    release = _latest_formal_release(request, stage, registry_factory)
     job = _queue_initial_import(
         request,
         principal,
@@ -952,7 +1013,7 @@ def reprocess_batch(
             "该历史批次属于定制能力，不能从通用正式入库入口重新处理",
             422,
         )
-    release = cleaner_registry(request).latest_released(stage, factory)
+    release = _latest_formal_release(request, stage, factory)
     job = _queue_initial_import(
         request,
         principal,

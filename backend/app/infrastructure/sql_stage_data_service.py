@@ -106,22 +106,22 @@ class SqlStageDataService:
                 binding = (
                     connection.execute(
                         text(
-                            "SELECT d.data_domain_id,d.domain_code,system_user.user_id "
+                            "SELECT d.data_domain_id,d.domain_code,service_user.user_id "
                             "AS service_user_id FROM iam.data_domain_grant g "
                             "WITH (UPDLOCK,HOLDLOCK) JOIN iam.data_domain d WITH (HOLDLOCK) "
                             "ON d.data_domain_id=g.data_domain_id CROSS JOIN iam.app_user "
-                            "system_user WHERE d.data_domain_id=:data_domain_id "
+                            "service_user WHERE d.data_domain_id=:data_domain_id "
                             "AND d.active=1 AND d.domain_code<>N'MIGRATION_HOLD' "
                             "AND d.test_stage=:stage AND (d.factory_code IS NULL OR "
                             "d.factory_code=:factory) AND g.user_id=:actor_user_id "
                             "AND g.status='ACTIVE' AND (g.expires_at_utc IS NULL OR "
                             "g.expires_at_utc>SYSUTCDATETIME()) AND "
-                            "system_user.login_name=N'SYSTEM_INGESTION' AND "
-                            "system_user.identity_provider='OIDC' AND "
-                            "system_user.external_subject=N'internal:tms:system-ingestion' "
-                            "AND system_user.status='DISABLED' AND NOT EXISTS("
+                            "service_user.login_name=N'SYSTEM_INGESTION' AND "
+                            "service_user.identity_provider='OIDC' AND "
+                            "service_user.external_subject=N'internal:tms:system-ingestion' "
+                            "AND service_user.status='DISABLED' AND NOT EXISTS("
                             "SELECT 1 FROM iam.user_role system_role "
-                            "WHERE system_role.user_id=system_user.user_id)"
+                            "WHERE system_role.user_id=service_user.user_id)"
                         ),
                         {
                             "data_domain_id": int(data_domain_id or 0),
