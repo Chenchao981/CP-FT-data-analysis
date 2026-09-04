@@ -10,6 +10,10 @@ from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from app.domain.cleaner_capabilities import (
+    capability_allowed_suffixes,
+    validate_capability_contract,
+)
 from app.domain.cleaner_registry import CleanerRelease
 from app.infrastructure.child_process_environment import isolated_child_environment
 
@@ -172,6 +176,15 @@ class ExistingCleanerRunner:
         runtime = Path(release.runtime_uri).resolve()
         target = Path(output_root).resolve()
         target.mkdir(parents=True, exist_ok=True)
+        validate_capability_contract(
+            adapter_code=release.adapter_code,
+            test_stage=release.test_stage,
+            factory_code=release.factory_code,
+            cleaner_code=release.cleaner_code,
+            input_contract_version=release.input_contract_version,
+            output_contract_version=release.output_contract_version,
+            execution_config_json=release.execution_config_json,
+        )
         scripts = {
             "HUAHONG_CP_PYZ": _CP_HUAHONG_SCRIPT,
             "JETECH_CP_PYZ": _CP_JETECH_SCRIPT,
@@ -377,8 +390,9 @@ class ExistingCleanerRunner:
 
 
 def _ft_allowed_suffixes(adapter_code: str) -> frozenset[str]:
-    if adapter_code == "DIANJI_FT_PYZ":
-        return frozenset({".xls", ".xlsx"})
+    capability_suffixes = capability_allowed_suffixes(adapter_code)
+    if capability_suffixes is not None:
+        return capability_suffixes
     return frozenset({".xlsx"})
 
 

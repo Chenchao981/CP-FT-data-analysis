@@ -62,6 +62,11 @@ def test_bootstrap_requires_explicit_factory_selection() -> None:
     selected = _parse_args(["--factory", "DIANJI"])
     assert selected.factory == ["DIANJI"]
     assert selected.all is False
+    assert selected.release_status == "RELEASED"
+
+    draft = _parse_args(["--factory", "LION", "--release-status", "DRAFT"])
+    assert draft.factory == ["LION"]
+    assert draft.release_status == "DRAFT"
 
     repeated = _parse_args(
         ["--factory", "RIYUEXIN", "--factory", "DIANJI"]
@@ -82,6 +87,21 @@ def test_bootstrap_defines_dianji_as_an_independent_powertech_release() -> None:
     assert dianji.input_contract == "DIANJI_POWERTECH_DIRECTORY_V1"
     assert dianji.output_contract == "DIANJI_FT_SCATTER_V1"
     assert dianji.cleaner_version == "v2.20.0"
+    assert dianji.capability_code == "DIANJI_FT_FORMAL_CLEAN"
+    assert dianji.format_method_codes == (
+        "DIANJI_POWERTECH_TEXT_XLS",
+        "DIANJI_POWERTECH_NATIVE_XLSX",
+    )
+
+
+def test_bootstrap_defines_lion_as_one_capability_with_two_format_methods() -> None:
+    lion = next(item for item in _definitions() if item.factory == "LION")
+
+    assert lion.capability_code == "LION_CP_STANDARD_CLEAN"
+    assert lion.format_method_codes == (
+        "LION_V1_DYNAMIC_EXCEL",
+        "LION_V2_PROFILED_OLE_XLS",
+    )
 
 
 def test_bootstrap_pins_quick_pat_execution_limits() -> None:
@@ -121,5 +141,5 @@ def test_bootstrap_pins_quick_pat_execution_limits() -> None:
     ).read_text(encoding="utf-8-sig")
     assert '"timeout_seconds": values["timeout_seconds"]' in script
     assert '"max_output_bytes": values["max_output_bytes"]' in script
-    assert "Published Cleaner Release is immutable" in script
+    assert "Cleaner Release rows are immutable" in script
     assert "UPDATE ingestion.cleaner_release SET" not in script

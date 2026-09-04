@@ -34,5 +34,5 @@ def test_existing_release_bootstrap_requires_current_atomic_schema() -> None:
     ).read_text(encoding="utf-8-sig")
     assert 'revision != "sql2014_0025"' in script
     assert "Cleaner version checksum collision" in script
-    assert "Published Cleaner Release is immutable" in script
+    assert "Cleaner Release rows are immutable" in script
     assert "UPDATE ingestion.cleaner_release SET" not in script

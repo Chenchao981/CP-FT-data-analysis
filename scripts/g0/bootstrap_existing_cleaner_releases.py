@@ -25,6 +25,8 @@ class ExistingRelease:
     input_contract: str
     output_contract: str
     cleaner_version: str | None = None
+    capability_code: str | None = None
+    format_method_codes: tuple[str, ...] = ()
     timeout_seconds: int = 3600
     max_output_bytes: int = 10 * 1024 * 1024 * 1024
 
@@ -120,6 +122,11 @@ def _definitions() -> tuple[ExistingRelease, ...]:
             "lion_batch_processor.generate_lion_run_csvs",
             "CP_EXCEL_OR_ZIP_V1",
             "CP_STANDARD_CSV_TRIPLET_V1",
+            capability_code="LION_CP_STANDARD_CLEAN",
+            format_method_codes=(
+                "LION_V1_DYNAMIC_EXCEL",
+                "LION_V2_PROFILED_OLE_XLS",
+            ),
         ),
         ExistingRelease(
             "CP",
@@ -165,6 +172,11 @@ def _definitions() -> tuple[ExistingRelease, ...]:
             "DIANJI_POWERTECH_DIRECTORY_V1",
             "DIANJI_FT_SCATTER_V1",
             "v2.20.0",
+            capability_code="DIANJI_FT_FORMAL_CLEAN",
+            format_method_codes=(
+                "DIANJI_POWERTECH_TEXT_XLS",
+                "DIANJI_POWERTECH_NATIVE_XLSX",
+            ),
         ),
         ExistingRelease(
             "FT",
@@ -204,6 +216,13 @@ def _definitions() -> tuple[ExistingRelease, ...]:
             "DIANJI_REGISTERED_RAW_DIRECTORY_V1",
             "FT_PAT_RESULT_V1",
             "v2.20.0-pat",
+            capability_code="DIANJI_FT_PERSONAL_PAT",
+            format_method_codes=(
+                "DIANJI_POWERTECH_TEXT_XLS",
+                "DIANJI_POWERTECH_NATIVE_XLSX",
+                "DIANJI_STS8203_CSV",
+                "DIANJI_TF_CSV",
+            ),
             timeout_seconds=7200,
             max_output_bytes=64 * 1024 * 1024,
         ),
@@ -264,11 +283,21 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Explicitly register every configured Cleaner definition",
     )
+    parser.add_argument(
+        "--release-status",
+        choices=("DRAFT", "RELEASED"),
+        default="RELEASED",
+        help=(
+            "Register a non-runnable DRAFT candidate or a runnable RELEASED "
+            "version; defaults to RELEASED for backward compatibility"
+        ),
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> None:
     args = _parse_args(argv)
+    release_status = str(args.release_status).strip().upper()
     database_url = os.environ.get("TMS_DATABASE_URL")
     if not database_url:
         raise RuntimeError("TMS_DATABASE_URL is required")
@@ -416,6 +445,16 @@ def main(argv: list[str] | None = None) -> None:
                     {
                         "factory_code": definition.factory,
                         **(
+                            {
+                                "capability_code": definition.capability_code,
+                                "format_method_codes": list(
+                                    definition.format_method_codes
+                                ),
+                            }
+                            if definition.capability_code
+                            else {}
+                        ),
+                        **(
                             {"outlier_method": "iqr", "convert_units": True}
                             if definition.stage == "CP"
                             else {}
@@ -426,6 +465,7 @@ def main(argv: list[str] | None = None) -> None:
                 "timeout_seconds": definition.timeout_seconds,
                 "max_output_bytes": definition.max_output_bytes,
                 "approved_by": approved_by,
+                "release_status": release_status,
             }
             if release_id is None:
                 release_id = connection.execute(
@@ -436,8 +476,10 @@ def main(argv: list[str] | None = None) -> None:
                         "adapter_code,input_contract_version,output_contract_version,"
                         "execution_config_json,timeout_seconds,max_output_bytes) "
                         "OUTPUT INSERTED.cleaner_release_id VALUES("
-                        ":profile_id,:cleaner_code,:version,:checksum,:artifact_uri,'RELEASED',"
-                        ":approved_by,SYSUTCDATETIME(),:runtime_uri,:entrypoint,:adapter_code,"
+                        ":profile_id,:cleaner_code,:version,:checksum,:artifact_uri,:release_status,"
+                        "CASE WHEN :release_status='RELEASED' THEN :approved_by ELSE NULL END,"
+                        "CASE WHEN :release_status='RELEASED' THEN SYSUTCDATETIME() ELSE NULL END,"
+                        ":runtime_uri,:entrypoint,:adapter_code,"
                         ":input_contract,:output_contract,:config,:timeout_seconds,"
                         ":max_output_bytes)"
                     ),
@@ -445,7 +487,7 @@ def main(argv: list[str] | None = None) -> None:
                 ).scalar_one()
             else:
                 expected_contract = {
-                    "status": "RELEASED",
+                    "status": release_status,
                     "artifact_uri": values["artifact_uri"],
                     "runtime_uri": values["runtime_uri"],
                     "entrypoint": values["entrypoint"],
@@ -477,7 +519,7 @@ def main(argv: list[str] | None = None) -> None:
                         mismatches.append("execution_config_json")
                 if mismatches:
                     raise RuntimeError(
-                        "Published Cleaner Release is immutable; register a new "
+                        "Cleaner Release rows are immutable; register a new "
                         f"version instead (release_id={release_id}, fields="
                         + ",".join(sorted(set(mismatches)))
                         + ")"
@@ -488,6 +530,7 @@ def main(argv: list[str] | None = None) -> None:
                     "stage": definition.stage,
                     "factory": definition.factory,
                     "version": version,
+                    "status": release_status,
                     "artifact_uri": str(artifact),
                     "output_contract": definition.output_contract,
                     "timeout_seconds": definition.timeout_seconds,
