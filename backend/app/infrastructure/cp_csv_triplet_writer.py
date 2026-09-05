@@ -15,6 +15,11 @@ from typing import Any
 from sqlalchemy import Engine, text
 from sqlalchemy.engine import Connection
 
+from app.domain.cp_data import (
+    CpCleanedRow,
+    CpCsvTriplet,
+    CpSpecItem,
+)
 from app.infrastructure.existing_cleaner_runner import CleanerArtifact
 from app.infrastructure.initial_import_staging import (
     insert_draft_dataset_version,
@@ -38,48 +43,6 @@ class CpCsvTripletError(ValueError):
 
 class CpMultiLotSpecBindingRequired(CpCsvTripletError):
     error_code = CP_MULTI_LOT_SPEC_BINDING_REQUIRED
-
-
-@dataclass(frozen=True, slots=True)
-class CpSpecItem:
-    name: str
-    unit: str | None
-    lsl: float | None
-    usl: float | None
-    raw_lsl: str | None
-    raw_usl: str | None
-    test_condition: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class CpCleanedRow:
-    lot_id: str
-    wafer_id: str
-    raw_wafer_id: str
-    seq_no: int
-    bin_value: str
-    x: int
-    y: int
-    values: tuple[str, ...]
-    source_row_no: int
-
-    @property
-    def logical_key(self) -> str:
-        return f"CP:{self.lot_id}:{self.wafer_id}:{self.x}:{self.y}:{self.seq_no}"
-
-
-@dataclass(frozen=True, slots=True)
-class CpCsvTriplet:
-    product_name: str | None
-    parameters: tuple[str, ...]
-    spec_items: tuple[CpSpecItem, ...]
-    rows: tuple[CpCleanedRow, ...]
-    spec_sha256: str
-    spec_fingerprint_sha256: str
-    spec_source_sha256s: tuple[str, ...]
-    source_paths: tuple[str, ...]
-    lot_ids: tuple[str, ...]
-    pass_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -443,7 +406,7 @@ def parse_cp_csv_triplet(
     }
     parameters = tuple(item.name for item in declared_spec_items)
     cleaned_rows: list[CpCleanedRow] = []
-    seen_keys: set[str] = set()
+    seen_keys: set[tuple[str, str, int, int]] = set()
     for path in cleaned_paths:
         with path.open("r", encoding="utf-8-sig", newline="") as stream:
             reader = csv.DictReader(stream)
@@ -510,11 +473,11 @@ def parse_cp_csv_triplet(
                     raise CpCsvTripletError(
                         f"CP cleaned row {source_row_no} has invalid identity values"
                     ) from exc
-                if parsed.logical_key in seen_keys:
+                if parsed.die_identity in seen_keys:
                     raise CpCsvTripletError(
                         f"duplicate CP Die coordinate: {parsed.logical_key}"
                     )
-                seen_keys.add(parsed.logical_key)
+                seen_keys.add(parsed.die_identity)
                 for name, raw in zip(parameters, parsed.values, strict=True):
                     _number(raw, field=f"row {source_row_no} {name}", allow_blank=True)
                 cleaned_rows.append(parsed)

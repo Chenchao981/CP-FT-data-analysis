@@ -79,7 +79,7 @@ def test_declared_format_method_mismatch_fails_closed() -> None:
         )
 
 
-def test_legacy_adapter_is_not_blocked_until_migrated_to_capability_registry() -> None:
+def test_riyuexin_adapter_is_now_validated_by_capability_registry() -> None:
     assert (
         validate_capability_contract(
             adapter_code="RIYUEXIN_FT_PYZ",
@@ -89,5 +89,15 @@ def test_legacy_adapter_is_not_blocked_until_migrated_to_capability_registry() -
             input_contract_version="FT_DIRECTORY_XLSX_V1",
             output_contract_version="FT_XLSX_SCATTER_V1",
         )
-        is None
+        is not None
     )
+
+
+@pytest.mark.parametrize("stage,factory", [("CP", "HUAHONG"), ("CP", "JETECH"), ("CP", "LION"), ("FT", "RIYUEXIN"), ("FT", "RIYUEGUANG"), ("FT", "DIANJI")])
+def test_every_formal_entry_has_a_matching_capability(stage, factory):
+    from app.domain.cleaner_capabilities import FORMAL_CLEANER_CONTRACTS
+    contract = FORMAL_CLEANER_CONTRACTS[(stage, factory)]
+    capability = validate_capability_contract(test_stage=stage, factory_code=factory, **{k: v for k, v in contract.items() if k != "format_code"})
+    assert capability is not None
+    with pytest.raises(ValueError, match="contract"):
+        validate_capability_contract(test_stage=stage, factory_code=factory, **{k: ("PERSONAL_PAT" if k == "cleaner_code" else v) for k, v in contract.items() if k != "format_code"})

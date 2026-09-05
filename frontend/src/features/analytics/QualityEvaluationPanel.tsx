@@ -267,6 +267,12 @@ export function QualityEvaluationPanel({ context, overview, overviewError, onOpe
       {result.analysis === "PAT_ROBUST_IQR" && <PatResultView
         title="PAT 分析结果"
         labelTitle="数据集 / 分组"
+        evidence={{
+          source: "所选正式数据及分组",
+          method: result.rule.algorithm_code,
+          includedCount: result.pat.reduce((sum, row) => sum + row.valid_n, 0),
+          missingCount: result.pat.reduce((sum, row) => sum + row.missing_n, 0),
+        }}
         rows={result.pat.map((row) => ({
           key: `${row.dataset_id}:${row.version_no}:${row.group_key}`,
           label: `Dataset #${row.dataset_id} / V${row.version_no} / ${row.group_key}`,

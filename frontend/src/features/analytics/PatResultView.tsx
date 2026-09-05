@@ -1,3 +1,4 @@
+import { AnalysisEvidence, type AnalysisEvidenceProps } from "../../components/AnalysisEvidence";
 import { Col, Row, Statistic, Table, Tag } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import type { EChartsCoreOption } from "echarts/core";
@@ -29,9 +30,10 @@ export interface PatResultViewProps {
   labelTitle?: string;
   rows: PatResultViewRow[];
   scope?: AnalysisResultScope;
+  evidence?: AnalysisEvidenceProps;
 }
 
-export function PatResultView({ title = "PAT 分析结果", labelTitle = "参数 / 分组", rows, scope = "FORMAL" }: PatResultViewProps) {
+export function PatResultView({ title = "PAT 分析结果", labelTitle = "参数 / 分组", rows, scope = "FORMAL", evidence }: PatResultViewProps) {
   const option = useMemo<EChartsCoreOption>(() => ({
     animation: false,
     tooltip: { trigger: "axis" },
@@ -59,10 +61,11 @@ export function PatResultView({ title = "PAT 分析结果", labelTitle = "参数
   if (hasActions) columns.push({ title: "操作", dataIndex: "actions", fixed: "right", width: 100, render: (item) => item ?? "—" });
 
   return <AnalysisResultFrame title={title} scope={scope} className="pat-result-view">
+    {evidence && <AnalysisEvidence {...evidence} />}
     <Row gutter={[12, 12]} className="pat-result-metrics">
       <Col xs={12} md={6}><Statistic title="参数 / 分组" value={rows.length} /></Col>
-      <Col xs={12} md={6}><Statistic title="有效数据" value={rows.reduce((sum, item) => sum + item.count, 0)} /></Col>
-      <Col xs={12} md={6}><Statistic title="异常数量" value={rows.reduce((sum, item) => sum + (item.outlierCount ?? 0), 0)} /></Col>
+      <Col xs={12} md={6}><Statistic title="有效测量值" value={rows.reduce((sum, item) => sum + item.count, 0)} /></Col>
+      <Col xs={12} md={6}><Statistic title="异常数量" value={rows.length > 0 && rows.every(item => item.outlierCount != null) ? rows.reduce((sum, item) => sum + item.outlierCount!, 0) : "未知"} /></Col>
       <Col xs={12} md={6}><Statistic title="已计算上下限" value={rows.filter((item) => item.lowerLimit != null || item.upperLimit != null).length} /></Col>
     </Row>
     {rows.length > 0 && <EChart ariaLabel="PAT 分析结果图表" option={option} className="pat-result-chart" />}

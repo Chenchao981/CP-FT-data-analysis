@@ -1,10 +1,13 @@
 # NCE PYMS 文档导航
 
-更新时间：2026-09-03
+更新时间：2026-09-05
 
 本目录只在主区保留仍用于产品决策、开发约束、格式合同、部署运维和安全收口的文档。旧版整套基线、已完成计划和阶段交付报告统一放入 [`archive/`](archive/README.md)。归档表示“不再作为默认执行依据”，不表示内容被删除或历史证据无效。
 
 ## 1. 先读这两份
+
+- [2026-09-05 架构与可用性优化验收](development/NCE_PYMS_Architecture_Usability_Completion_Report_2026-09-05.md)：本次完成项、实测性能与未验收边界。
+- [CP/FT 阶段合同与扩展指南](architecture/NCE_PYMS_Stage_Contracts_and_Extension_Guide_2026-09-05.md)：当前代码分层和后续物理模型迁移。
 
 1. [NCE PYMS 功能规划与现状对齐 v1.0](product/NCE_PYMS_Functional_Roadmap_v1.0_2026-09-03.md)：当前产品定位、双工作区边界和 P0～P3 优先级。
 2. [NCE PYMS 产品功能边界图](architecture/NCE_PYMS_Product_Function_Boundary_v1.0_2026-09-03.drawio)：正式制造数据平台、个人分析工具及后续扩展的视觉边界。

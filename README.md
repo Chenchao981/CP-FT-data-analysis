@@ -4,6 +4,9 @@
 
 ## 当前入口
 
+- [2026-09-05 架构与可用性优化验收](docs/development/NCE_PYMS_Architecture_Usability_Completion_Report_2026-09-05.md)：本次完成项、实测性能与未验收边界。
+- [CP/FT 阶段合同与扩展指南](docs/architecture/NCE_PYMS_Stage_Contracts_and_Extension_Guide_2026-09-05.md)：当前代码分层和后续物理模型迁移。
+
 - [文档导航](docs/README.md)：现行文档的阅读顺序、冲突优先级和归档说明。
 - [产品功能规划 v1.0](docs/product/NCE_PYMS_Functional_Roadmap_v1.0_2026-09-03.md)：2026-09-03 起的产品方向与开发优先级。
 - [产品功能边界图](docs/architecture/NCE_PYMS_Product_Function_Boundary_v1.0_2026-09-03.drawio)：正式制造数据平台与个人分析工具的边界。

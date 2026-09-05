@@ -183,7 +183,7 @@ describe("LocalQuickAnalysisPanel", () => {
     expect(document.body).toHaveTextContent("2.83 GB");
     expect(document.body).not.toHaveTextContent("F:\\data");
 
-    fireEvent.click(screen.getByRole("button", { name: /确认 Manifest 并在本机计算/ }));
+    fireEvent.click(screen.getByRole("button", { name: /确认文件范围并开始计算/ }));
     expect((await screen.findAllByText("本机计算完成")).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: /仅上传并登记结果/ }));
 
@@ -216,10 +216,10 @@ describe("LocalQuickAnalysisPanel", () => {
     renderPanel();
     fireEvent.click(screen.getByRole("button", { name: /连\s*接/ }));
 
-    expect(await screen.findByText("Agent 与 TMS 登记的工具合同不一致")).toBeInTheDocument();
+    expect(await screen.findByText("本机工具与服务器登记版本不一致，请更新本机工具后重新连接")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /选择本机目录/ }));
     expect(await screen.findByText("NCEAP020N10LL")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /确认 Manifest 并在本机计算/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /确认文件范围并开始计算/ })).toBeDisabled();
     expect(runLocalSelection).not.toHaveBeenCalled();
   });
 

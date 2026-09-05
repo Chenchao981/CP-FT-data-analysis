@@ -24,6 +24,7 @@ from app.domain.quick_analysis import (
     NewQuickAnalysisSession,
 )
 from app.infrastructure.quick_pat_runner import QuickPatRunner
+from app.infrastructure.quick_tool_runner import QuickToolRunner
 from app.infrastructure.source_catalog import SourceCatalog, SourceRoot
 from app.workers.route_a_worker import QuickPatHandler
 
@@ -259,7 +260,7 @@ def main() -> None:
         Registry(release),
         service,
         catalog,
-        runner=QuickPatRunner(process_runner=monitor),
+        runner=QuickToolRunner(pat_runner=QuickPatRunner(process_runner=monitor)),
         work_root=output_root,
     )
     handler(job)

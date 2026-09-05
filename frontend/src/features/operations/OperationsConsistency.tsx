@@ -1,3 +1,4 @@
+import { CleanerCapabilityCatalog } from "./CleanerCapabilityCatalog";
 import { PauseCircleOutlined, PlayCircleOutlined, ReloadOutlined } from "@ant-design/icons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, Card, Descriptions, Empty, Popconfirm, Space, Spin, Table, Tag, Typography, message } from "antd";
@@ -205,5 +206,6 @@ export function OperationsConsistency() {
         <Table rowKey="worker_id" columns={workerColumns} dataSource={fleet.workers} pagination={false} scroll={{ x: canOperateWorkers ? 1600 : 1400 }} locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无活动Worker" /> }} />
       </Card>
     </> : null}
+    <CleanerCapabilityCatalog />
   </div>;
 }

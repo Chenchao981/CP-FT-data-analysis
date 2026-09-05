@@ -374,7 +374,9 @@ describe("ParameterAnalysisPanel", () => {
     expect(screen.getByText("可复现上下文")).toBeInTheDocument();
     expect(screen.getByText("Current+PUBLISHED 已验证")).toBeInTheDocument();
     expect(screen.getByText(/Filter Hash aaaaaaaaaaaa/)).toBeInTheDocument();
-    expect(screen.getByText("输入 / 纳入 / 排除 Unit：10 / 4 / 6")).toBeInTheDocument();
+    expect(screen.getByText("输入数量")).toBeInTheDocument();
+    expect(screen.getByText("纳入数量")).toBeInTheDocument();
+    expect(screen.getByText("排除数量")).toBeInTheDocument();
     expect(screen.getAllByText("候选测量值").length).toBeGreaterThan(0);
     expect(screen.getByText("参数身份与规格来源")).toBeInTheDocument();
     expect(screen.getByText("VGE=0V")).toBeInTheDocument();

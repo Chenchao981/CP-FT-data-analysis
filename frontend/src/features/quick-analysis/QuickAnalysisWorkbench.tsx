@@ -192,7 +192,7 @@ export function QuickAnalysisWorkbench() {
         },
         {
           key: "local-agent",
-          label: <Space><LaptopOutlined />个人电脑（Agent）</Space>,
+          label: <Space><LaptopOutlined />个人电脑</Space>,
           children: <LocalQuickAnalysisPanel onRegistered={() => queryClient.invalidateQueries({ queryKey: ["quick-analysis", "sessions"] })} />,
         },
         {
@@ -290,6 +290,7 @@ export function QuickAnalysisWorkbench() {
             title={`${row.test_stage} · ${row.factory_code} · PAT分析结果`}
             labelTitle="测试参数"
             scope="PERSONAL"
+            evidence={{ source: row.source_relative_path, method: row.summary?.formula_contract, inputCount: row.record_count }}
             rows={(row.summary?.parameters ?? []).map((item) => ({
               key: item.parameter,
               label: item.parameter,

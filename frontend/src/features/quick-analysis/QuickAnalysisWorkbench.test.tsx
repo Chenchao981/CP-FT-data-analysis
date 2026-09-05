@@ -192,7 +192,7 @@ describe("QuickAnalysisWorkbench", () => {
   it("offers a personal-computer agent path that never uploads raw source", async () => {
     renderWorkbench();
 
-    fireEvent.click(await screen.findByRole("tab", { name: /个人电脑（Agent）/ }));
+    fireEvent.click(await screen.findByRole("tab", { name: /个人电脑/ }));
     expect(screen.getByText("local-agent-panel")).toBeInTheDocument();
   }, 15_000);
 

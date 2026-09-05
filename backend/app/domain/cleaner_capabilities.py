@@ -33,9 +33,42 @@ class CleanerCapability:
     output_contract_version: str
     use_scopes: tuple[CleanerUseScope, ...]
     format_method_codes: tuple[str, ...]
+    format_code: str | None = None
 
 
 FORMAT_METHODS: tuple[CleanerFormatMethod, ...] = (
+    CleanerFormatMethod(
+        "HUAHONG_DCP_TEXT",
+        "华虹 DCP 文本",
+        (".txt",),
+        "clean_dcp_data.process_directory",
+        "clean_dcp_data.process_directory",
+        "内容验证由正式工具执行；必须保留目录或压缩包内产品及批次身份",
+    ),
+    CleanerFormatMethod(
+        "JETECH_CP_EXCEL",
+        "积塔 CP Excel",
+        (".xls", ".xlsx"),
+        "jt_data_processor.jt_main_processor.process_jt_files",
+        "jt_data_processor.jt_main_processor.process_jt_files",
+        "仅已验收工作簿布局，保留 Lot/Wafer 和 pass_bin=1",
+    ),
+    CleanerFormatMethod(
+        "RIYUEXIN_DC_EXCEL",
+        "日月新 DC Excel",
+        (".xlsx",),
+        "factories.tms_adapters.riyuexin_dc.RiyuexinTmsDCCleaner",
+        "factories.tms_adapters.riyuexin_dc.RiyuexinTmsDCCleaner",
+        "正式 Adapter 校验来源和规格；缺 Lot 进入补录，不推断 PASS/FAIL",
+    ),
+    CleanerFormatMethod(
+        "RIYUEGUANG_DC_EXCEL",
+        "日月光 DC Excel",
+        (".xlsx",),
+        "factories.tms_adapters.riyueguang_dc.RiyueguangTmsDCCleaner",
+        "factories.tms_adapters.riyueguang_dc.RiyueguangTmsDCCleaner",
+        "正式 Adapter 校验来源和规格；缺 Lot 进入补录，不推断 PASS/FAIL",
+    ),
     CleanerFormatMethod(
         method_code="LION_V1_DYNAMIC_EXCEL",
         display_name="立昂微 V1 动态参数 Excel",
@@ -97,6 +130,58 @@ FORMAT_METHODS: tuple[CleanerFormatMethod, ...] = (
 
 CLEANER_CAPABILITIES: tuple[CleanerCapability, ...] = (
     CleanerCapability(
+        "HUAHONG_CP_STANDARD_CLEAN",
+        "华虹 CP 标准清洗",
+        "CP",
+        "HUAHONG",
+        "HUAHONG_CP_PYZ",
+        "HUAHONG_CP_EXISTING",
+        "CP_ARCHIVE_OR_TXT_V1",
+        "CP_CSV_TRIPLET_V1",
+        ("FORMAL_IMPORT",),
+        ("HUAHONG_DCP_TEXT",),
+        format_code="HUAHONG_DCP_EXISTING",
+    ),
+    CleanerCapability(
+        "JETECH_CP_STANDARD_CLEAN",
+        "积塔 CP 标准清洗",
+        "CP",
+        "JETECH",
+        "JETECH_CP_PYZ",
+        "JETECH_CP_EXISTING",
+        "CP_EXCEL_OR_ZIP_V1",
+        "CP_STANDARD_CSV_TRIPLET_V1",
+        ("FORMAL_IMPORT",),
+        ("JETECH_CP_EXCEL",),
+        format_code="JETECH_CP_EXISTING",
+    ),
+    CleanerCapability(
+        "RIYUEXIN_FT_FORMAL_CLEAN",
+        "日月新 FT 正式清洗",
+        "FT",
+        "RIYUEXIN",
+        "RIYUEXIN_FT_PYZ",
+        "RIYUEXIN_FT_EXISTING",
+        "FT_DIRECTORY_XLSX_V1",
+        "FT_XLSX_SCATTER_V1",
+        ("FORMAL_IMPORT",),
+        ("RIYUEXIN_DC_EXCEL",),
+        format_code="RIYUEXIN_DC_EXISTING",
+    ),
+    CleanerCapability(
+        "RIYUEGUANG_FT_FORMAL_CLEAN",
+        "日月光 FT 正式清洗",
+        "FT",
+        "RIYUEGUANG",
+        "RIYUEGUANG_FT_PYZ",
+        "RIYUEGUANG_FT_EXISTING",
+        "FT_DIRECTORY_XLSX_V1",
+        "FT_XLSX_SCATTER_V1",
+        ("FORMAL_IMPORT",),
+        ("RIYUEGUANG_DC_EXCEL",),
+        format_code="RIYUEGUANG_DC_EXISTING",
+    ),
+    CleanerCapability(
         capability_code="LION_CP_STANDARD_CLEAN",
         display_name="立昂微 CP 标准清洗",
         test_stage="CP",
@@ -110,6 +195,7 @@ CLEANER_CAPABILITIES: tuple[CleanerCapability, ...] = (
             "LION_V1_DYNAMIC_EXCEL",
             "LION_V2_PROFILED_OLE_XLS",
         ),
+        format_code="LION_CP_EXISTING",
     ),
     CleanerCapability(
         capability_code="DIANJI_FT_FORMAL_CLEAN",
@@ -125,6 +211,7 @@ CLEANER_CAPABILITIES: tuple[CleanerCapability, ...] = (
             "DIANJI_POWERTECH_TEXT_XLS",
             "DIANJI_POWERTECH_NATIVE_XLSX",
         ),
+        format_code="DIANJI_POWERTECH_DYNAMIC_EXISTING",
     ),
     CleanerCapability(
         capability_code="DIANJI_FT_PERSONAL_PAT",
@@ -147,9 +234,7 @@ CLEANER_CAPABILITIES: tuple[CleanerCapability, ...] = (
 
 
 _METHODS_BY_CODE = {item.method_code: item for item in FORMAT_METHODS}
-_CAPABILITIES_BY_ADAPTER = {
-    item.adapter_code: item for item in CLEANER_CAPABILITIES
-}
+_CAPABILITIES_BY_ADAPTER = {item.adapter_code: item for item in CLEANER_CAPABILITIES}
 
 
 def cleaner_capability(adapter_code: str) -> CleanerCapability | None:
@@ -222,7 +307,9 @@ def validate_capability_contract(
         try:
             config = json.loads(execution_config_json)
         except json.JSONDecodeError as exc:
-            raise ValueError("Cleaner Release execution config is invalid JSON") from exc
+            raise ValueError(
+                "Cleaner Release execution config is invalid JSON"
+            ) from exc
         declared_capability = config.get("capability_code")
         declared_methods = config.get("format_method_codes")
         has_declaration = (
@@ -238,3 +325,16 @@ def validate_capability_contract(
                 f"capability contract: {capability.capability_code}"
             )
     return capability
+
+
+FORMAL_CLEANER_CONTRACTS = {
+    (item.test_stage, item.factory_code): {
+        "format_code": item.format_code,
+        "cleaner_code": item.cleaner_code,
+        "adapter_code": item.adapter_code,
+        "input_contract_version": item.input_contract_version,
+        "output_contract_version": item.output_contract_version,
+    }
+    for item in CLEANER_CAPABILITIES
+    if "FORMAL_IMPORT" in item.use_scopes and item.format_code is not None
+}

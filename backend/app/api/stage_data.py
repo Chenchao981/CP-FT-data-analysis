@@ -15,6 +15,7 @@ from app.api.dependencies import require_permission
 from app.api.m2_filters import build_page_filters
 from app.core.errors import DomainError
 from app.domain.auth import Principal
+from app.domain.cleaner_capabilities import FORMAL_CLEANER_CONTRACTS
 from app.domain.data_domains import DataDomainRecord
 from app.domain.jobs import CreateJobRequest, JobType, TriggerType
 from app.domain.m2_queries import M2QueryService
@@ -66,50 +67,7 @@ REGISTRY_FACTORY_CODES = {
     "riyueguang": "RIYUEGUANG",
     "dianji": "DIANJI",
 }
-FORMAL_CLEANER_CONTRACTS = {
-    ("CP", "HUAHONG"): {
-        "format_code": "HUAHONG_DCP_EXISTING",
-        "cleaner_code": "HUAHONG_CP_EXISTING",
-        "adapter_code": "HUAHONG_CP_PYZ",
-        "input_contract_version": "CP_ARCHIVE_OR_TXT_V1",
-        "output_contract_version": "CP_CSV_TRIPLET_V1",
-    },
-    ("CP", "JETECH"): {
-        "format_code": "JETECH_CP_EXISTING",
-        "cleaner_code": "JETECH_CP_EXISTING",
-        "adapter_code": "JETECH_CP_PYZ",
-        "input_contract_version": "CP_EXCEL_OR_ZIP_V1",
-        "output_contract_version": "CP_STANDARD_CSV_TRIPLET_V1",
-    },
-    ("CP", "LION"): {
-        "format_code": "LION_CP_EXISTING",
-        "cleaner_code": "LION_CP_EXISTING",
-        "adapter_code": "LION_CP_PYZ",
-        "input_contract_version": "CP_EXCEL_OR_ZIP_V1",
-        "output_contract_version": "CP_STANDARD_CSV_TRIPLET_V1",
-    },
-    ("FT", "RIYUEXIN"): {
-        "format_code": "RIYUEXIN_DC_EXISTING",
-        "cleaner_code": "RIYUEXIN_FT_EXISTING",
-        "adapter_code": "RIYUEXIN_FT_PYZ",
-        "input_contract_version": "FT_DIRECTORY_XLSX_V1",
-        "output_contract_version": "FT_XLSX_SCATTER_V1",
-    },
-    ("FT", "RIYUEGUANG"): {
-        "format_code": "RIYUEGUANG_DC_EXISTING",
-        "cleaner_code": "RIYUEGUANG_FT_EXISTING",
-        "adapter_code": "RIYUEGUANG_FT_PYZ",
-        "input_contract_version": "FT_DIRECTORY_XLSX_V1",
-        "output_contract_version": "FT_XLSX_SCATTER_V1",
-    },
-    ("FT", "DIANJI"): {
-        "format_code": "DIANJI_POWERTECH_DYNAMIC_EXISTING",
-        "cleaner_code": "DIANJI_FT_POWERTECH_EXISTING",
-        "adapter_code": "DIANJI_FT_PYZ",
-        "input_contract_version": "DIANJI_POWERTECH_DIRECTORY_V1",
-        "output_contract_version": "DIANJI_FT_SCATTER_V1",
-    },
-}
+
 UPLOAD_PAGE_STATUSES = frozenset(
     {
         "RECEIVED",

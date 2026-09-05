@@ -23,6 +23,7 @@ from app.domain.quick_analysis import (
 )
 from app.infrastructure.direct_path_source import build_direct_path_manifest
 from app.infrastructure.quick_pat_runner import QuickPatRunner
+from app.infrastructure.quick_tool_runner import QuickToolRunner
 from app.infrastructure.source_catalog import SourceCatalog
 from app.workers.route_a_worker import QuickPatHandler
 
@@ -165,7 +166,7 @@ def main() -> None:
         Registry(release),
         service,
         SourceCatalog(()),
-        runner=QuickPatRunner(process_runner=monitor),
+        runner=QuickToolRunner(pat_runner=QuickPatRunner(process_runner=monitor)),
         work_root=output_root,
     )
     started = time.perf_counter()

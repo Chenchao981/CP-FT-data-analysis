@@ -1,3 +1,5 @@
+import { AnalysisEvidence } from "../../components/AnalysisEvidence";
+import { explainAnalysisReason } from "./analysisReasons";
 import { ReloadOutlined } from "@ant-design/icons";
 import { useMutation } from "@tanstack/react-query";
 import { Alert, Button, Card, Col, Collapse, Empty, Input, InputNumber, Row, Select, Space, Table, Tag, Typography } from "antd";
@@ -470,7 +472,7 @@ export function ParameterAnalysisPanel({
     { title: "LSL / USL", width: 150, render: (_, row) => `${formatNumber(row.analysis.capability?.lsl ?? null)} / ${formatNumber(row.analysis.capability?.usl ?? null)}` },
     { title: "样本 / 子组", width: 125, render: (_, row) => `${row.analysis.capability?.sample_count ?? 0} / ${row.analysis.capability?.subgroup_count ?? 0}` },
     { title: "规则", width: 245, render: (_, row) => row.analysis.capability?.rule_code ?? "后端未选择 Cpk 子组规则" },
-    { title: "不适用原因", width: 330, render: (_, row) => row.analysis.capability?.reason_codes.length ? row.analysis.capability.reason_codes.join("、") : "—" },
+    { title: "不适用原因", width: 330, render: (_, row) => row.analysis.capability?.reason_codes.length ? row.analysis.capability.reason_codes.map(explainAnalysisReason).join("、") : "—" },
     { title: "联动", width: 210, fixed: "right", render: (_, row) => {
       const context = row.analysis.capability?.drilldown_context;
       return <Space size={4}>
@@ -497,7 +499,7 @@ export function ParameterAnalysisPanel({
     { title: "Mean", width: 120, render: (_, row) => formatNumber(row.analysis.normal_fit?.mean ?? null) },
     { title: "MLE Stddev", width: 130, render: (_, row) => formatNumber(row.analysis.normal_fit?.standard_deviation ?? null) },
     { title: "Method", width: 190, render: (_, row) => row.analysis.normal_fit?.method ?? "—" },
-    { title: "不适用原因", width: 260, render: (_, row) => row.analysis.normal_fit?.reason_code ?? "—" },
+    { title: "不适用原因", width: 260, render: (_, row) => row.analysis.normal_fit?.reason_code ? explainAnalysisReason(row.analysis.normal_fit.reason_code) : "—" },
   ];
 
   const error = mutation.error;
@@ -640,8 +642,7 @@ export function ParameterAnalysisPanel({
       <Card size="small" title="可复现上下文">
         <Space direction="vertical" size={4}>
           <Typography.Text>计算时间（UTC）：{mutation.data.computed_at}</Typography.Text>
-          <Typography.Text>输入 / 纳入 / 排除 Unit：{mutation.data.counts.input_units} / {mutation.data.counts.included_units} / {mutation.data.counts.excluded_units}</Typography.Text>
-          <Typography.Text>Missing Measurement：{mutation.data.counts.missing_measurements}</Typography.Text>
+          <AnalysisEvidence source="所选正式数据及筛选范围" method="所选参数分析方法" inputCount={mutation.data.counts.input_units} includedCount={mutation.data.counts.included_units} excludedCount={mutation.data.counts.excluded_units} missingCount={mutation.data.counts.missing_measurements} />
           <Typography.Text>Spec：{mutation.data.rule_context.spec_versions.length ? mutation.data.rule_context.spec_versions.join("、") : "未使用"}</Typography.Text>
           <Typography.Text>评价规则：{mutation.data.rule_context.evaluation_rule_versions.length ? mutation.data.rule_context.evaluation_rule_versions.join("、") : "未使用"}</Typography.Text>
         </Space>
@@ -651,7 +652,7 @@ export function ParameterAnalysisPanel({
         type="warning"
         showIcon
         message="分析能力提示"
-        description={mutation.data.warnings.join("、")}
+        description={mutation.data.warnings.map(explainAnalysisReason).join("、")}
       />}
 
       <Card size="small" title="Dataset 筛选与命中摘要">
@@ -713,7 +714,7 @@ export function ParameterAnalysisPanel({
           </Space>
           {normalFit?.status === "AVAILABLE" && normalFit.points.length > 0
             ? <><>{(normalFitLsl == null && normalFitUsl == null) && <Alert type="warning" showIcon message="当前参数没有可用正式规格" />}</><EChart option={normalFitOption} ariaLabel={`${normalFitParameter} 在 ${normalFitRow?.datasetLabel} 的服务端 Normal Fit 曲线`} onEvents={chartEvents} /><Space wrap><Tag>{normalFit.points.length} 个曲线点</Tag><Tag>Mean {formatNumber(normalFit.mean)}</Tag><Tag>Stddev {formatNumber(normalFit.standard_deviation)}</Tag><Tag>{normalFit.method}</Tag></Space></>
-            : <Alert type="warning" showIcon message="Normal Fit 不适用" description={normalFit?.reason_code ?? "当前 Dataset / 参数无服务端拟合结果"} />}
+            : <Alert type="warning" showIcon message="Normal Fit 不适用" description={normalFit?.reason_code ? explainAnalysisReason(normalFit.reason_code) : "当前数据 / 参数无拟合结果"} />}
           <Table rowKey="key" columns={normalFitColumns} dataSource={normalFitRows} pagination={false} scroll={{ x: 1275 }} size="small" />
         </Space>
       </Card>}

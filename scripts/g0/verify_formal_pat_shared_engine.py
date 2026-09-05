@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import subprocess
 import sys
@@ -21,6 +22,36 @@ from app.infrastructure.formal_pat_adapter import (
     calculate_formal_pat,
     source_engine_sha256,
 )
+
+# Later official package added schema-key handling, without changing compute_pat_stats.
+# Keep historical rule/manifest hashes unchanged; compatibility evidence is separate.
+COMPATIBLE_SOURCE_REVISIONS = {
+    "fc13db94e3b304153afc383877c69c0d101f16a47fe2a58e7fa816e1ea4d6e2c":
+        "a94e6718d668c18e00a12d1f28eb9176057a52d3",
+}
+
+
+def verify_source_revision(source_engine: Path, actual_sha: str, actual_commit: str) -> str:
+    if actual_sha == FORMAL_PAT_SOURCE_SHA256 and actual_commit == FORMAL_PAT_SOURCE_COMMIT:
+        return "FROZEN_SOURCE"
+    if COMPATIBLE_SOURCE_REVISIONS.get(actual_sha) != actual_commit:
+        raise RuntimeError("shared PAT source revision is not a verified compatible release")
+    historical = subprocess.run(
+        ["git", "-C", str(source_engine.parent.parent), "show", f"{FORMAL_PAT_SOURCE_COMMIT}:shared/pat_engine.py"],
+        capture_output=True, check=True,
+    ).stdout
+    if source_engine_sha256(historical) != FORMAL_PAT_SOURCE_SHA256:
+        raise RuntimeError("historical PAT source does not match the frozen evidence")
+
+    def function_tree(source: bytes) -> str:
+        functions = [node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef) and node.name == "compute_pat_stats"]
+        if len(functions) != 1:
+            raise RuntimeError("PAT source must contain one compute_pat_stats function")
+        return ast.dump(functions[0], include_attributes=False)
+
+    if function_tree(historical) != function_tree(source_engine.read_bytes()):
+        raise RuntimeError("current PAT computation differs from the frozen algorithm")
+    return "OFFICIAL_SOURCE_UNCHANGED_COMPUTE_FUNCTION"
 
 _SOURCE_PROBE = r"""
 import importlib.util
@@ -178,15 +209,8 @@ def main() -> int:
     if not source_engine.is_file() or not source_python.is_file():
         raise FileNotFoundError("source engine or source Python is unavailable")
     actual_sha = source_engine_sha256(source_engine.read_bytes())
-    if actual_sha != FORMAL_PAT_SOURCE_SHA256:
-        raise RuntimeError(
-            f"shared PAT source SHA drifted: {actual_sha}!={FORMAL_PAT_SOURCE_SHA256}"
-        )
     actual_commit = _source_last_commit(source_engine)
-    if actual_commit != FORMAL_PAT_SOURCE_COMMIT:
-        raise RuntimeError(
-            f"shared PAT source commit drifted: {actual_commit}!={FORMAL_PAT_SOURCE_COMMIT}"
-        )
+    compatibility = verify_source_revision(source_engine, actual_sha, actual_commit)
 
     cases: list[dict[str, Any]] = [
         {"name": "OUTLIER", "values": [*range(10), 100]},
@@ -213,6 +237,7 @@ def main() -> int:
                 "adapter_manifest_sha256": FORMAL_PAT_ADAPTER_MANIFEST_SHA256,
                 "source_engine_sha256": actual_sha,
                 "source_engine_last_commit": actual_commit,
+                "source_compatibility": compatibility,
                 "golden_vector_count": vector_count,
                 "quick_pat_evidence": quick,
                 "owner_gate": "NOT_BYPASSED",

@@ -36,6 +36,10 @@ def test_capability_endpoint_exposes_factory_format_method_hierarchy() -> None:
     assert response.status_code == 200
     capabilities = {item["capability_code"]: item for item in response.json()}
     assert set(capabilities) == {
+        "HUAHONG_CP_STANDARD_CLEAN",
+        "JETECH_CP_STANDARD_CLEAN",
+        "RIYUEXIN_FT_FORMAL_CLEAN",
+        "RIYUEGUANG_FT_FORMAL_CLEAN",
         "LION_CP_STANDARD_CLEAN",
         "DIANJI_FT_FORMAL_CLEAN",
         "DIANJI_FT_PERSONAL_PAT",

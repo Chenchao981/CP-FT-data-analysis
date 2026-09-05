@@ -223,15 +223,17 @@ export function LocalQuickAnalysisPanel({ onRegistered }: LocalQuickAnalysisPane
   return <div className="local-quick-panel">
     {contextHolder}
     <Card
-      title={<Space><LinkOutlined />本机 Agent</Space>}
+      title={<Space><LinkOutlined />连接个人电脑</Space>}
       extra={<Tag color={health.isSuccess ? "success" : "default"}>{health.isSuccess ? "端口在线" : "未检测到"}</Tag>}
       className="quick-source-card"
     >
+      <Alert type="info" showIcon message="文件在当前电脑上计算，只上传结果" description="先在存放文件的电脑启动本机计算程序，再输入连接码。下方仅开放当前已接入的工具。服务器目录请使用同机/共享路径入口。" style={{ marginBottom: 12 }} />
+      {health.isError && <Alert type="warning" showIcon message="尚未连接本机计算程序" description="请确认本机程序已启动、使用的是本次启动的连接码，并且程序配置允许当前网页地址。" style={{ marginBottom: 12 }} />}
       <Row gutter={[12, 12]} align="middle">
         <Col flex="auto">
           <Input.Password
             aria-label="本机 Agent 配对令牌"
-            placeholder="粘贴 Agent 启动窗口中的一次配对令牌"
+            placeholder="粘贴本机计算程序显示的连接码"
             value={token}
             onChange={(event) => setToken(event.target.value)}
             onPressEnter={() => connect.mutate()}
@@ -275,7 +277,7 @@ export function LocalQuickAnalysisPanel({ onRegistered }: LocalQuickAnalysisPane
         {selectedTool?.enabled && !releaseMatches && <Alert
           type="error"
           showIcon
-          message="Agent 与 TMS 登记的工具合同不一致"
+          message="本机工具与服务器登记版本不一致，请更新本机工具后重新连接"
         />}
         {preview && <>
           <Descriptions bordered size="small" column={{ xs: 1, sm: 2 }}>
@@ -292,7 +294,7 @@ export function LocalQuickAnalysisPanel({ onRegistered }: LocalQuickAnalysisPane
             disabled={!canRun || Boolean(runId)}
             loading={runMutation.isPending}
             onClick={() => runMutation.mutate()}
-          >确认 Manifest 并在本机计算</Button>
+          >确认文件范围并开始计算</Button>
         </>}
       </Space>
     </Card>

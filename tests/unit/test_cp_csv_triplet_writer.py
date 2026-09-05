@@ -65,6 +65,15 @@ def test_parse_cp_triplet_reconciles_single_lot_cleaned_yield_and_spec(
     assert parsed.pass_count == 1
 
 
+def test_duplicate_die_cannot_bypass_validation_by_changing_seq(tmp_path: Path) -> None:
+    artifacts = list(_triplet(tmp_path))
+    path = Path(artifacts[0].path)
+    path.write_text(path.read_text(encoding="utf-8").replace("L1,1,2,7,11,20", "L1,1,2,7,10,20"), encoding="utf-8")
+    artifacts[0] = _artifact("cleaned", path)
+    with pytest.raises(CpCsvTripletError, match="duplicate CP Die coordinate"):
+        parse_cp_csv_triplet(tuple(artifacts))
+
+
 def test_cp_writer_uses_atomic_draft_stage_without_first_batch_or_current_publish() -> None:
     source = inspect.getsource(CpCsvTripletWriter.write)
     module_source = inspect.getsource(
