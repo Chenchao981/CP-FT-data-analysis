@@ -75,7 +75,7 @@ def _requester_dataset_access_sql(
         "AND (access_grant.expires_at_utc IS NULL "
         "OR access_grant.expires_at_utc>SYSUTCDATETIME())) "
         f"AND {version_alias}.status='PUBLISHED' "
-        f"AND {version_alias}.is_current=1))))"
+        f"AND {version_alias}.is_current=1)))"
     )
 
 

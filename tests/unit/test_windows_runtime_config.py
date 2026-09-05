@@ -387,7 +387,8 @@ def test_local_lifecycle_scripts_use_the_shared_utf8_json_reader() -> None:
 
     start_script = LOCAL_LIFECYCLE_SCRIPTS[0].read_text(encoding="utf-8-sig")
     status_script = LOCAL_LIFECYCLE_SCRIPTS[1].read_text(encoding="utf-8-sig")
-    assert "Read-TmsLocalJsonFile -Path $workerReadyFile" in start_script
+    assert "Read-TmsLocalJsonFile -Path $ReadyFile" in start_script
+    assert "-ReadyFile $exportWorkerReadyFile" in start_script
     assert "Read-TmsLocalJsonFile -Path $workerReadyFile" in status_script
 
 

@@ -13,6 +13,8 @@ $stateDirectory = Join-Path $workspace 'artifacts\runtime\local-test'
 $statePath = Join-Path $stateDirectory 'processes.json'
 $workerStopFile = Join-Path $stateDirectory 'worker.stop'
 $workerReadyFile = Join-Path $stateDirectory 'worker.ready.json'
+$exportWorkerStopFile = Join-Path $stateDirectory 'export-worker.stop'
+$exportWorkerReadyFile = Join-Path $stateDirectory 'export-worker.ready.json'
 $apiUrl = 'http://127.0.0.1:8000/api/v1/health/ready'
 $frontendUrl = 'http://127.0.0.1:5173/'
 . (Join-Path $PSScriptRoot 'TmsLocalRuntime.Common.ps1')
@@ -56,10 +58,15 @@ $processes = @()
 $apiReady = $false
 $frontendReady = $false
 $workerReady = $false
+$exportWorkerReady = $false
+$exportWorkerDraining = Test-Path -LiteralPath $exportWorkerStopFile -PathType Leaf
 $workerDraining = Test-Path -LiteralPath $workerStopFile -PathType Leaf
 $database = $null
 $schemaRevision = $null
 $apiDatabaseServer = $null
+$exportWorkerDatabase = $null
+$exportWorkerSchemaRevision = $null
+$exportWorkerDatabaseServer = $null
 $workerDatabase = $null
 $workerSchemaRevision = $null
 $workerDatabaseServer = $null
@@ -128,6 +135,23 @@ if ($statePresent) {
             )
         } catch { $workerReady = $false }
     }
+    $exportWorkerRecord = Get-TmsRoleRecord -State $state -Role 'export-worker'
+    $exportWorkerProcessReady = $null -ne $exportWorkerRecord -and @($processes | Where-Object { $_.role -eq 'export-worker' -and $_.running }).Count -eq 1
+    if ($exportWorkerProcessReady -and -not $exportWorkerDraining -and (Test-Path -LiteralPath $exportWorkerReadyFile -PathType Leaf)) {
+        try {
+            $exportWorkerMetadata = Read-TmsLocalJsonFile -Path $exportWorkerReadyFile
+            $exportWorkerDatabase = [string]$exportWorkerMetadata.database
+            $exportWorkerSchemaRevision = [string]$exportWorkerMetadata.schema_revision
+            $exportWorkerDatabaseServer = [string]$exportWorkerMetadata.database_server
+            $exportWorkerReady = (
+                $exportWorkerMetadata.status -eq 'READY' -and
+                [int]$exportWorkerMetadata.pid -eq [int]$exportWorkerRecord.process_id -and
+                $exportWorkerDatabase -eq [string]$state.expected_database -and
+                $exportWorkerSchemaRevision -eq [string]$state.expected_schema_revision -and
+                $exportWorkerDatabaseServer -eq [string]$state.database_server
+            )
+        } catch { $exportWorkerReady = $false }
+    }
 }
 
 $allReady = (
@@ -136,8 +160,9 @@ $allReady = (
     $apiReady -and
     $frontendReady -and
     $workerReady -and
+    $exportWorkerReady -and
     $null -ne $authRequired -and
-    @($processes).Count -eq 3 -and
+    @($processes).Count -eq 4 -and
     @($processes | Where-Object { -not $_.running }).Count -eq 0
 )
 $result = [PSCustomObject]@{
@@ -148,6 +173,11 @@ $result = [PSCustomObject]@{
     api_ready = $apiReady
     frontend_ready = $frontendReady
     worker_ready = $workerReady
+    export_worker_ready = $exportWorkerReady
+    export_worker_draining = $exportWorkerDraining
+    export_worker_database = $exportWorkerDatabase
+    export_worker_schema_revision = $exportWorkerSchemaRevision
+    export_worker_database_server = $exportWorkerDatabaseServer
     worker_draining = $workerDraining
     auth_required = $authRequired
     database = $database
@@ -163,7 +193,7 @@ $result = [PSCustomObject]@{
 if ($AsJson) {
     $result | ConvertTo-Json -Depth 5
 } else {
-    $result | Select-Object mode, state_present, state_status, all_ready, api_ready, frontend_ready, worker_ready, worker_draining, auth_required, database, schema_revision, worker_database, worker_schema_revision, database_server, frontend_url | Format-List
+    $result | Select-Object mode, state_present, state_status, all_ready, api_ready, frontend_ready, worker_ready, export_worker_ready, worker_draining, export_worker_draining, auth_required, database, schema_revision, worker_database, worker_schema_revision, database_server, frontend_url | Format-List
     $processes | Format-Table -AutoSize
 }
 if ($RequireReady -and -not $allReady) { exit 1 }

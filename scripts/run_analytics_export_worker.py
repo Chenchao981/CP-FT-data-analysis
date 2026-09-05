@@ -24,6 +24,9 @@ from app.infrastructure.sql_analytics_export_worker import (
     SqlAnalyticsExportWorkerRepository,
 )
 from app.workers.analytics_export_worker import AnalyticsExportWorker
+from app.workers.runtime_control import (
+    is_stop_requested, remove_ready_file, validate_database_identity, write_ready_file,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,6 +40,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--lease-seconds", type=int, default=300)
     parser.add_argument("--heartbeat-seconds", type=float, default=30.0)
+    parser.add_argument("--stop-file", type=Path)
+    parser.add_argument("--ready-file", type=Path)
+    parser.add_argument("--expected-database")
+    parser.add_argument("--expected-schema-revision")
+    parser.add_argument("--expected-database-server")
     return parser.parse_args()
 
 
@@ -56,7 +64,13 @@ def main() -> None:
         )
     if not os.getenv("TMS_DATABASE_URL"):
         raise RuntimeError("TMS_DATABASE_URL is required")
+    remove_ready_file(args.ready_file)
     database = check_database()
+    validate_database_identity(
+        database, expected_database=args.expected_database,
+        expected_schema_revision=args.expected_schema_revision,
+        expected_database_server=args.expected_database_server,
+    )
     if database["schema_revision"] != "sql2014_0028":
         raise RuntimeError("Analytics Export Worker requires sql2014_0028")
     configured_root = os.getenv("TMS_ANALYTICS_EXPORT_ROOT", "").strip()
@@ -84,13 +98,21 @@ def main() -> None:
         database["database"],
         database["schema_revision"],
     )
-    while True:
+    write_ready_file(args.ready_file, args.worker_id, database)
+    try:
+        run_loop(worker, args, logger)
+    finally:
+        remove_ready_file(args.ready_file)
+
+
+def run_loop(worker, args: argparse.Namespace, logger: logging.Logger) -> None:
+    while not is_stop_requested(args.stop_file):
         work_item = worker.run_once()
         if work_item is not None:
             logger.info("Analytics export processed job_id=%s", work_item.export_job_id)
         if args.once:
             return
-        if work_item is None:
+        if work_item is None and not is_stop_requested(args.stop_file):
             time.sleep(args.poll_seconds)
 
 

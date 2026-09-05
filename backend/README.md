@@ -17,7 +17,7 @@ $env:PYTHONPATH = "$PWD\backend"
 
 ## 启动
 
-完整本机功能验收优先使用仓库根目录的一键入口，它会加载 SQL 运行配置并同时管理 API、Worker 和前端：
+完整本机功能验收优先使用仓库根目录的一键入口，它会加载 SQL 运行配置并同时管理 API、清洗 Worker、分析报告 Worker 和前端：
 
 ```powershell
 .\启动TMS测试环境.bat
@@ -161,7 +161,7 @@ Import-TmsRuntimeConfig -Path (Join-Path $PWD '.env.runtime.ps1')
 
 华虹文件边界支持TXT、ZIP和7z。归档只在受控临时目录中展开TXT，并在退出上下文时清理；任何加密、损坏、路径穿越、符号链接、重复路径或容量超限均失败关闭。`HuaHongBatchInspector.inspect_input()` 是单文件/归档的统一检查入口。
 
-Canonical写入分两步：`SourceFileRepository.register()`先登记来源和接收记录，调用方据此创建并启动Processing Job；CP Writer要求Supplier、Program Version、Parser Profile和完整Test Item映射，Product可由源数据或人工补录提供，也可以为空。CP和FT使用独立Writer/Adapter，只在清洗后写入公共Run/Unit/Measurement模型。
+Canonical写入分两步：`SourceFileRepository.register()`先登记来源和接收记录，调用方据此创建并启动Processing Job；CP Writer要求Supplier、Program Version、Parser Profile和完整Test Item映射，Product可由源数据或人工补录提供，也可以为空。CP和FT使用独立Writer/Adapter，清洗后写入公共Run及各阶段独立器件、测量事实表；公共Unit/Measurement名称只作为兼容查询视图。
 
 人工补录接口按CP/FT分别限制字段，可对一个Import Batch或其中一个Source File记录`FILL`或`IGNORE`决定。再次填写同一字段会保留旧版本并切换当前记录；补录结果不修改Cleaner的源解析事实。
 
@@ -216,7 +216,7 @@ $env:PYTHONPATH = "$PWD\backend"
 & .\.conda-env\python.exe -m pytest -q tests
 ```
 
-前端、Migration、真实样本、浏览器和发布包的最终回归结果统一记录在 `docs/development/TMS_v1.0_Regression_Test_Report_2026-08-29.md`。本地测试不能替代目标 SQL Server SP3、正式服务账号 ACL、HTTPS、备份恢复和业务 UAT。
+历史 v1.0 的前端、Migration、真实样本、浏览器和发布包回归记录在 `docs/archive/2026-08-24_to_2026-09-03_delivery-records/development/TMS_v1.0_Regression_Test_Report_2026-08-29.md`。本地测试不能替代目标 SQL Server SP3、正式服务账号 ACL、HTTPS、备份恢复和业务 UAT。
 
 真实数据库与现有华虹 Cleaner 的 Route A Worker 验证：
 
@@ -225,3 +225,15 @@ $env:PYTHONPATH = "$PWD\backend"
 Import-TmsRuntimeConfig -Path (Join-Path $PWD '.env.runtime.ps1')
 & .\.conda-env\python.exe scripts\g0\verify_route_a_worker_foundation.py
 ```
+
+## 报告链复验
+
+本地完整启动会额外管理分析报告 Worker，独立检查其数据库身份、就绪文件和进程。关闭时停止接新任务，完成当前报告后退出。生产运行包装器也支持 ExpectedDatabase / ExpectedSchemaRevision / ExpectedDatabaseServer 及独立 ReadyFile / StopFile。
+
+```powershell
+. .\scripts\windows\TmsRuntime.Common.ps1
+Import-TmsRuntimeConfig -Path (Join-Path $PWD '.env.runtime.ps1')
+& .\.conda-env\python.exe scripts/g0/verify_managed_report_e2e.py --output artifacts/runtime/managed-report-e2e.json
+```
+
+该入口只接受 TMS_G0_DEV / sql2014_0028，使用既有授权主体和 TestClient 提交报告，由实际运行的报告 Worker 生成，验证 CP/FT 的 CSV、XLSX、HTML、PDF 及下载大小/SHA和正式事实计数不变。它会保留新增测试报告及审计记录，不改原始数据或 Current；此证据不包含浏览器登录。

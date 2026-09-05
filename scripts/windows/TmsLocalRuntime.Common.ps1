@@ -192,7 +192,7 @@ function Resolve-TmsLocalAuthenticationContract {
 function Get-TmsLocalRoleContract {
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('api', 'worker', 'frontend')]
+        [ValidateSet('api', 'worker', 'export-worker', 'frontend')]
         [string]$Role,
         [Parameter(Mandatory = $true)]
         [string]$Python,
@@ -203,6 +203,7 @@ function Get-TmsLocalRoleContract {
     switch ($Role) {
         'api' { return [PSCustomObject]@{ Role = $Role; Executable = $Python; Marker = 'uvicorn app.main:app' } }
         'worker' { return [PSCustomObject]@{ Role = $Role; Executable = $Python; Marker = 'run_route_a_worker.py' } }
+        'export-worker' { return [PSCustomObject]@{ Role = $Role; Executable = $Python; Marker = 'run_analytics_export_worker.py' } }
         'frontend' { return [PSCustomObject]@{ Role = $Role; Executable = $Node; Marker = 'vite\bin\vite.js' } }
     }
 }
@@ -210,7 +211,7 @@ function Get-TmsLocalRoleContract {
 function Find-TmsLocalRoleProcessId {
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('api', 'worker', 'frontend')]
+        [ValidateSet('api', 'worker', 'export-worker', 'frontend')]
         [string]$Role,
         [Parameter(Mandatory = $true)]
         [string]$Workspace,
@@ -255,7 +256,7 @@ function Test-TmsLocalProcess {
         [string]$Node
     )
 
-    if ($Record.role -notin @('api', 'worker', 'frontend')) {
+    if ($Record.role -notin @('api', 'worker', 'export-worker', 'frontend')) {
         throw "Unknown role in local state: $($Record.role)"
     }
     $contract = Get-TmsLocalRoleContract -Role $Record.role -Python $Python -Node $Node
@@ -284,7 +285,7 @@ function Test-TmsLocalProcess {
 function New-TmsLocalProcessRecord {
     param(
         [Parameter(Mandatory = $true)]
-        [ValidateSet('api', 'worker', 'frontend')]
+        [ValidateSet('api', 'worker', 'export-worker', 'frontend')]
         [string]$Role,
         [Parameter(Mandatory = $true)]
         [int]$ProcessId,

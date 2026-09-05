@@ -63,7 +63,41 @@ describe("AnalyticsExportPanel", () => {
       artifacts: [{ export_artifact_id: 501, file_name: "analytics.csv", mime_type: "text/csv", file_size: 2048, sha256: "d".repeat(64), created_at_utc: "2026-08-31T01:00:00Z", expires_at_utc: "2026-09-01T01:00:00Z" }],
     });
   });
-  afterEach(() => { cleanup(); vi.clearAllMocks(); });
+  afterEach(() => { cleanup(); vi.useRealTimers(); vi.clearAllMocks(); });
+
+  it("refreshes pending report metadata until the artifact becomes downloadable", async () => {
+    const ready = await getAnalyticsExportDownloadMetadata(81);
+    vi.mocked(getAnalyticsExportDownloadMetadata).mockClear();
+    vi.mocked(getAnalyticsExportDownloadMetadata)
+      .mockResolvedValueOnce({ ...ready, job_status: "QUEUED", availability: "PENDING_GENERATION", download_enabled: false, artifacts: [] })
+      .mockResolvedValue(ready);
+    renderPanel();
+    await screen.findByText("#81");
+    fireEvent.click(screen.getByRole("button", { name: /查看结果/ }));
+    await screen.findByText("制品不可下载");
+    expect(await screen.findByText("制品可下载", {}, { timeout: 6000 })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /下载/ })).toBeEnabled();
+    expect(getAnalyticsExportDownloadMetadata).toHaveBeenCalledTimes(2);
+  }, 20_000);
+
+  it("reuses a failed submission key only while its request is unchanged", async () => {
+    vi.mocked(createAnalyticsExport).mockRejectedValue(new Error("temporary disconnect"));
+    renderPanel();
+    await screen.findByText("#81");
+    const reason = screen.getByRole("textbox", { name: "Export 原因" });
+    fireEvent.change(reason, { target: { value: "Export current reviewed selection" } });
+    fireEvent.click(screen.getByRole("button", { name: /生成报告/ }));
+    await screen.findByText("Export Job 提交失败");
+    const first = vi.mocked(createAnalyticsExport).mock.calls[0][0].idempotency_key;
+    fireEvent.click(screen.getByRole("button", { name: /生成报告/ }));
+    await waitFor(() => expect(createAnalyticsExport).toHaveBeenCalledTimes(2));
+    await screen.findByText("Export Job 提交失败");
+    expect(vi.mocked(createAnalyticsExport).mock.calls[1][0].idempotency_key).toBe(first);
+    fireEvent.change(reason, { target: { value: "Export corrected reviewed selection" } });
+    fireEvent.click(screen.getByRole("button", { name: /生成报告/ }));
+    await waitFor(() => expect(createAnalyticsExport).toHaveBeenCalledTimes(3));
+    expect(vi.mocked(createAnalyticsExport).mock.calls[2][0].idempotency_key).not.toBe(first);
+  }, 20_000);
 
   it("submits an allowed CURRENT_PAGE request with full Context, Rule Context and page bounds", async () => {
     const defaults = createDefaultAnalysisViewState();
@@ -137,7 +171,7 @@ describe("AnalyticsExportPanel", () => {
   it("shows verified artifact metadata and uses the fixed authenticated download contract", async () => {
     renderPanel();
     await screen.findByText("#81");
-    fireEvent.click(screen.getByRole("button", { name: /制品元数据/ }));
+    fireEvent.click(screen.getByRole("button", { name: /查看结果/ }));
 
     expect(await screen.findByText("制品可下载")).toBeInTheDocument();
     expect(screen.getByText("analytics.csv")).toBeInTheDocument();

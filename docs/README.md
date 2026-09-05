@@ -4,8 +4,9 @@
 
 本目录只在主区保留仍用于产品决策、开发约束、格式合同、部署运维和安全收口的文档。旧版整套基线、已完成计划和阶段交付报告统一放入 [`archive/`](archive/README.md)。归档表示“不再作为默认执行依据”，不表示内容被删除或历史证据无效。
 
-## 1. 先读这两份
+## 1. 当前入口与规划
 
+- [2026-09-05 项目复审与前后端开发测试完成报告](development/NCE_PYMS_Project_Review_Completion_Report_2026-09-05.md)：需求差距、报告运行链修复、全量测试、实库报告及待验收事项。
 - [CP/FT 物理分表完成报告](development/NCE_PYMS_Physical_Stage_Storage_Completion_Report_2026-09-05.md)：当前 sql2014_0028、全量历史对账及真实入库验证。
 - [CP/FT 物理存储合同](architecture/NCE_PYMS_Physical_Stage_Storage_2026-09-05.md)：阶段事实表、全局 ID、评价外键和容量要求。
 - [数据库结构与字段整改验收](development/NCE_PYMS_Database_Stage_Fields_Completion_Report_2026-09-05.md)：sql2014_0027、迁移对账及验证边界。

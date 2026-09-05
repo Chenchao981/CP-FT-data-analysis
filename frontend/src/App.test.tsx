@@ -90,6 +90,7 @@ vi.mock("./features/dashboard/PersonalDashboard", () => ({
   PersonalDashboard: ({ userName, onNavigate }: { userName: string; onNavigate: (path: string) => void }) => <div>
     <span>{`dashboard:${userName}`}</span>
     <button onClick={() => onNavigate("/ft")}>dashboard-ft</button>
+    <button onClick={() => onNavigate("/analytics?dataset=21%3A1")}>dashboard-analysis</button>
   </div>,
 }));
 vi.mock("./features/data-domains/DataDomainManagement", () => ({ DataDomainManagement: () => <div>data-domains</div> }));
@@ -199,6 +200,16 @@ describe("App navigation and deep links", () => {
     expect(await screen.findByText("source-center")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "数据源中心" })).toBeInTheDocument();
   }, 15_000);
+
+  it("preserves the dataset query when opening dashboard evidence", async () => {
+    vi.mocked(useAuth).mockReturnValue(authFor(["DATASET_READ"]));
+    window.history.replaceState({}, "", "/dashboard");
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "dashboard-analysis" }));
+    expect(await screen.findByText("analytics:21/1")).toBeInTheDocument();
+    expect(window.location.pathname).toBe("/analytics");
+    expect(new URLSearchParams(window.location.search).get("dataset")).toBe("21:1");
+  });
 
   it("restores analytics selection and Job drawer, then follows browser history to a fixed entry", async () => {
     vi.mocked(useAuth).mockReturnValue(authFor(["DATASET_READ", "ANALYSIS_RUN"]));

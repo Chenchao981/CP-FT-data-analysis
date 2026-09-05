@@ -13,6 +13,8 @@ $stateDirectory = Join-Path $workspace 'artifacts\runtime\local-test'
 $statePath = Join-Path $stateDirectory 'processes.json'
 $workerStopFile = Join-Path $stateDirectory 'worker.stop'
 $workerReadyFile = Join-Path $stateDirectory 'worker.ready.json'
+$exportWorkerStopFile = Join-Path $stateDirectory 'export-worker.stop'
+$exportWorkerReadyFile = Join-Path $stateDirectory 'export-worker.ready.json'
 . (Join-Path $PSScriptRoot 'TmsLocalRuntime.Common.ps1')
 
 $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
@@ -38,7 +40,7 @@ function Find-TmsWorkerProcessId {
 function Get-TmsRecordedRole {
     param(
         [PSCustomObject]$State,
-        [ValidateSet('api', 'worker', 'frontend')]
+        [ValidateSet('api', 'worker', 'export-worker', 'frontend')]
         [string]$Role
     )
     $matches = @($State.processes | Where-Object { $_.role -eq $Role })
@@ -57,6 +59,7 @@ function Get-TmsRecordedRole {
         'api' { Find-TmsLocalRoleProcessId -Role 'api' -Workspace $workspace -Python $python -Node $node }
         'frontend' { Find-TmsLocalRoleProcessId -Role 'frontend' -Workspace $workspace -Python $python -Node $node }
         'worker' { Find-TmsWorkerProcessId }
+        'export-worker' { Find-TmsLocalRoleProcessId -Role 'export-worker' -Workspace $workspace -Python $python -Node $node }
     }
     if ($null -eq $processId) { return $null }
     $candidate = New-TmsLocalProcessRecord -Role $Role -ProcessId $processId -Adopted $true
@@ -81,7 +84,7 @@ try {
         throw 'The local test state belongs to a different workspace. No process was stopped.'
     }
     foreach ($record in @($state.processes)) {
-        if ($record.role -notin @('api', 'worker', 'frontend')) {
+        if ($record.role -notin @('api', 'worker', 'export-worker', 'frontend')) {
             throw "Unknown role '$($record.role)' in local state. No process was stopped."
         }
     }
@@ -92,6 +95,29 @@ try {
     } elseif ($PSCmdlet.ShouldProcess("PID $($frontendRecord.process_id) (frontend)", 'Stop managed TMS frontend')) {
         Stop-Process -Id ([int]$frontendRecord.process_id) -Force -ErrorAction Stop
         Write-Host 'frontend: stopped'
+    }
+
+    $workerRecord = Get-TmsRecordedRole -State $state -Role 'export-worker'
+    $workerStopped = $true
+    if ($null -eq $workerRecord -or -not (Test-TmsLocalProcess -Record $workerRecord -Workspace $workspace -Python $python -Node $node)) {
+        Write-Host 'export-worker: already stopped'
+    } elseif ($PSCmdlet.ShouldProcess("PID $($workerRecord.process_id) (worker)", 'Request managed TMS Worker graceful stop')) {
+        [DateTime]::UtcNow.ToString('o') | Set-Content -LiteralPath $exportWorkerStopFile -Encoding ASCII
+        $deadline = [DateTime]::UtcNow.AddSeconds($WorkerDrainTimeoutSeconds)
+        do {
+            Start-Sleep -Milliseconds 500
+            $running = Test-TmsLocalProcess -Record $workerRecord -Workspace $workspace -Python $python -Node $node
+        } while ($running -and [DateTime]::UtcNow -lt $deadline)
+        if ($running) {
+            $workerStopped = $false
+            Write-Warning 'export-worker: still finishing its current run; it was not force-stopped'
+        } else {
+            Write-Host 'export-worker: stopped gracefully'
+        }
+    }
+
+    if (-not $workerStopped) {
+        throw 'Export Worker has not stopped yet. API and state were retained; run stop again after the current run finishes.'
     }
 
     $workerRecord = Get-TmsRecordedRole -State $state -Role 'worker'
@@ -125,7 +151,7 @@ try {
         Write-Host 'api: stopped'
     }
 
-    foreach ($controlFile in @($workerStopFile, $workerReadyFile)) {
+    foreach ($controlFile in @($workerStopFile, $workerReadyFile, $exportWorkerStopFile, $exportWorkerReadyFile)) {
         if (
             (Test-Path -LiteralPath $controlFile -PathType Leaf) -and
             $PSCmdlet.ShouldProcess($controlFile, 'Remove local Worker control file')

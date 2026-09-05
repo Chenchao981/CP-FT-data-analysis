@@ -108,6 +108,14 @@ describe("PersonalDashboard data scopes", () => {
     vi.clearAllMocks();
   });
 
+  it("opens the exact formal version from recent dashboard evidence", async () => {
+    vi.mocked(listMyDataDomains).mockResolvedValue([]);
+    vi.mocked(getQualityManagementSummary).mockResolvedValue(summary);
+    const { onNavigate } = renderDashboard();
+    fireEvent.click(await screen.findByRole("button", { name: "查看分析" }));
+    expect(onNavigate).toHaveBeenCalledWith("/analytics?dataset=21%3A1");
+  });
+
   it("loads only the current user's PERSONAL 30-day summary without demo metrics", async () => {
     vi.mocked(listMyDataDomains).mockResolvedValue([]);
     vi.mocked(getQualityManagementSummary).mockResolvedValue(summary);

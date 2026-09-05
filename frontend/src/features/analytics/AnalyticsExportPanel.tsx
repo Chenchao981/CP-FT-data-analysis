@@ -2,7 +2,7 @@ import { CloseCircleOutlined, DownloadOutlined, ExportOutlined, ReloadOutlined, 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Alert, Button, Card, Descriptions, Form, Input, InputNumber, Pagination, Popconfirm, Select, Space, Table, Tag, Typography } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import type { AnalyticsContextRequest, AnalyticsRuleContext } from "../../api/analytics";
 import {
@@ -50,6 +50,11 @@ const statusColor: Record<string, string> = {
 const statusLabel: Record<string, string> = {
   QUEUED: "排队中", RUNNING: "生成中", SUCCESS: "成功", FAILED: "失败", CANCELLED: "已取消", EXPIRED: "已过期",
 };
+const templateLabel: Record<AnalyticsExportTemplateCode, string> = {
+  ANALYTICS_DETAIL: "器件明细", PARAMETER_DETAIL: "参数明细", ANALYTICS_OVERVIEW: "分析总览",
+  PARAMETER_ANALYSIS: "参数统计与分布", PARAMETER_RELATIONSHIP: "参数关系",
+  SPATIAL_ANALYSIS: "晶圆空间", FT_QUALITY: "FT 质量分析", WAFER_SUMMARY: "晶圆汇总",
+};
 const scopeLabel: Record<AnalyticsExportScope, string> = {
   CURRENT_PAGE: "当前页", FILTERED_RESULT: "全部筛选结果", FULL_DATASET: "完整 Dataset", REPORT: "分析报告",
 };
@@ -80,7 +85,7 @@ export function AnalyticsExportPanel({ context, ruleContext, testStage, focusDat
   const [form] = Form.useForm<ExportValues>();
   const [listPage, setListPage] = useState(1);
   const [listPageSize, setListPageSize] = useState(10);
-  const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey);
+  const submission = useRef<{ signature: string; key: string } | null>(null);
   const [metadataJobId, setMetadataJobId] = useState<number>();
   const [cancelTarget, setCancelTarget] = useState<AnalyticsExportRecord>();
   const [cancelReason, setCancelReason] = useState("");
@@ -102,6 +107,7 @@ export function AnalyticsExportPanel({ context, ruleContext, testStage, focusDat
     queryFn: () => getAnalyticsExportDownloadMetadata(metadataJobId!),
     enabled: canExport && metadataJobId !== undefined,
     retry: false,
+    refetchInterval: ({ state }) => state.status !== "error" && (state.data?.job_status === "QUEUED" || state.data?.job_status === "RUNNING") ? 3000 : false,
   });
   const refresh = async () => queryClient.invalidateQueries({ queryKey: ["analytics", "exports"] });
   const createMutation = useMutation({
@@ -126,16 +132,20 @@ export function AnalyticsExportPanel({ context, ruleContext, testStage, focusDat
           focus_dataset_id: focusDatasetId,
         },
         artifact_ttl_hours: values.artifactTtlHours,
-        idempotency_key: idempotencyKey,
+        idempotency_key: "",
         reason: values.reason.trim(),
         ...(values.exportScope === "CURRENT_PAGE" ? { page, page_size: pageSize } : {}),
       };
-      return createAnalyticsExport(request);
+      const signature = JSON.stringify(request);
+      if (submission.current?.signature !== signature) {
+        submission.current = { signature, key: newIdempotencyKey() };
+      }
+      return createAnalyticsExport({ ...request, idempotency_key: submission.current.key });
     },
     onSuccess: async (record) => {
-      setSuccess(`Export Job #${record.export_job_id} 已提交${record.idempotent_replay ? "（幂等重放）" : ""}`);
+      setSuccess(`报告任务 #${record.export_job_id} 已提交${record.idempotent_replay ? "（幂等重放）" : ""}`);
       setMetadataJobId(record.export_job_id);
-      setIdempotencyKey(newIdempotencyKey());
+      submission.current = null;
       await refresh();
     },
   });
@@ -163,12 +173,12 @@ export function AnalyticsExportPanel({ context, ruleContext, testStage, focusDat
   const columns = useMemo<ColumnsType<AnalyticsExportRecord>>(() => [
     { title: "Job", dataIndex: "export_job_id", key: "job", width: 90, render: (value: number) => `#${value}` },
     { title: "状态", dataIndex: "status", key: "status", width: 110, render: (value: string) => <Tag color={statusColor[value]}>{statusLabel[value] ?? value}</Tag> },
-    { title: "Template", key: "template", render: (_, row) => <Space direction="vertical" size={0}><Typography.Text>{row.template_code}@{row.template_version}</Typography.Text><Typography.Text type="secondary">{scopeLabel[row.export_scope]} · {row.export_format}</Typography.Text></Space> },
-    { title: "Context / 显示", key: "context", render: (_, row) => <Space direction="vertical" size={0}><Typography.Text code title="Context Hash">C {row.context_hash.slice(0, 12)}…</Typography.Text><Typography.Text code title="Presentation Hash">P {row.presentation_hash.slice(0, 12)}…</Typography.Text><Typography.Text type="secondary">{row.datasets.map((item) => `#${item.dataset_id}/V${item.version_no}`).join(", ")}</Typography.Text></Space> },
+    { title: "报告内容", key: "template", render: (_, row) => <Space direction="vertical" size={0}><Typography.Text>{templateLabel[row.template_code]}</Typography.Text><Typography.Text type="secondary">{scopeLabel[row.export_scope]} · {row.export_format}</Typography.Text></Space> },
+    { title: "数据与配置追溯", key: "context", render: (_, row) => <Space direction="vertical" size={0}><Typography.Text code title="Context Hash">C {row.context_hash.slice(0, 12)}…</Typography.Text><Typography.Text code title="Presentation Hash">P {row.presentation_hash.slice(0, 12)}…</Typography.Text><Typography.Text type="secondary">{row.datasets.map((item) => `#${item.dataset_id}/V${item.version_no}`).join(", ")}</Typography.Text></Space> },
     { title: "行数", dataIndex: "exported_row_count", key: "rows", width: 100, render: (value: number | null) => value ?? "—" },
     { title: "请求时间", dataIndex: "requested_at_utc", key: "requested", width: 180, render: formatUtcDateTime },
     { title: "操作", key: "actions", width: 190, render: (_, row) => <Space>
-      <Button size="small" icon={<SafetyCertificateOutlined />} onClick={() => setMetadataJobId(row.export_job_id)}>制品元数据</Button>
+      <Button size="small" icon={<SafetyCertificateOutlined />} onClick={() => setMetadataJobId(row.export_job_id)}>查看结果</Button>
       {(row.status === "QUEUED" || row.status === "RUNNING") && <Button danger size="small" icon={<CloseCircleOutlined />} onClick={() => setCancelTarget(row)}>取消</Button>}
     </Space> },
   ], []);
@@ -177,7 +187,7 @@ export function AnalyticsExportPanel({ context, ruleContext, testStage, focusDat
   if (!selectedTemplate) return <Card title="一键生成报告"><Alert type="error" showIcon message="当前测试阶段没有可用报告模板" /></Card>;
 
   const metadata = metadataQuery.data;
-  return <Card title="一键生成 HTML / PDF / XLSX 报告" extra={<Button icon={<ReloadOutlined />} onClick={() => void listQuery.refetch()} loading={listQuery.isFetching}>刷新</Button>}>
+  return <Card title="一键生成 HTML / PDF / XLSX 报告" extra={<Button icon={<ReloadOutlined />} onClick={() => void refresh()} loading={listQuery.isFetching}>刷新</Button>}>
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       {(listQuery.data?.integrity_blocked_count ?? 0) > 0 && <Alert
         type="error"
@@ -201,15 +211,15 @@ export function AnalyticsExportPanel({ context, ruleContext, testStage, focusDat
         onFinish={(values) => createMutation.mutate(values)}
       >
         <Space align="start" wrap>
-          <Form.Item label="Template" name="templateCode" rules={[{ required: true }]}><Select aria-label="Export Template" options={eligibleTemplates.map((item) => ({ label: `${item.code}@${item.version}`, value: item.code }))} style={{ width: 250 }} /></Form.Item>
-          <Form.Item label="Scope" name="exportScope" rules={[{ required: true }]}><Select aria-label="Export Scope" options={selectedTemplate.scopes.map((value) => ({ label: scopeLabel[value], value }))} style={{ width: 180 }} /></Form.Item>
-          <Form.Item label="Format" name="exportFormat" rules={[{ required: true }]}><Select aria-label="Export Format" options={selectedTemplate.formats.map((value) => ({ label: value, value }))} style={{ width: 130 }} /></Form.Item>
+          <Form.Item label="报告内容" name="templateCode" rules={[{ required: true }]}><Select aria-label="Export Template" options={eligibleTemplates.map((item) => ({ label: templateLabel[item.code], title: `${item.code}@${item.version}`, value: item.code }))} style={{ width: 250 }} /></Form.Item>
+          <Form.Item label="数据范围" name="exportScope" rules={[{ required: true }]}><Select aria-label="Export Scope" options={selectedTemplate.scopes.map((value) => ({ label: scopeLabel[value], value }))} style={{ width: 180 }} /></Form.Item>
+          <Form.Item label="文件格式" name="exportFormat" rules={[{ required: true }]}><Select aria-label="Export Format" options={selectedTemplate.formats.map((value) => ({ label: value, value }))} style={{ width: 130 }} /></Form.Item>
           <Form.Item label="制品保留小时" name="artifactTtlHours" rules={[{ required: true, type: "number", min: 1, max: 168 }]}><InputNumber aria-label="Export TTL" min={1} max={168} /></Form.Item>
           <Form.Item label="导出原因" name="reason" rules={[{ required: true, min: 8, max: 1000 }]}><Input aria-label="Export 原因" maxLength={1000} style={{ width: 320 }} /></Form.Item>
           <Form.Item label=" "><Button htmlType="submit" type="primary" icon={<ExportOutlined />} loading={createMutation.isPending}>生成报告</Button></Form.Item>
         </Space>
       </Form>
-      <Typography.Text type="secondary">Idempotency Key：<Typography.Text code>{idempotencyKey}</Typography.Text>{watchedScope === "CURRENT_PAGE" ? ` · 当前页 ${page} / ${pageSize} 行` : ""}</Typography.Text>
+      {watchedScope === "CURRENT_PAGE" && <Typography.Text type="secondary">当前页 {page} / 每页 {pageSize} 行</Typography.Text>}
       <Table<AnalyticsExportRecord> rowKey="export_job_id" columns={columns} dataSource={listQuery.data?.items ?? []} loading={listQuery.isLoading} pagination={false} scroll={{ x: 1050 }} locale={{ emptyText: listQuery.isError ? listQuery.error.message : "暂无 Export Job" }} />
       {(listQuery.data?.total ?? 0) > 0 && <Pagination current={listPage} pageSize={listPageSize} total={listQuery.data?.total ?? 0} showSizeChanger pageSizeOptions={[10, 20, 50]} onChange={(nextPage, nextSize) => { setListPage(nextPage); setListPageSize(nextSize); }} />}
       {cancelTarget && <Card size="small" title={`取消 Export Job #${cancelTarget.export_job_id}`}>

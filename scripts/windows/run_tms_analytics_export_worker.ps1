@@ -7,6 +7,11 @@ param(
     [ValidateRange(1, 300)]
     [int]$HeartbeatSeconds = 30,
     [string]$WorkerId,
+    [string]$ExpectedDatabase,
+    [string]$ExpectedSchemaRevision,
+    [string]$ExpectedDatabaseServer,
+    [string]$ReadyFile,
+    [string]$StopFile,
     [switch]$Once,
     [switch]$ValidateOnly
 )
@@ -36,6 +41,20 @@ $resolvedWorkerId = if ($PSBoundParameters.ContainsKey('WorkerId')) {
 }
 if (-not [string]::IsNullOrWhiteSpace($resolvedWorkerId)) {
     $arguments += @('--worker-id', $resolvedWorkerId)
+}
+foreach ($option in @(
+    @('ExpectedDatabase', '--expected-database', 'TMS_EXPECTED_DATABASE'),
+    @('ExpectedSchemaRevision', '--expected-schema-revision', 'TMS_EXPECTED_SCHEMA_REVISION'),
+    @('ExpectedDatabaseServer', '--expected-database-server', 'TMS_EXPECTED_DATABASE_SERVER'),
+    @('ReadyFile', '--ready-file', 'TMS_ANALYTICS_EXPORT_WORKER_READY_FILE'),
+    @('StopFile', '--stop-file', 'TMS_ANALYTICS_EXPORT_WORKER_STOP_FILE')
+)) {
+    $value = if ($PSBoundParameters.ContainsKey($option[0])) {
+        [string]$PSBoundParameters[$option[0]]
+    } else { [Environment]::GetEnvironmentVariable($option[2]) }
+    if (-not [string]::IsNullOrWhiteSpace($value)) {
+        $arguments += @($option[1], $value)
+    }
 }
 if ($Once) {
     $arguments += '--once'

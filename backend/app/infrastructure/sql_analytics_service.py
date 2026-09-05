@@ -610,12 +610,12 @@ class SqlAnalyticsService:
             )
             if row is None:
                 raise DomainError(
-                    "DATASET_VERSION_NOT_FOUND", "dataset version was not found", 404
+                    "DATASET_VERSION_NOT_FOUND", "所选正式数据版本不存在，请返回产品与批次重新选择", 404
                 )
             if str(row["status"]) != "PUBLISHED" or not bool(row["is_current"]):
                 raise DomainError(
                     "ANALYSIS_VERSION_NOT_CURRENT",
-                    "analytics only accepts Current Published Dataset Versions",
+                    "所选版本已被更新或归档，请返回产品与批次选择当前正式版本",
                     409,
                 )
             rows.append(row)
@@ -623,7 +623,7 @@ class SqlAnalyticsService:
         if len(stages) != 1 or not stages.issubset({"CP", "FT"}):
             raise DomainError(
                 "ANALYSIS_STAGE_INCOMPATIBLE",
-                "one analytics context must contain only CP or only FT datasets",
+                "CP 与 FT 数据不能合并比较，请选择同一测试阶段的数据",
                 409,
             )
         if len(rows) > 1 and next(iter(stages)) == "CP":
@@ -631,7 +631,7 @@ class SqlAnalyticsService:
             if None in spec_ids or len(spec_ids) != 1:
                 raise DomainError(
                     "ANALYSIS_SPEC_INCOMPATIBLE",
-                    "selected CP datasets do not have one proven compatible Spec",
+                    "所选 CP 数据尚未证明使用同一有效规格，请选择规格一致的数据，或分别分析",
                     409,
                 )
         return tuple(rows)
@@ -889,7 +889,10 @@ class SqlAnalyticsService:
         if missing or incompatible:
             raise DomainError(
                 "ANALYSIS_PARAMETER_INCOMPATIBLE",
-                "one or more selected parameters are missing or have ambiguous identity",
+                "所选参数不能在当前数据间直接比较。"
+                + (f"缺少参数：{'、'.join(missing)}。" if missing else "")
+                + (f"参数名称相同但单位、测试条件、测试项身份或测试限不同：{'、'.join(incompatible)}。" if incompatible else "")
+                + "请调整参数或数据选择；可以分别查看单个数据集。",
                 409,
                 details=[{"missing": missing, "incompatible": incompatible}],
             )

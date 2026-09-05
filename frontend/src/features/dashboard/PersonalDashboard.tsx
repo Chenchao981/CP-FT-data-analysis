@@ -35,7 +35,7 @@ type DashboardScope = "PERSONAL" | "DOMAIN";
 const percent = (value: number | null | undefined) => value == null ? "—" : `${(value * 100).toFixed(2)}%`;
 const count = (value: number | null | undefined) => value == null ? "—" : value.toLocaleString("zh-CN");
 
-function SummaryView({ data, scope }: { data: QualityManagementSummary; scope: DashboardScope }) {
+function SummaryView({ data, scope, onNavigate }: { data: QualityManagementSummary; scope: DashboardScope; onNavigate: (path: string) => void }) {
   const trendOption = useMemo<EChartsOption>(() => ({
     color: ["#1677ff", "#d46b08", "#91a4b7"],
     tooltip: { trigger: "axis" },
@@ -60,6 +60,10 @@ function SummaryView({ data, scope }: { data: QualityManagementSummary; scope: D
     { title: "CP/FT", dataIndex: "test_stage", width: 80 },
     { title: "已知良率", dataIndex: "yield_rate", width: 120, render: percent },
     { title: "发布时间", dataIndex: "published_at_utc", width: 180, render: formatUtcDateTime },
+    { title: "操作", key: "actions", width: 110, render: (_, row) => <Button type="link" size="small" onClick={() => {
+      const params = new URLSearchParams({ dataset: `${row.dataset_id}:${row.version_no}` });
+      onNavigate(`/analytics?${params.toString()}`);
+    }}>查看分析</Button> },
   ];
 
   if ((data.kpis.dataset_count ?? 0) === 0) {
@@ -156,7 +160,7 @@ export function PersonalDashboard({
           ? <div className="page-loading"><Spin /></div>
           : summary.isError
             ? <Alert type="error" showIcon message="统计数据暂时不可用" description={summary.error instanceof Error ? summary.error.message : "请稍后重试"} />
-            : summary.data ? <SummaryView data={summary.data} scope={scope} /> : null;
+            : summary.data ? <SummaryView data={summary.data} scope={scope} onNavigate={onNavigate} /> : null;
 
   return <div className="personal-dashboard workbench">
     <div className="page-heading dashboard-page-heading">
