@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 def test_quick_analysis_revision_is_the_single_alembic_head() -> None:
     config = Config(str(ROOT / "db" / "alembic" / "alembic.ini"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["sql2014_0027"]
+    assert script.get_heads() == ["sql2014_0028"]
 
 
 def test_quick_analysis_sql_keeps_workspace_out_of_canonical_facts() -> None:

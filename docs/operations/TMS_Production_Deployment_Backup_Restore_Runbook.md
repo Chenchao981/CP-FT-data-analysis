@@ -23,7 +23,7 @@ New-Item -ItemType Directory -Force .\artifacts\releases | Out-Null
   --output .\artifacts\releases\NCE-TMS-v1.0-core.zip
 ```
 
-构建器按固定路径顺序、固定 ZIP 时间戳生成 `release-manifest.json`，对每个文件记录 SHA256 和字节数，执行高置信 secret scan、ZIP CRC/路径/清单检查。默认 smoke 会用源码目录中的包外 Runtime Config 和 Python，在独立临时 RuntimeHome 中从解包代码真实启动 API，验证 loopback ready 精确指向 `TMS_G0_DEV/sql2014_0027`，随后停止进程树并再次验证 manifest 未变。单独解包后可用以下命令只检查 manifest：
+构建器按固定路径顺序、固定 ZIP 时间戳生成 `release-manifest.json`，对每个文件记录 SHA256 和字节数，执行高置信 secret scan、ZIP CRC/路径/清单检查。默认 smoke 会用源码目录中的包外 Runtime Config 和 Python，在独立临时 RuntimeHome 中从解包代码真实启动 API，验证 loopback ready 精确指向 `TMS_G0_DEV/sql2014_0028`，随后停止进程树并再次验证 manifest 未变。单独解包后可用以下命令只检查 manifest：
 
 ```powershell
 .\scripts\windows\start_tms_runtime.ps1 -ValidateOnly
@@ -62,13 +62,15 @@ $pythonPath = 'D:\NCE-TMS-Python\python.exe'
 
 ## 4. Migration 前置、备份与后置检查
 
+`sql2014_0028` 会全量复制 CP/FT 明细并保留旧表只读快照，须事先核对 **SQL Server 服务器卷** 的数据、索引、日志和备份容量，不能以运行维护脚本的电脑剩余磁盘为依据。迁移使用卷信息需要相应服务器状态查询权限。实际迁移合同及回退限制见 [CP/FT 物理存储合同](../architecture/NCE_PYMS_Physical_Stage_Storage_2026-09-05.md)。多文件库的恢复必须按 FILELISTONLY 中的全部文件逐项指定 MOVE，现有恢复脚本已支持遍历全部文件。
+
 以下命令必须先不带 `-Execute` 运行并存档输出。白名单必须列出精确库名，备份路径必须是绝对 `.bak` 路径且文件不存在。
 
 ```powershell
 .\scripts\windows\test_tms_migration_readiness.ps1 `
   -SqlInstance 'SQLPROD01' -Database 'NCE_TMS' `
   -AllowedDatabases 'NCE_TMS' -Phase PreMigration `
-  -ExpectedSchemaRevision 'sql2014_0027'
+  -ExpectedSchemaRevision 'sql2014_0028'
 
 .\scripts\windows\backup_tms_database.ps1 `
   -SqlInstance 'SQLPROD01' -Database 'NCE_TMS' `
@@ -86,7 +88,7 @@ $pythonPath = 'D:\NCE-TMS-Python\python.exe'
 .\scripts\windows\test_tms_migration_readiness.ps1 `
   -SqlInstance 'SQLPROD01' -Database 'NCE_TMS' `
   -AllowedDatabases 'NCE_TMS' -Phase PostMigration `
-  -ExpectedSchemaRevision 'sql2014_0027' -Execute
+  -ExpectedSchemaRevision 'sql2014_0028' -Execute
 ```
 
 Post-check 必须确认 schema revision 精确匹配，且 Dataset Current/Processing Run Current 无非 `PUBLISHED` current 和重复 current。
@@ -98,7 +100,7 @@ Post-check 必须确认 schema revision 精确匹配，且 Dataset Current/Proce
   -SqlInstance 'SQLUAT01' -Database 'NCE_TMS_MIGRATION_TEST' `
   -AllowedTestDatabases 'NCE_TMS_MIGRATION_TEST' `
   -ProductionDatabases 'NCE_TMS' `
-  -ExpectedSchemaRevision 'sql2014_0027'
+  -ExpectedSchemaRevision 'sql2014_0028'
 ```
 
 先审核 DryRun，再加 `-Execute`。执行时先验证库存在且 `sys.tables` 为空，再使用 Integrated Security 运行 `alembic upgrade head`，最后执行精确 schema/current consistency 检查。失败后不自动修补或删库，由 DBA 保留证据并重建新的空库再测。
@@ -115,7 +117,7 @@ Post-check 必须确认 schema revision 精确匹配，且 Dataset Current/Proce
   -ProductionDatabases 'NCE_TMS' `
   -BackupPath 'E:\SQLBackup\NCE_TMS_before_v1_0.bak' `
   -RestoreDataDirectory 'F:\SQLData\TMSRestore' `
-  -ExpectedSchemaRevision 'sql2014_0027'
+  -ExpectedSchemaRevision 'sql2014_0028'
 ```
 
 审核 DryRun 输出后才可加 `-Execute`。脚本先做 `VERIFYONLY CHECKSUM` 和 `FILELISTONLY`，为每个逻辑文件生成明确 `MOVE`目标，拒绝任何已存在的目标库/数据文件，恢复后自动执行 schema/current consistency 检查。恢复成功、查询可读且检查无异常后，将演练时间、备份 SHA256、恢复库名和检查输出归档。

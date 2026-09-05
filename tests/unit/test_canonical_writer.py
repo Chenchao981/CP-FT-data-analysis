@@ -56,6 +56,9 @@ class WriterConnection:
         self.executions: list[tuple[str, Any]] = []
         self.next_unit_id = 100
 
+    def in_transaction(self) -> bool:
+        return True
+
     def execute(self, statement: Any, parameters: Any = None) -> FakeResult:
         sql = str(statement)
         self.executions.append((sql, parameters))
@@ -87,9 +90,10 @@ class WriterConnection:
             return FakeResult(scalar=70)
         if "INSERT test.test_run" in sql:
             return FakeResult(scalar=80)
-        if "INSERT test.unit_result" in sql:
-            self.next_unit_id += 1
-            return FakeResult(scalar=self.next_unit_id)
+        if "sp_sequence_get_range" in sql:
+            first = self.next_unit_id + 1
+            self.next_unit_id += parameters["count"]
+            return FakeResult(scalar=first)
         return FakeResult()
 
 
@@ -161,14 +165,14 @@ def test_writer_persists_traceable_canonical_rows_in_one_transaction() -> None:
     assert result.unit_count == 1
     assert result.measurement_count == len(file.parameters)
     unit_parameters = next(
-        params for sql, params in connection.executions if "INSERT test.unit_result" in sql
+        params[0] for sql, params in connection.executions if "INSERT test.cp_die(" in sql
     )
     assert unit_parameters["source_row_no"] == 16
     assert file.source_sha256 in unit_parameters["metadata_json"]
     measurement_batches = [
         params
         for sql, params in connection.executions
-        if "INSERT test.measurement(" in sql
+        if "INSERT test.cp_measurement(" in sql
     ]
     assert sum(len(batch) for batch in measurement_batches) == len(file.parameters)
     assert measurement_batches[0][0]["source_column_index"] == 5

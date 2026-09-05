@@ -46,7 +46,7 @@ def _setup_stage(engine, token: str) -> dict[str, Any]:
             raise RuntimeError(
                 f"destructive E2E is restricted to TMS_G0_DEV: {identity}"
             )
-        if identity["revision"] != "sql2014_0027":
+        if identity["revision"] != "sql2014_0028":
             raise RuntimeError(f"unexpected schema revision: {identity['revision']}")
         owner = (
             connection.execute(

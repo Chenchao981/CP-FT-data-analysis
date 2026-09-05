@@ -13,7 +13,7 @@
 | 生命周期 | Dataset、Job、Source、个人 Session | 统一任务框架；正式与个人身份、保留周期分开 |
 | 展示 | `AnalysisResultFrame`、`AnalysisEvidence`、`PatResultView` | 统一结果归属与证据，不推断未知数量 |
 
-**数据库物理明细仍共用 test.unit_result / test.measurement。** 9 月 5 日数据库整改已通过 `sql2014_0027` 增加 CP/FT 独立运行信息表、结构化来源/制造批次/规格字段及阶段查询视图；详见 [数据库阶段字段合同](NCE_PYMS_Database_Stage_Fields_2026-09-05.md)。运行信息分表不等于测量事实已经物理分表。旧 analysis.* 不作为第二条正式事实链。
+**数据库物理明细已通过 `sql2014_0028` 拆分为 cp_die、ft_device、cp_measurement、ft_measurement。** `sql2014_0027` 的 CP/FT 独立运行字段继续使用；原公共名称成为兼容查询视图，三条 Writer 通过 StageFactRepository 写入对应物理表。详见 [数据库阶段字段合同](NCE_PYMS_Database_Stage_Fields_2026-09-05.md) 和 [物理存储合同](NCE_PYMS_Physical_Stage_Storage_2026-09-05.md)。旧 analysis.* 不作为第二条正式事实链。
 
 ## 2. 身份与参数语义
 
@@ -36,18 +36,18 @@
 
 当前正式入口六个厂家全部进入能力目录：华虹、积塔、立昂微、日月新、日月光、电基。个人工具仍按其专门合同调度，能力目录不据此宣称所有格式都已支持个人电脑执行。
 
-## 4. 物理分表的渐进迁移方案
+## 4. 已完成的物理分表与维护要求
 
-目标是 CP Die/Measurement 与 FT Device/Measurement 分表，共享 Source、Dataset、参数定义和任务。
+CP Die/Measurement 与 FT Device/Measurement 已分表，共享 Source、Dataset、参数定义和任务。迁移及维护遵循以下要求：
 
 1. 基于现有正式样本先核对阶段身份、重复/重测与 FT 元数据覆盖率；清洗快照与重测历史必须分清。
-2. 新建分阶段表和旧 ID 对照，按 Dataset Version 回填，保持旧事实只读。不能只建立空表或双写一份就宣称完成。
+2. 全量回填分阶段表，原 ID 保持原值；窄 ID 登记表承接评价与追溯外键，旧事实快照只读。
 3. 每个版本对账 Unit、Measurement、状态数、Pass、Lot/Source 分组、规格语义及数值摘要。保留 ID 对照，避免收藏、下载和证据链接失效。
 4. 查询通过阶段 Repository 切换；前端接口及原来权限谓词保持一致。CP/FT 混合查询不得进入同阶段统计。
 5. 新旧查询对账、并发读取和性能通过后才切换写入。切换期间单一事实写入目标，禁止两套统计成为事实来源。
-6. 回滚切回原 Repository 并停止新写入；历史表归档在迁移验收后另行安排，不删除原数据。
+6. 回退必须停止写入，使用备份及匹配代码或前向修复，并处理切换后的新增事实；不能直接切回不含新增事实的旧表。历史快照清理另行安排。
 
-阶段合同分离与身份保护已完成。`sql2014_0027` 已回填所有现有 CP/FT 运行信息并切换来源字段读取；本节列出的独立物理测量表及全历史事实切换尚未执行，不能把阶段视图当作物理表。
+阶段合同、运行字段和物理事实切换均已完成。实际迁移保留全部 1,002,163 条器件记录、18,353,936 条测量记录及其 ID，提交前逐行比较原始列；后续真实样本导入形成新增测试版本。结果与容量限制见 [物理分表完成报告](../development/NCE_PYMS_Physical_Stage_Storage_Completion_Report_2026-09-05.md)。
 
 ## 5. 个人电脑与服务器
 

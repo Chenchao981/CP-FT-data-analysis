@@ -19,9 +19,10 @@ from app.infrastructure.database import check_database, get_engine
 from app.infrastructure.sql_spec_evaluation_materializer import (
     materialize_processing_run_spec_evaluations,
 )
+from app.infrastructure.stage_fact_repository import insert_measurements, insert_units
 
 EXPECTED_DATABASE = "TMS_G0_DEV"
-EXPECTED_SCHEMA_REVISION = "sql2014_0027"
+EXPECTED_SCHEMA_REVISION = "sql2014_0028"
 
 
 def _scalar(connection: Connection, sql: str, parameters: dict[str, Any]) -> int:
@@ -200,13 +201,11 @@ def _create_context(
             "lot": f"SPEC-E2E-{token}",
         },
     )
-    unit_id = _scalar(
-        connection,
-        "INSERT test.unit_result(run_id,logical_unit_key,attempt_no,unit_sequence,"
-        "soft_bin,overall_result,metadata_json) OUTPUT INSERTED.unit_id "
-        "VALUES(:run,:key,0,1,'1','UNKNOWN','{}')",
-        {"run": run_id, "key": f"CP:SPEC-E2E:{token}"},
-    )
+    unit_id = insert_units(connection, "CP", [{
+        "run_id": run_id, "logical_unit_key": f"CP:SPEC-E2E:{token}",
+        "attempt_no": 0, "unit_sequence": 1, "soft_bin": "1",
+        "overall_result": "UNKNOWN", "metadata_json": "{}",
+    }])[0]
     measurement_values: dict[str, tuple[float | None, str]] = {
         "PASS": (5.0, "MEASURED"),
         "FAIL": (11.0, "MEASURED"),
@@ -215,20 +214,15 @@ def _create_context(
         "NOT_EVALUATED": (None, "MISSING"),
         "INVALID_VALUE": (5.0, "INVALID"),
     }
-    connection.execute(
-        text(
-            "INSERT test.measurement(unit_id,test_item_id,value_numeric,raw_value,"
-            "measurement_status,source_column_index) "
-            "VALUES(:unit,:item,:value,:raw,:status,:column)"
-        ),
+    insert_measurements(connection, "CP",
         [
             {
-                "unit": unit_id,
-                "item": item_ids[step_code],
-                "value": value,
-                "raw": None if value is None else str(value),
-                "status": status,
-                "column": index,
+                "unit_id": unit_id,
+                "test_item_id": item_ids[step_code],
+                "value_numeric": value,
+                "raw_value": None if value is None else str(value),
+                "measurement_status": status,
+                "source_column_index": index,
             }
             for index, (step_code, (value, status)) in enumerate(
                 measurement_values.items(), start=1

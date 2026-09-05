@@ -2,7 +2,9 @@
 
 > 正式数据执行主线为 Route A；一次性PAT使用隔离的Quick Analysis Workspace。两条通道共享SQL队列和Worker，但只有正式导入写入Canonical。
 
-当前仓库唯一 Alembic head 为 `sql2014_0027`。开发库是否已升级必须在线核对数据库、服务器和 Revision；其他环境不能根据仓库文件名推断已升级。
+当前仓库唯一 Alembic head 为 `sql2014_0028`。开发库是否已升级必须在线核对数据库、服务器和 Revision；其他环境不能根据仓库文件名推断已升级。
+
+CP/FT 事实写入必须使用 `stage_fact_repository.py`，在调用方事务中分配全局 ID 并写入对应物理表。`test.unit_result` 和 `test.measurement` 已为兼容查询视图；其旧 INSERT/UPDATE 路径不再支持。0028 迁移前须停写、备份并核对服务器容量，详见 [物理存储合同](../docs/architecture/NCE_PYMS_Physical_Stage_Storage_2026-09-05.md)。
 
 ## 开发环境
 

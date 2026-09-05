@@ -33,6 +33,7 @@ from app.infrastructure.sql_master_data_service import observe_product_crosswalk
 from app.infrastructure.sql_spec_evaluation_materializer import (
     materialize_processing_run_spec_evaluations,
 )
+from app.infrastructure.stage_fact_repository import insert_measurements, insert_units
 from app.infrastructure.stage_run_details import persist_stage_run_details
 
 CP_MULTI_LOT_SPEC_BINDING_REQUIRED = "CP_MULTI_LOT_SPEC_BINDING_REQUIRED"
@@ -976,29 +977,24 @@ class CpCsvTripletWriter:
                 )
             unit_parameters = [
                 {
-                    "run": run_ids[(row.lot_id, row.wafer_id)],
-                    "key": row.logical_key,
-                    "seq": row.seq_no,
-                    "wafer": row.wafer_id,
-                    "x": row.x,
-                    "y": row.y,
-                    "bin": row.bin_value,
-                    "result": "PASS" if row.bin_value == "1" else "FAIL",
-                    "source_row": row.source_row_no,
-                    "metadata": json.dumps({"raw_lot_id": row.lot_id}),
+                    "run_id": run_ids[(row.lot_id, row.wafer_id)],
+                    "logical_unit_key": row.logical_key,
+                    "unit_sequence": row.seq_no,
+                    "wafer_id": row.wafer_id,
+                    "x_coord": row.x,
+                    "y_coord": row.y,
+                    "soft_bin": row.bin_value,
+                    "overall_result": "PASS" if row.bin_value == "1" else "FAIL",
+                    "source_row_no": row.source_row_no,
+                    "metadata_json": json.dumps({"raw_lot_id": row.lot_id}),
                 }
                 for row in triplet.rows
             ]
-            insert_unit = text(
-                "INSERT test.unit_result(run_id,logical_unit_key,attempt_no,unit_sequence,wafer_id,x_coord,y_coord,"
-                "soft_bin,overall_result,source_row_no,metadata_json) VALUES(:run,:key,0,:seq,:wafer,:x,:y,:bin,"
-                ":result,:source_row,:metadata)"
-            )
             for start in range(0, len(unit_parameters), self._batch_size):
-                connection.execute(insert_unit, unit_parameters[start : start + self._batch_size])
+                insert_units(connection, "CP", unit_parameters[start : start + self._batch_size])
             unit_rows = connection.execute(
                 text(
-                    "SELECT ur.logical_unit_key,ur.unit_id FROM test.unit_result ur "
+                    "SELECT ur.logical_unit_key,ur.unit_id FROM test.cp_die ur "
                     "JOIN test.test_run tr ON tr.run_id=ur.run_id "
                     "WHERE tr.processing_run_id=:processing"
                 ),
@@ -1008,37 +1004,33 @@ class CpCsvTripletWriter:
             if len(unit_ids) != len(triplet.rows):
                 raise CpCsvTripletError("CP unit identity reconciliation failed after insert")
             measurement_parameters: list[dict[str, Any]] = []
-            insert_measurement = text(
-                "INSERT test.measurement(unit_id,test_item_id,value_numeric,value_text,raw_value,measurement_status,"
-                "tester_pass_flag,source_column_index) VALUES(:unit,:item,:numeric,NULL,:raw,:status,NULL,:column_index)"
-            )
             for row in triplet.rows:
                 for index, (name, raw) in enumerate(
                     zip(triplet.parameters, row.values, strict=True), start=1
                 ):
                     measurement_parameters.append(
                         {
-                            "unit": unit_ids[row.logical_key],
-                            "item": item_ids[
+                            "unit_id": unit_ids[row.logical_key],
+                            "test_item_id": item_ids[
                                 _normalized_parameter_name(
                                     name, field="CP measurement parameter"
                                 )
                             ],
-                            "numeric": _number(
+                            "value_numeric": _number(
                                 raw,
                                 field=f"row {row.source_row_no} {name}",
                                 allow_blank=True,
                             ),
-                            "raw": raw or None,
-                            "status": "MEASURED" if raw else "MISSING",
-                            "column_index": index + 5,
+                            "raw_value": raw or None,
+                            "measurement_status": "MEASURED" if raw else "MISSING",
+                            "source_column_index": index + 5,
                         }
                     )
                     if len(measurement_parameters) >= self._batch_size:
-                        connection.execute(insert_measurement, measurement_parameters)
+                        insert_measurements(connection, "CP", measurement_parameters)
                         measurement_parameters.clear()
             if measurement_parameters:
-                connection.execute(insert_measurement, measurement_parameters)
+                insert_measurements(connection, "CP", measurement_parameters)
 
             persist_stage_run_details(connection, processing_run_id=processing_run_id)
 

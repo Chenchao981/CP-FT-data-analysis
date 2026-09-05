@@ -19,9 +19,10 @@ from app.infrastructure.database import check_database, get_engine
 from app.infrastructure.sql_bin_mapping_materializer import (
     materialize_processing_run_bin_mappings,
 )
+from app.infrastructure.stage_fact_repository import insert_units
 
 EXPECTED_DATABASE = "TMS_G0_DEV"
-EXPECTED_SCHEMA_REVISION = "sql2014_0027"
+EXPECTED_SCHEMA_REVISION = "sql2014_0028"
 
 
 def _scalar(connection: Connection, sql: str, parameters: dict[str, Any]) -> int:
@@ -91,17 +92,12 @@ def _create_run_and_unit(
             "lot": f"BIN-E2E-{token}-{suffix}",
         },
     )
-    return _scalar(
-        connection,
-        "INSERT test.unit_result(run_id,logical_unit_key,attempt_no,unit_sequence,"
-        "soft_bin,overall_result,metadata_json) OUTPUT INSERTED.unit_id "
-        "VALUES(:run,:key,0,1,:bin,'UNKNOWN','{}')",
-        {
-            "run": run_id,
-            "key": f"CP:BIN-E2E:{token}:{suffix}",
-            "bin": raw_bin_code,
-        },
-    )
+    return insert_units(connection, "CP", [{
+        "run_id": run_id, "logical_unit_key": f"CP:BIN-E2E:{token}:{suffix}",
+        "attempt_no": 0, "unit_sequence": 1, "soft_bin": raw_bin_code,
+        "overall_result": "UNKNOWN", "metadata_json": "{}",
+    }])[0]
+
 
 
 def _create_mapping_set(

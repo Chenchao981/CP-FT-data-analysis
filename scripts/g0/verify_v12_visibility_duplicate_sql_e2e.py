@@ -32,9 +32,10 @@ from app.domain.stage_data import BatchInfo, StoredUpload
 from app.infrastructure.database import check_database, get_engine
 from app.infrastructure.sql_dataset_service import SqlDatasetService
 from app.infrastructure.sql_stage_data_service import SqlStageDataService
+from app.infrastructure.stage_fact_repository import insert_units
 
 EXPECTED_DATABASE = "TMS_G0_DEV"
-EXPECTED_SCHEMA_REVISION = "sql2014_0027"
+EXPECTED_SCHEMA_REVISION = "sql2014_0028"
 
 _COUNTED_TABLES = (
     "iam.app_user",
@@ -323,24 +324,12 @@ def _create_ready_run(
             },
         ).scalar_one()
     )
-    connection.execute(
-        text(
-            "INSERT test.unit_result(run_id,logical_unit_key,unit_sequence,wafer_id,"
-            "x_coord,y_coord,soft_bin,overall_result,metadata_json) "
-            "VALUES(:run,:key,1,:wafer,:x,:y,'1','PASS',:metadata)"
-        ),
-        {
-            "run": test_run_id,
-            "key": f"V12-{token}-{ordinal}",
-            "wafer": f"W{ordinal}",
-            "x": ordinal,
-            "y": ordinal,
-            "metadata": json.dumps(
-                {"verification": "v12-visibility-duplicate"},
-                separators=(",", ":"),
-            ),
-        },
-    )
+    insert_units(connection, "CP", [{
+        "run_id": test_run_id, "logical_unit_key": f"V12-{token}-{ordinal}",
+        "unit_sequence": 1, "wafer_id": f"W{ordinal}", "x_coord": ordinal,
+        "y_coord": ordinal, "soft_bin": "1", "overall_result": "PASS",
+        "metadata_json": json.dumps({"verification": "v12-visibility-duplicate"}, separators=(",", ":")),
+    }])
     return _RunIds(job_id, processing_run_id, test_run_id)
 
 
@@ -808,7 +797,7 @@ def main() -> None:
         "independent_receipts=true receipt_paths_independent=true"
     )
     print(
-        "v12_rollback=PASS database=TMS_G0_DEV schema=sql2014_0027 "
+        "v12_rollback=PASS database=TMS_G0_DEV schema=sql2014_0028 "
         "database_rows_restored=true durable_fixture_rows=0"
     )
 

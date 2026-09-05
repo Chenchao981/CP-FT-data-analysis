@@ -14,6 +14,7 @@ from app.infrastructure.sql_bin_mapping_materializer import (
 from app.infrastructure.sql_spec_evaluation_materializer import (
     materialize_processing_run_spec_evaluations,
 )
+from app.infrastructure.stage_fact_repository import insert_measurements, insert_units
 from app.infrastructure.stage_run_details import persist_stage_run_details
 
 
@@ -334,27 +335,14 @@ class HuaHongCanonicalWriter:
 
             measurement_rows: list[dict[str, object]] = []
             measurement_count = 0
-            measurement_statement = text(
-                "INSERT test.measurement("
-                "unit_id,test_item_id,value_numeric,value_text,raw_value,"
-                "measurement_status,tester_pass_flag,source_column_index) VALUES("
-                ":unit_id,:test_item_id,:value_numeric,NULL,:raw_value,"
-                ":measurement_status,NULL,:source_column_index)"
-            )
             for unit in file.units:
                 logical_key = (
                     f"CP:{file.business_lot_id}:{int(file.wafer_number)}:{unit.x}:{unit.y}"
                 )
-                unit_id = int(
-                    connection.execute(
-                        text(
-                            "INSERT test.unit_result("
-                            "run_id,logical_unit_key,unit_sequence,wafer_id,x_coord,y_coord,"
-                            "soft_bin,overall_result,source_row_no,metadata_json) "
-                            "OUTPUT INSERTED.unit_id VALUES("
-                            ":run_id,:logical_unit_key,:unit_sequence,:wafer_id,:x_coord,:y_coord,"
-                            ":soft_bin,:overall_result,:source_row_no,:metadata_json)"
-                        ),
+                unit_id = insert_units(
+                    connection,
+                    "CP",
+                    [
                         {
                             "run_id": test_run_id,
                             "logical_unit_key": logical_key,
@@ -371,9 +359,9 @@ class HuaHongCanonicalWriter:
                                     "source_sha256": file.source_sha256,
                                 }
                             ),
-                        },
-                    ).scalar_one()
-                )
+                        }
+                    ],
+                )[0]
                 for column_index, parameter, measurement in zip(
                     file.source_column_indexes,
                     file.parameters,
@@ -391,11 +379,11 @@ class HuaHongCanonicalWriter:
                         }
                     )
                     if len(measurement_rows) >= self._measurement_batch_size:
-                        connection.execute(measurement_statement, measurement_rows)
+                        insert_measurements(connection, "CP", measurement_rows)
                         measurement_count += len(measurement_rows)
                         measurement_rows = []
             if measurement_rows:
-                connection.execute(measurement_statement, measurement_rows)
+                insert_measurements(connection, "CP", measurement_rows)
                 measurement_count += len(measurement_rows)
 
             persist_stage_run_details(connection, processing_run_id=processing_run_id)

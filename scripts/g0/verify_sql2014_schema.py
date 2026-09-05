@@ -20,6 +20,8 @@ EXPECTED_SCHEMAS = {
     "workspace",
 }
 EXPECTED_VIEWS = {
+    "test.unit_result",
+    "test.measurement",
     "test.v_cp_die",
     "test.v_ft_device",
     "test.v_cp_measurement",
@@ -44,8 +46,12 @@ EXPECTED_TABLES = {
     "ingestion.processing_artifact",
     "ingestion.lifecycle_job_target",
     "test.test_run",
-    "test.unit_result",
-    "test.measurement",
+    "test.cp_die",
+    "test.ft_device",
+    "test.cp_measurement",
+    "test.ft_measurement",
+    "test.unit_identity",
+    "test.measurement_identity",
     "dataset.dataset",
     "dataset.dataset_version",
     "evaluation.evaluation_run",
@@ -77,7 +83,7 @@ def main() -> None:
         cursor = connection.cursor()
         cursor.execute("SELECT version_num FROM alembic_version")
         revision = cursor.fetchone()[0]
-        assert revision == "sql2014_0027", revision
+        assert revision == "sql2014_0028", revision
 
         cursor.execute("SELECT name FROM sys.schemas")
         schemas = {row[0] for row in cursor.fetchall()}
@@ -134,13 +140,13 @@ def main() -> None:
             """
             SELECT i.name, i.type_desc
             FROM sys.indexes AS i
-            WHERE i.object_id = OBJECT_ID('test.measurement')
+            WHERE i.object_id = OBJECT_ID('test.cp_measurement')
               AND i.name IS NOT NULL
             """
         )
         indexes = {row[0]: row[1] for row in cursor.fetchall()}
-        assert indexes.get("PK_measurement") == "CLUSTERED", indexes
-        assert indexes.get("IX_measurement_unit") == "NONCLUSTERED", indexes
+        assert indexes.get("PK_cp_measurement") == "CLUSTERED", indexes
+        assert indexes.get("IX_cp_measurement_unit") == "NONCLUSTERED", indexes
         assert all("COLUMNSTORE" not in value for value in indexes.values()), indexes
 
         cursor.execute(

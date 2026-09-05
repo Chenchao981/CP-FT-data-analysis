@@ -56,7 +56,7 @@ class IdentityConnection:
         self,
         *,
         database: str = "TMS_G0_DEV",
-        revision: str = "sql2014_0027",
+        revision: str = "sql2014_0028",
         version: str = "12.0.6449.1",
         edition: int = 3,
         banner: str = "Microsoft SQL Server 2014",
@@ -171,7 +171,7 @@ def _observation(
 def test_contract_is_pinned_to_exact_development_database_and_schema() -> None:
     assert _identity(IdentityConnection()) == {
         "database": "TMS_G0_DEV",
-        "schema_revision": "sql2014_0027",
+        "schema_revision": "sql2014_0028",
         "database_engine": "Microsoft SQL Server",
         "product_major": 12,
         "engine_edition": 3,

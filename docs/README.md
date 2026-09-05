@@ -6,10 +6,12 @@
 
 ## 1. 先读这两份
 
+- [CP/FT 物理分表完成报告](development/NCE_PYMS_Physical_Stage_Storage_Completion_Report_2026-09-05.md)：当前 sql2014_0028、全量历史对账及真实入库验证。
+- [CP/FT 物理存储合同](architecture/NCE_PYMS_Physical_Stage_Storage_2026-09-05.md)：阶段事实表、全局 ID、评价外键和容量要求。
 - [数据库结构与字段整改验收](development/NCE_PYMS_Database_Stage_Fields_Completion_Report_2026-09-05.md)：sql2014_0027、迁移对账及验证边界。
 - [数据库阶段字段字典](architecture/NCE_PYMS_Database_Stage_Fields_2026-09-05.md)：CP/FT 运行身份、来源和规格字段。
 - [2026-09-05 架构与可用性优化验收](development/NCE_PYMS_Architecture_Usability_Completion_Report_2026-09-05.md)：本次完成项、实测性能与未验收边界。
-- [CP/FT 阶段合同与扩展指南](architecture/NCE_PYMS_Stage_Contracts_and_Extension_Guide_2026-09-05.md)：当前代码分层和后续物理模型迁移。
+- [CP/FT 阶段合同与扩展指南](architecture/NCE_PYMS_Stage_Contracts_and_Extension_Guide_2026-09-05.md)：当前代码分层和新厂家扩展。
 
 1. [NCE PYMS 功能规划与现状对齐 v1.0](product/NCE_PYMS_Functional_Roadmap_v1.0_2026-09-03.md)：当前产品定位、双工作区边界和 P0～P3 优先级。
 2. [NCE PYMS 产品功能边界图](architecture/NCE_PYMS_Product_Function_Boundary_v1.0_2026-09-03.drawio)：正式制造数据平台、个人分析工具及后续扩展的视觉边界。

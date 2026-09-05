@@ -42,7 +42,7 @@ from app.main import create_app
 from app.workers.route_a_worker import DatabaseJobWorker
 
 EXPECTED_DATABASE = "TMS_G0_DEV"
-EXPECTED_SCHEMA_REVISION = "sql2014_0027"
+EXPECTED_SCHEMA_REVISION = "sql2014_0028"
 _COUNTED_TABLES = (
     "ingestion.import_batch",
     "ingestion.source_file",
@@ -875,7 +875,7 @@ def main() -> None:
         "exact_root_cleanup=true"
     )
     print(
-        "v12_duplicate_upload_cleanup=PASS database=TMS_G0_DEV schema=sql2014_0027 "
+        "v12_duplicate_upload_cleanup=PASS database=TMS_G0_DEV schema=sql2014_0028 "
         "counts_restored=true fixture_rows=0 active_queue=0"
     )
 

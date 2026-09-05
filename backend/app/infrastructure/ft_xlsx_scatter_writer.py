@@ -33,6 +33,7 @@ from app.infrastructure.sql_master_data_service import observe_product_crosswalk
 from app.infrastructure.sql_spec_evaluation_materializer import (
     materialize_processing_run_spec_evaluations,
 )
+from app.infrastructure.stage_fact_repository import insert_measurements, insert_units
 from app.infrastructure.stage_run_details import persist_stage_run_details
 
 
@@ -1253,18 +1254,14 @@ class FtXlsxScatterWriter:
                         ),
                     },
                 )
-            insert_unit = text(
-                "INSERT test.unit_result(run_id,logical_unit_key,attempt_no,unit_sequence,vendor_unit_id,"
-                "overall_result,source_row_no,metadata_json) VALUES(:run,:key,0,:seq,:vendor,'UNKNOWN',:source_row,:metadata)"
-            )
             unit_parameters = [
                 {
-                    "run": run_ids[(row.lot_id, row.source_id)],
-                    "key": row.logical_key,
-                    "seq": row.seq_no,
-                    "vendor": str(row.seq_no),
-                    "source_row": row.source_row_no,
-                    "metadata": json.dumps(
+                    "run_id": run_ids[(row.lot_id, row.source_id)],
+                    "logical_unit_key": row.logical_key,
+                    "unit_sequence": row.seq_no,
+                    "vendor_unit_id": str(row.seq_no),
+                    "source_row_no": row.source_row_no,
+                    "metadata_json": json.dumps(
                         {
                             "source_id": row.source_id,
                             "source_file": row.source_file,
@@ -1277,12 +1274,10 @@ class FtXlsxScatterWriter:
                 for row in output.rows
             ]
             for start in range(0, len(unit_parameters), self._batch_size):
-                connection.execute(
-                    insert_unit, unit_parameters[start : start + self._batch_size]
-                )
+                insert_units(connection, "FT", unit_parameters[start : start + self._batch_size])
             unit_rows = connection.execute(
                 text(
-                    "SELECT ur.logical_unit_key,ur.unit_id FROM test.unit_result ur "
+                    "SELECT ur.logical_unit_key,ur.unit_id FROM test.ft_device ur "
                     "JOIN test.test_run tr ON tr.run_id=ur.run_id "
                     "WHERE tr.processing_run_id=:processing"
                 ),
@@ -1295,10 +1290,6 @@ class FtXlsxScatterWriter:
             if len(unit_ids) != len(output.rows):
                 raise FtXlsxScatterError("FT unit identity reconciliation failed")
 
-            insert_measurement = text(
-                "INSERT test.measurement(unit_id,test_item_id,value_numeric,value_text,raw_value,measurement_status,"
-                "tester_pass_flag,source_column_index) VALUES(:unit,:item,:numeric,NULL,:raw,:status,NULL,:column)"
-            )
             measurement_parameters: list[dict[str, Any]] = []
             for row in output.rows:
                 item_ids = profiles_by_source[(row.source_id, row.lot_id)][2]
@@ -1307,23 +1298,23 @@ class FtXlsxScatterWriter:
                 ):
                     measurement_parameters.append(
                         {
-                            "unit": unit_ids[row.logical_key],
-                            "item": item_ids[name],
-                            "numeric": _number(
+                            "unit_id": unit_ids[row.logical_key],
+                            "test_item_id": item_ids[name],
+                            "value_numeric": _number(
                                 raw,
                                 field=f"row {row.source_row_no} {name}",
                                 allow_blank=True,
                             ),
-                            "raw": raw or None,
-                            "status": "MEASURED" if raw else "MISSING",
-                            "column": index + 3,
+                            "raw_value": raw or None,
+                            "measurement_status": "MEASURED" if raw else "MISSING",
+                            "source_column_index": index + 3,
                         }
                     )
                     if len(measurement_parameters) >= self._batch_size:
-                        connection.execute(insert_measurement, measurement_parameters)
+                        insert_measurements(connection, "FT", measurement_parameters)
                         measurement_parameters.clear()
             if measurement_parameters:
-                connection.execute(insert_measurement, measurement_parameters)
+                insert_measurements(connection, "FT", measurement_parameters)
 
             persist_stage_run_details(connection, processing_run_id=processing_run_id)
 
