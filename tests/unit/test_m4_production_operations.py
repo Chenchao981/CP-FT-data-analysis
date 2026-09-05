@@ -39,6 +39,8 @@ M4_POWERSHELL_FILES = (
     WINDOWS_SCRIPTS / "run_tms_formal_cleanup.ps1",
     WINDOWS_SCRIPTS / "run_tms_analytics_export_worker.ps1",
     WINDOWS_SCRIPTS / "run_tms_analytics_export_cleanup.ps1",
+    WINDOWS_SCRIPTS / "run_tms_ftp_collection_worker.ps1",
+    WINDOWS_SCRIPTS / "set_tms_ftp_credential.ps1",
     WINDOWS_SCRIPTS / "start_tms_local_agent.ps1",
     WINDOWS_SCRIPTS / "start_tms_runtime.ps1",
     ROOT / "docs" / "examples" / "TMS.production.runtime.example.ps1",
@@ -135,6 +137,9 @@ def _write_production_runtime(tmp_path: Path, *, overlap: bool = False) -> Path:
         "TMS_EXPECTED_SCHEMA_REVISION": get_schema_head(ROOT),
         "TMS_WORKER_ID": "route-a-prod-01",
         "TMS_WORKER_READY_FILE": str(tmp_path / "route-a.ready.json"),
+        "TMS_FTP_WORKER_ID": "ftp-prod-01",
+        "TMS_FTP_WORKER_READY_FILE": str(tmp_path / "ftp.ready.json"),
+        "TMS_FTP_WORKER_STOP_FILE": str(tmp_path / "ftp.stop"),
         "TMS_LOG_RETENTION_DAYS": "30",
         "TMS_SOURCE_ROOTS_JSON": source_json,
         "TMS_UPLOAD_ROOT": str(directories["upload"]),
@@ -184,7 +189,7 @@ def test_production_preflight_accepts_strong_separated_runtime(tmp_path: Path) -
 
     assert completed.returncode == 0, completed.stderr + completed.stdout
     assert "VALID" in completed.stdout
-    assert "sql2014_0028" in completed.stdout
+    assert "sql2014_0029" in completed.stdout
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows production runtime contract")
@@ -271,7 +276,8 @@ def test_python_production_config_requires_exact_release_head(
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows production probe contract")
-def test_runtime_health_probe_matches_api_and_worker_identity(tmp_path: Path) -> None:
+@pytest.mark.parametrize("ftp_state", ["ready", "missing", "wrong_database", "stopped"])
+def test_runtime_health_probe_matches_api_and_worker_identity(tmp_path: Path, ftp_state: str) -> None:
     runtime = _write_production_runtime(tmp_path)
     token = "F4" * 24
     expected_worker = "route-a-prod-01"
@@ -289,6 +295,14 @@ def test_runtime_health_probe_matches_api_and_worker_identity(tmp_path: Path) ->
         ),
         encoding="utf-8",
     )
+
+    ftp_payload = json.loads(ready_file.read_text(encoding="utf-8")) | {"worker_id": "ftp-prod-01"}
+    if ftp_state == "wrong_database":
+        ftp_payload["database"] = "WRONG_DATABASE"
+    if ftp_state == "stopped":
+        ftp_payload["pid"] = 0
+    if ftp_state != "missing":
+        (tmp_path / "ftp.ready.json").write_text(json.dumps(ftp_payload), encoding="utf-8")
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -351,6 +365,9 @@ def test_runtime_health_probe_matches_api_and_worker_identity(tmp_path: Path) ->
         server.server_close()
         thread.join(timeout=5)
 
+    if ftp_state != "ready":
+        assert completed.returncode != 0 and "FTP Worker" in completed.stderr
+        return
     assert completed.returncode == 0, completed.stderr + completed.stdout
     assert "VALID" in completed.stdout
     assert "WorkerRegistryChecked" in completed.stdout
@@ -514,7 +531,7 @@ def test_release_is_reproducible_inspected_and_launcher_smoked(tmp_path: Path) -
         == hashlib.sha256(second.read_bytes()).digest()
     )
     assert first_manifest == second_manifest
-    assert first_manifest["schema_revision"] == "sql2014_0028"
+    assert first_manifest["schema_revision"] == "sql2014_0029"
     inspected = inspect_release_archive(first)
     assert inspected == first_manifest
     with zipfile.ZipFile(first) as archive:
@@ -634,20 +651,20 @@ def test_release_runtime_smoke_accepts_only_exact_dev_ready_target() -> None:
         {
             "status": "ready",
             "database": "TMS_G0_DEV",
-            "schema_revision": "sql2014_0028",
+            "schema_revision": "sql2014_0029",
         }
     ) == {
         "status": "ready",
         "database": "TMS_G0_DEV",
-        "schema_revision": "sql2014_0028",
+        "schema_revision": "sql2014_0029",
     }
     for payload in (
         {
             "status": "starting",
             "database": "TMS_G0_DEV",
-            "schema_revision": "sql2014_0028",
+            "schema_revision": "sql2014_0029",
         },
-        {"status": "ready", "database": "NCE_TMS", "schema_revision": "sql2014_0028"},
+        {"status": "ready", "database": "NCE_TMS", "schema_revision": "sql2014_0029"},
         {
             "status": "ready",
             "database": "TMS_G0_DEV",

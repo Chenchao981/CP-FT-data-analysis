@@ -15,7 +15,7 @@ def _read(relative_path: str) -> str:
 def test_0026_is_single_head_and_enables_personal_tool_types() -> None:
     config = Config(str(ROOT / "db" / "alembic" / "alembic.ini"))
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["sql2014_0028"]
+    assert script.get_heads() == ["sql2014_0029"]
     revision = script.get_revision("sql2014_0026")
     assert revision is not None
     assert revision.down_revision == "sql2014_0025"

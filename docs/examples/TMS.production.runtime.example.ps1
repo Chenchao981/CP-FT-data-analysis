@@ -64,6 +64,11 @@ $env:TMS_API_PORT = '8000'
 $env:TMS_WORKER_ID = '__HOST_SPECIFIC_WORKER_ID__'
 $env:TMS_WORKER_READY_FILE = 'D:\TMS\run\route-a-worker.ready.json'
 $env:TMS_WORKER_STOP_FILE = 'D:\TMS\run\route-a-worker.stop'
+$env:TMS_FTP_WORKER_ID = '__HOST_SPECIFIC_FTP_WORKER_ID__'
+$env:TMS_FTP_WORKER_READY_FILE = 'D:\TMS\run\ftp-worker.ready.json'
+$env:TMS_FTP_WORKER_STOP_FILE = 'D:\TMS\run\ftp-worker.stop'
+# FTP usernames/passwords belong in this account's Windows Credential Manager.
+# Use set_tms_ftp_credential.ps1; do not put them in this configuration.
 
 $env:TMS_QUICK_CLEANUP_RETENTION_HOURS = '168'
 $env:TMS_QUICK_CLEANUP_LIMIT = '500'

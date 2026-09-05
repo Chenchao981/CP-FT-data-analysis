@@ -22,7 +22,7 @@ from app.infrastructure.sql_bin_mapping_materializer import (
 from app.infrastructure.stage_fact_repository import insert_units
 
 EXPECTED_DATABASE = "TMS_G0_DEV"
-EXPECTED_SCHEMA_REVISION = "sql2014_0028"
+EXPECTED_SCHEMA_REVISION = "sql2014_0029"
 
 
 def _scalar(connection: Connection, sql: str, parameters: dict[str, Any]) -> int:

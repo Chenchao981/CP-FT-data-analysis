@@ -29,6 +29,7 @@ $expectedScripts = @{
     'TMS-API' = $launcherScript
     'TMS-Worker' = $launcherScript
     'TMS-AnalyticsExportWorker' = $launcherScript
+    'TMS-FtpCollectionWorker' = $launcherScript
     'TMS-AnalyticsExportCleanup' = $launcherScript
     'TMS-QuickCleanup' = $launcherScript
     'TMS-FormalCleanup' = $launcherScript
@@ -37,11 +38,12 @@ $expectedRoles = @{
     'TMS-API' = 'API'
     'TMS-Worker' = 'Worker'
     'TMS-AnalyticsExportWorker' = 'AnalyticsExportWorker'
+    'TMS-FtpCollectionWorker' = 'FtpCollectionWorker'
     'TMS-AnalyticsExportCleanup' = 'AnalyticsExportCleanup'
     'TMS-QuickCleanup' = 'QuickCleanup'
     'TMS-FormalCleanup' = 'FormalCleanup'
 }
-$taskNames = @('TMS-API', 'TMS-Worker', 'TMS-AnalyticsExportWorker', 'TMS-AnalyticsExportCleanup', 'TMS-QuickCleanup', 'TMS-FormalCleanup')
+$taskNames = @('TMS-API', 'TMS-Worker', 'TMS-AnalyticsExportWorker', 'TMS-FtpCollectionWorker', 'TMS-AnalyticsExportCleanup', 'TMS-QuickCleanup', 'TMS-FormalCleanup')
 $results = foreach ($taskName in $taskNames) {
     $task = Get-ScheduledTask -TaskName $taskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
     if ($null -eq $task) {

@@ -60,4 +60,4 @@ CP Die/Measurement 与 FT Device/Measurement 已分表，共享 Source、Dataset
 
 回归默认执行 `python -m pytest tests/unit local_agent/tests -q`、前端 `npm test` 和 `npm run build`；实际解释器使用仓库环境。真实性能脚本 `scripts/g0/verify_direct_quick_pat_e2e.py` 输出源清单、行数、耗时、子进程采样内存、临时磁盘峰值和残留情况；外部工具运行使用完整 Anaconda 环境。
 
-FTP 定时采集、SAP、异常工单、AI 保持暂缓；业务规格和规则必须有批准依据，不用默认值补齐。
+用户于 2026-09-05 明确启动 FTP 对接，执行增量依据见 [FTP 集成设计](NCE_PYMS_FTP_Integration_Design_2026-09-05.md)。SAP、异常工单、AI 继续暂缓；业务规格和规则必须有批准依据，不用默认值补齐。

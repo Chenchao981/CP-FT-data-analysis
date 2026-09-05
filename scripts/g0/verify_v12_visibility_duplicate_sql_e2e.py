@@ -35,7 +35,7 @@ from app.infrastructure.sql_stage_data_service import SqlStageDataService
 from app.infrastructure.stage_fact_repository import insert_units
 
 EXPECTED_DATABASE = "TMS_G0_DEV"
-EXPECTED_SCHEMA_REVISION = "sql2014_0028"
+EXPECTED_SCHEMA_REVISION = "sql2014_0029"
 
 _COUNTED_TABLES = (
     "iam.app_user",
@@ -797,7 +797,7 @@ def main() -> None:
         "independent_receipts=true receipt_paths_independent=true"
     )
     print(
-        "v12_rollback=PASS database=TMS_G0_DEV schema=sql2014_0028 "
+        "v12_rollback=PASS database=TMS_G0_DEV schema=sql2014_0029 "
         "database_rows_restored=true durable_fixture_rows=0"
     )
 

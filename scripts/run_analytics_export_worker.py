@@ -71,8 +71,8 @@ def main() -> None:
         expected_schema_revision=args.expected_schema_revision,
         expected_database_server=args.expected_database_server,
     )
-    if database["schema_revision"] != "sql2014_0028":
-        raise RuntimeError("Analytics Export Worker requires sql2014_0028")
+    if database["schema_revision"] != "sql2014_0029":
+        raise RuntimeError("Analytics Export Worker requires sql2014_0029")
     configured_root = os.getenv("TMS_ANALYTICS_EXPORT_ROOT", "").strip()
     if not configured_root:
         if os.getenv("TMS_ENV", "").strip().lower() == "production":

@@ -400,7 +400,10 @@ function Assert-TmsProductionRuntime {
         'TMS_EXPECTED_DATABASE_SERVER',
         'TMS_EXPECTED_SCHEMA_REVISION',
         'TMS_WORKER_ID',
-        'TMS_WORKER_READY_FILE'
+        'TMS_WORKER_READY_FILE',
+        'TMS_FTP_WORKER_ID',
+        'TMS_FTP_WORKER_READY_FILE',
+        'TMS_FTP_WORKER_STOP_FILE'
     )) {
         $value = [string][Environment]::GetEnvironmentVariable($name)
         if (
@@ -428,6 +431,17 @@ function Assert-TmsProductionRuntime {
     $readyFile = [string]$env:TMS_WORKER_READY_FILE
     if (-not [IO.Path]::IsPathRooted($readyFile)) {
         throw 'TMS_WORKER_READY_FILE must be an absolute path.'
+    }
+    $ftpControlPaths = @($readyFile)
+    foreach ($ftpControlName in @('TMS_FTP_WORKER_READY_FILE', 'TMS_FTP_WORKER_STOP_FILE')) {
+        $ftpControlPath = [string][Environment]::GetEnvironmentVariable($ftpControlName)
+        if (-not [IO.Path]::IsPathRooted($ftpControlPath)) {
+            throw "$ftpControlName must be an absolute path."
+        }
+        if ($ftpControlPaths -contains [IO.Path]::GetFullPath($ftpControlPath)) {
+            throw 'Worker ready and FTP control paths must be distinct.'
+        }
+        $ftpControlPaths += [IO.Path]::GetFullPath($ftpControlPath)
     }
     $retention = 0
     if (-not [int]::TryParse([string]$env:TMS_LOG_RETENTION_DAYS, [ref]$retention) -or $retention -lt 1 -or $retention -gt 3650) {

@@ -14,7 +14,9 @@ $statePath = Join-Path $stateDirectory 'processes.json'
 $workerStopFile = Join-Path $stateDirectory 'worker.stop'
 $workerReadyFile = Join-Path $stateDirectory 'worker.ready.json'
 $exportWorkerStopFile = Join-Path $stateDirectory 'export-worker.stop'
+$ftpWorkerStopFile = Join-Path $stateDirectory 'ftp-worker.stop'
 $exportWorkerReadyFile = Join-Path $stateDirectory 'export-worker.ready.json'
+$ftpWorkerReadyFile = Join-Path $stateDirectory 'ftp-worker.ready.json'
 $apiUrl = 'http://127.0.0.1:8000/api/v1/health/ready'
 $frontendUrl = 'http://127.0.0.1:5173/'
 . (Join-Path $PSScriptRoot 'TmsLocalRuntime.Common.ps1')
@@ -59,14 +61,19 @@ $apiReady = $false
 $frontendReady = $false
 $workerReady = $false
 $exportWorkerReady = $false
+$ftpWorkerReady = $false
 $exportWorkerDraining = Test-Path -LiteralPath $exportWorkerStopFile -PathType Leaf
+$ftpWorkerDraining = Test-Path -LiteralPath $ftpWorkerStopFile -PathType Leaf
 $workerDraining = Test-Path -LiteralPath $workerStopFile -PathType Leaf
 $database = $null
 $schemaRevision = $null
 $apiDatabaseServer = $null
 $exportWorkerDatabase = $null
+$ftpWorkerDatabase = $null
 $exportWorkerSchemaRevision = $null
+$ftpWorkerSchemaRevision = $null
 $exportWorkerDatabaseServer = $null
+$ftpWorkerDatabaseServer = $null
 $workerDatabase = $null
 $workerSchemaRevision = $null
 $workerDatabaseServer = $null
@@ -152,6 +159,23 @@ if ($statePresent) {
             )
         } catch { $exportWorkerReady = $false }
     }
+    $ftpWorkerRecord = Get-TmsRoleRecord -State $state -Role 'ftp-worker'
+    $ftpWorkerProcessReady = $null -ne $ftpWorkerRecord -and @($processes | Where-Object { $_.role -eq 'ftp-worker' -and $_.running }).Count -eq 1
+    if ($ftpWorkerProcessReady -and -not $ftpWorkerDraining -and (Test-Path -LiteralPath $ftpWorkerReadyFile -PathType Leaf)) {
+        try {
+            $ftpWorkerMetadata = Read-TmsLocalJsonFile -Path $ftpWorkerReadyFile
+            $ftpWorkerDatabase = [string]$ftpWorkerMetadata.database
+            $ftpWorkerSchemaRevision = [string]$ftpWorkerMetadata.schema_revision
+            $ftpWorkerDatabaseServer = [string]$ftpWorkerMetadata.database_server
+            $ftpWorkerReady = (
+                $ftpWorkerMetadata.status -eq 'READY' -and
+                [int]$ftpWorkerMetadata.pid -eq [int]$ftpWorkerRecord.process_id -and
+                $ftpWorkerDatabase -eq [string]$state.expected_database -and
+                $ftpWorkerSchemaRevision -eq [string]$state.expected_schema_revision -and
+                $ftpWorkerDatabaseServer -eq [string]$state.database_server
+            )
+        } catch { $ftpWorkerReady = $false }
+    }
 }
 
 $allReady = (
@@ -161,8 +185,9 @@ $allReady = (
     $frontendReady -and
     $workerReady -and
     $exportWorkerReady -and
+    $ftpWorkerReady -and
     $null -ne $authRequired -and
-    @($processes).Count -eq 4 -and
+    @($processes).Count -eq 5 -and
     @($processes | Where-Object { -not $_.running }).Count -eq 0
 )
 $result = [PSCustomObject]@{
@@ -174,10 +199,15 @@ $result = [PSCustomObject]@{
     frontend_ready = $frontendReady
     worker_ready = $workerReady
     export_worker_ready = $exportWorkerReady
+    ftp_worker_ready = $ftpWorkerReady
     export_worker_draining = $exportWorkerDraining
+    ftp_worker_draining = $ftpWorkerDraining
     export_worker_database = $exportWorkerDatabase
+    ftp_worker_database = $ftpWorkerDatabase
     export_worker_schema_revision = $exportWorkerSchemaRevision
+    ftp_worker_schema_revision = $ftpWorkerSchemaRevision
     export_worker_database_server = $exportWorkerDatabaseServer
+    ftp_worker_database_server = $ftpWorkerDatabaseServer
     worker_draining = $workerDraining
     auth_required = $authRequired
     database = $database
@@ -193,7 +223,7 @@ $result = [PSCustomObject]@{
 if ($AsJson) {
     $result | ConvertTo-Json -Depth 5
 } else {
-    $result | Select-Object mode, state_present, state_status, all_ready, api_ready, frontend_ready, worker_ready, export_worker_ready, worker_draining, export_worker_draining, auth_required, database, schema_revision, worker_database, worker_schema_revision, database_server, frontend_url | Format-List
+    $result | Select-Object mode, state_present, state_status, all_ready, api_ready, frontend_ready, worker_ready, export_worker_ready, ftp_worker_ready, worker_draining, export_worker_draining, auth_required, database, schema_revision, worker_database, worker_schema_revision, database_server, frontend_url | Format-List
     $processes | Format-Table -AutoSize
 }
 if ($RequireReady -and -not $allReady) { exit 1 }

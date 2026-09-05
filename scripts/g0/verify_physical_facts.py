@@ -201,7 +201,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     identity = check_database()
-    expected = "sql2014_0027" if args.before else "sql2014_0028"
+    expected = "sql2014_0027" if args.before else "sql2014_0029"
     if identity["database"] != "TMS_G0_DEV" or identity["schema_revision"] != expected:
         raise ValueError("physical verification database/revision mismatch")
     engine = get_engine()

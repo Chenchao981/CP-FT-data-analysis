@@ -15,6 +15,8 @@ $workerStopFile = Join-Path $stateDirectory 'worker.stop'
 $workerReadyFile = Join-Path $stateDirectory 'worker.ready.json'
 $exportWorkerStopFile = Join-Path $stateDirectory 'export-worker.stop'
 $exportWorkerReadyFile = Join-Path $stateDirectory 'export-worker.ready.json'
+$ftpWorkerStopFile = Join-Path $stateDirectory 'ftp-worker.stop'
+$ftpWorkerReadyFile = Join-Path $stateDirectory 'ftp-worker.ready.json'
 . (Join-Path $PSScriptRoot 'TmsLocalRuntime.Common.ps1')
 
 $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
@@ -40,7 +42,7 @@ function Find-TmsWorkerProcessId {
 function Get-TmsRecordedRole {
     param(
         [PSCustomObject]$State,
-        [ValidateSet('api', 'worker', 'export-worker', 'frontend')]
+        [ValidateSet('api', 'worker', 'export-worker', 'ftp-worker', 'frontend')]
         [string]$Role
     )
     $matches = @($State.processes | Where-Object { $_.role -eq $Role })
@@ -60,6 +62,7 @@ function Get-TmsRecordedRole {
         'frontend' { Find-TmsLocalRoleProcessId -Role 'frontend' -Workspace $workspace -Python $python -Node $node }
         'worker' { Find-TmsWorkerProcessId }
         'export-worker' { Find-TmsLocalRoleProcessId -Role 'export-worker' -Workspace $workspace -Python $python -Node $node }
+        'ftp-worker' { Find-TmsLocalRoleProcessId -Role 'ftp-worker' -Workspace $workspace -Python $python -Node $node }
     }
     if ($null -eq $processId) { return $null }
     $candidate = New-TmsLocalProcessRecord -Role $Role -ProcessId $processId -Adopted $true
@@ -84,7 +87,7 @@ try {
         throw 'The local test state belongs to a different workspace. No process was stopped.'
     }
     foreach ($record in @($state.processes)) {
-        if ($record.role -notin @('api', 'worker', 'export-worker', 'frontend')) {
+        if ($record.role -notin @('api', 'worker', 'export-worker', 'ftp-worker', 'frontend')) {
             throw "Unknown role '$($record.role)' in local state. No process was stopped."
         }
     }
@@ -95,6 +98,29 @@ try {
     } elseif ($PSCmdlet.ShouldProcess("PID $($frontendRecord.process_id) (frontend)", 'Stop managed TMS frontend')) {
         Stop-Process -Id ([int]$frontendRecord.process_id) -Force -ErrorAction Stop
         Write-Host 'frontend: stopped'
+    }
+
+    $workerRecord = Get-TmsRecordedRole -State $state -Role 'ftp-worker'
+    $workerStopped = $true
+    if ($null -eq $workerRecord -or -not (Test-TmsLocalProcess -Record $workerRecord -Workspace $workspace -Python $python -Node $node)) {
+        Write-Host 'ftp-worker: already stopped'
+    } elseif ($PSCmdlet.ShouldProcess("PID $($workerRecord.process_id) (worker)", 'Request managed TMS Worker graceful stop')) {
+        [DateTime]::UtcNow.ToString('o') | Set-Content -LiteralPath $ftpWorkerStopFile -Encoding ASCII
+        $deadline = [DateTime]::UtcNow.AddSeconds($WorkerDrainTimeoutSeconds)
+        do {
+            Start-Sleep -Milliseconds 500
+            $running = Test-TmsLocalProcess -Record $workerRecord -Workspace $workspace -Python $python -Node $node
+        } while ($running -and [DateTime]::UtcNow -lt $deadline)
+        if ($running) {
+            $workerStopped = $false
+            Write-Warning 'ftp-worker: still finishing its current run; it was not force-stopped'
+        } else {
+            Write-Host 'ftp-worker: stopped gracefully'
+        }
+    }
+
+    if (-not $workerStopped) {
+        throw 'FTP collector has not stopped yet. API and state were retained; run stop again after the current run finishes.'
     }
 
     $workerRecord = Get-TmsRecordedRole -State $state -Role 'export-worker'
@@ -151,7 +177,7 @@ try {
         Write-Host 'api: stopped'
     }
 
-    foreach ($controlFile in @($workerStopFile, $workerReadyFile, $exportWorkerStopFile, $exportWorkerReadyFile)) {
+    foreach ($controlFile in @($workerStopFile, $workerReadyFile, $exportWorkerStopFile, $exportWorkerReadyFile, $ftpWorkerStopFile, $ftpWorkerReadyFile)) {
         if (
             (Test-Path -LiteralPath $controlFile -PathType Leaf) -and
             $PSCmdlet.ShouldProcess($controlFile, 'Remove local Worker control file')

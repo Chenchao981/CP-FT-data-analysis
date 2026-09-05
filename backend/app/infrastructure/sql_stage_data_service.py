@@ -165,77 +165,86 @@ class SqlStageDataService:
                     },
                 ).scalar_one()
             )
-            for ordinal, item in enumerate(files, start=1):
-                source_id = connection.execute(
-                    text(
-                        "SELECT source_file_id FROM ingestion.source_file "
-                        "WITH (UPDLOCK,HOLDLOCK) WHERE sha256=:sha256"
-                    ),
-                    {"sha256": item.sha256},
-                ).scalar_one_or_none()
-                duplicate = source_id is not None
-                if source_id is None:
-                    source_id = int(
-                        connection.execute(
-                            text(
-                                "INSERT ingestion.source_file(sha256,file_size,canonical_storage_uri,metadata_json) OUTPUT INSERTED.source_file_id "
-                                "VALUES(:sha256,:size,:uri,:metadata)"
-                            ),
-                            {
-                                "sha256": item.sha256,
-                                "size": item.size_bytes,
-                                "uri": str(item.path),
-                                "metadata": json.dumps(
-                                    {"extension": item.path.suffix.lower()},
-                                    ensure_ascii=False,
-                                ),
-                            },
-                        ).scalar_one()
-                    )
-                receipt_id = int(
+            self.register_files_in_transaction(
+                connection, principal=principal, business_domain=business_domain,
+                stage_label=stage_label, factory_code=factory_code, files=files,
+                source_channel=source_channel, batch_id=batch_id,
+            )
+        return batch_id
+
+
+    @staticmethod
+    def register_files_in_transaction(connection, *, principal, business_domain, stage_label, factory_code, files, source_channel, batch_id):
+        for ordinal, item in enumerate(files, start=1):
+            source_id = connection.execute(
+                text(
+                    "SELECT source_file_id FROM ingestion.source_file "
+                    "WITH (UPDLOCK,HOLDLOCK) WHERE sha256=:sha256"
+                ),
+                {"sha256": item.sha256},
+            ).scalar_one_or_none()
+            duplicate = source_id is not None
+            if source_id is None:
+                source_id = int(
                     connection.execute(
                         text(
-                            "INSERT ingestion.source_file_receipt(source_file_id,import_batch_id,original_file_name,received_by,received_channel,is_duplicate_receipt,metadata_json) "
-                            "OUTPUT INSERTED.receipt_id VALUES(:source,:batch,:name,:login,:received_channel,:duplicate,:metadata)"
+                            "INSERT ingestion.source_file(sha256,file_size,canonical_storage_uri,metadata_json) OUTPUT INSERTED.source_file_id "
+                            "VALUES(:sha256,:size,:uri,:metadata)"
                         ),
                         {
-                            "source": source_id,
-                            "batch": batch_id,
-                            "name": item.original_name,
-                            "login": principal.login_name,
-                            "received_channel": source_channel,
-                            "duplicate": duplicate,
+                            "sha256": item.sha256,
+                            "size": item.size_bytes,
+                            "uri": str(item.path),
                             "metadata": json.dumps(
-                                {
-                                    "owner_user_id": principal.user_id,
-                                    "receipt_storage_uri": str(item.path),
-                                    **(item.source_metadata or {}),
-                                },
+                                {"extension": item.path.suffix.lower()},
                                 ensure_ascii=False,
                             ),
                         },
                     ).scalar_one()
                 )
+            receipt_id = int(
                 connection.execute(
                     text(
-                        "INSERT ingestion.import_batch_file(import_batch_id,receipt_id,file_role,ordinal_no,required_flag,detected_format_code,detected_profile_version,detection_evidence_json) "
-                        "VALUES(:batch,:receipt,'DETAIL',:ordinal,1,NULL,NULL,:evidence)"
+                        "INSERT ingestion.source_file_receipt(source_file_id,import_batch_id,original_file_name,received_by,received_channel,is_duplicate_receipt,metadata_json) "
+                        "OUTPUT INSERTED.receipt_id VALUES(:source,:batch,:name,:login,:received_channel,:duplicate,:metadata)"
                     ),
                     {
+                        "source": source_id,
                         "batch": batch_id,
-                        "receipt": receipt_id,
-                        "ordinal": ordinal,
-                        "evidence": json.dumps(
+                        "name": item.original_name,
+                        "login": principal.login_name,
+                        "received_channel": source_channel,
+                        "duplicate": duplicate,
+                        "metadata": json.dumps(
                             {
-                                "business_domain": business_domain,
-                                "test_stage": stage_label,
-                                "factory": factory_code,
+                                "owner_user_id": principal.user_id,
+                                "receipt_storage_uri": str(item.path),
+                                **(item.source_metadata or {}),
                             },
                             ensure_ascii=False,
                         ),
                     },
-                )
-        return batch_id
+                ).scalar_one()
+            )
+            connection.execute(
+                text(
+                    "INSERT ingestion.import_batch_file(import_batch_id,receipt_id,file_role,ordinal_no,required_flag,detected_format_code,detected_profile_version,detection_evidence_json) "
+                    "VALUES(:batch,:receipt,'DETAIL',:ordinal,1,NULL,NULL,:evidence)"
+                ),
+                {
+                    "batch": batch_id,
+                    "receipt": receipt_id,
+                    "ordinal": ordinal,
+                    "evidence": json.dumps(
+                        {
+                            "business_domain": business_domain,
+                            "test_stage": stage_label,
+                            "factory": factory_code,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            )
 
     def mark_processing(self, batch_id: int, principal: Principal) -> int:
         with self._engine.begin() as connection:

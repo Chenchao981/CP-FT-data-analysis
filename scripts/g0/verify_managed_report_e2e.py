@@ -49,8 +49,8 @@ def response_json(response, expected=200):
 
 def verify(output: Path) -> dict:
     database = check_database()
-    if database["database"] != "TMS_G0_DEV" or database["schema_revision"] != "sql2014_0028":
-        raise RuntimeError("Managed report acceptance requires TMS_G0_DEV / sql2014_0028")
+    if database["database"] != "TMS_G0_DEV" or database["schema_revision"] != "sql2014_0029":
+        raise RuntimeError("Managed report acceptance requires TMS_G0_DEV / sql2014_0029")
     state = json.loads((ROOT / "artifacts/runtime/local-test/processes.json").read_text(encoding="utf-8-sig"))
     ready = json.loads((ROOT / "artifacts/runtime/local-test/export-worker.ready.json").read_text(encoding="utf-8-sig"))
     record = next(item for item in state["processes"] if item["role"] == "export-worker")

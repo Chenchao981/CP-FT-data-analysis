@@ -103,6 +103,8 @@ EXPLICIT_FILES = {
     "scripts/__init__.py",
     "scripts/run_analytics_export_cleanup.py",
     "scripts/run_analytics_export_worker.py",
+    "scripts/run_ftp_collection_worker.py",
+    "scripts/configure_ftp_credential.py",
     "scripts/run_existing_cleaner.py",
     "scripts/run_formal_artifact_cleanup.py",
     "scripts/run_quick_artifact_cleanup.py",
@@ -551,13 +553,13 @@ def _validate_ready_payload(payload: object) -> dict[str, str]:
     if (
         payload.get("status") != "ready"
         or payload.get("database") != "TMS_G0_DEV"
-        or payload.get("schema_revision") != "sql2014_0028"
+        or payload.get("schema_revision") != "sql2014_0029"
     ):
         raise ReleaseValidationError("unpacked API readiness target is invalid")
     return {
         "status": "ready",
         "database": "TMS_G0_DEV",
-        "schema_revision": "sql2014_0028",
+        "schema_revision": "sql2014_0029",
     }
 
 

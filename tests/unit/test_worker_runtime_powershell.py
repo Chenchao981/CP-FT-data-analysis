@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[2]
 @pytest.mark.parametrize("name,prefix", [
     ("run_tms_worker.ps1", "TMS_WORKER"),
     ("run_tms_analytics_export_worker.ps1", "TMS_ANALYTICS_EXPORT_WORKER"),
+    ("run_tms_ftp_collection_worker.ps1", "TMS_FTP_WORKER"),
 ])
 def test_worker_wrapper_passes_database_identity_and_graceful_control_files(name, prefix) -> None:
     script = (ROOT / "scripts" / "windows" / name).read_text(

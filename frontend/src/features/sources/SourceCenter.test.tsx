@@ -9,6 +9,7 @@ import { getSourceCenterSnapshot } from "../../api/sourceCenter";
 import { SourceCenter } from "./SourceCenter";
 
 vi.mock("../../api/sourceCenter", () => ({ getSourceCenterSnapshot: vi.fn() }));
+vi.mock("./FtpSourcesPanel", () => ({ FtpSourcesPanel: () => null }));
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,

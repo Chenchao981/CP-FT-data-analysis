@@ -91,6 +91,35 @@ if ($null -eq (Get-Process -Id $workerPid -ErrorAction SilentlyContinue)) {
     throw 'Worker ready PID is not running.'
 }
 
+$ftpReadyPath = [IO.Path]::GetFullPath([string]$env:TMS_FTP_WORKER_READY_FILE)
+if (-not (Test-Path -LiteralPath $ftpReadyPath -PathType Leaf)) {
+    throw 'FTP Worker ready file is missing.'
+}
+if (((Get-Item -LiteralPath $ftpReadyPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'FTP Worker ready file must not be a reparse point.'
+}
+try {
+    $ftpReady = Get-Content -LiteralPath $ftpReadyPath -Raw -Encoding UTF8 | ConvertFrom-Json
+} catch {
+    throw 'FTP Worker ready file is not valid JSON.'
+}
+foreach ($pair in @(
+    @('status', 'READY'),
+    @('worker_id', [string]$env:TMS_FTP_WORKER_ID),
+    @('database', [string]$env:TMS_EXPECTED_DATABASE),
+    @('schema_revision', [string]$env:TMS_EXPECTED_SCHEMA_REVISION),
+    @('database_server', [string]$env:TMS_EXPECTED_DATABASE_SERVER)
+)) {
+    if (-not ([string]$ftpReady.($pair[0])).Equals([string]$pair[1], [StringComparison]::OrdinalIgnoreCase)) {
+        throw "FTP Worker ready identity mismatch for $($pair[0])."
+    }
+}
+$ftpReadyPid = 0
+if (-not [int]::TryParse([string]$ftpReady.pid, [ref]$ftpReadyPid) -or $ftpReadyPid -le 0 -or
+    $null -eq (Get-Process -Id $ftpReadyPid -ErrorAction SilentlyContinue)) {
+    throw 'FTP Worker ready PID is not running.'
+}
+
 $registryChecked = $false
 if (-not $SkipWorkerRegistry) {
     $token = [string]$env:TMS_HEALTH_BEARER_TOKEN
@@ -124,6 +153,7 @@ if (-not $SkipWorkerRegistry) {
 [PSCustomObject]@{
     Api = 'READY'
     Worker = 'READY'
+    FtpWorker = 'READY'
     WorkerRegistryChecked = $registryChecked
     Database = [string]$env:TMS_EXPECTED_DATABASE
     DatabaseServer = [string]$env:TMS_EXPECTED_DATABASE_SERVER

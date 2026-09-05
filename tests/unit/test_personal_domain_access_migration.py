@@ -16,7 +16,7 @@ def test_0024_is_single_head_with_reversible_wrapper() -> None:
     config = Config(str(ROOT / "db" / "alembic" / "alembic.ini"))
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == ["sql2014_0028"]
+    assert script.get_heads() == ["sql2014_0029"]
     revision = script.get_revision("sql2014_0024")
     assert revision is not None
     assert revision.down_revision == "sql2014_0023"

@@ -17,6 +17,7 @@ from app.api.data_domains import router as data_domains_router
 from app.api.datasets import router as datasets_router
 from app.api.enrichments import router as enrichments_router
 from app.api.health import router as health_router
+from app.api.ftp_sources import router as ftp_sources_router
 from app.api.input_requests import router as input_requests_router
 from app.api.jobs import router as jobs_router
 from app.api.lifecycle import router as lifecycle_router
@@ -62,6 +63,7 @@ from app.infrastructure.sql_input_request_service import (
     SqlProcessingInputRequestService,
 )
 from app.infrastructure.sql_job_service import SqlJobService
+from app.infrastructure.sql_ftp_sources import SqlFtpSourceService
 from app.infrastructure.sql_lifecycle_service import SqlLifecycleService
 from app.infrastructure.sql_m2_query_service import SqlM2QueryService
 from app.infrastructure.sql_management_service import SqlManagementService
@@ -105,6 +107,7 @@ def create_app() -> FastAPI:
         else InMemoryJobService()
     )
     application.state.analytics_feature_flags = settings.analytics_features.as_dict()
+    application.state.ftp_source_service = SqlFtpSourceService(get_engine()) if database_configured else None
     application.state.analysis_rule_service = (
         SqlAnalysisRuleService(get_engine()) if os.getenv("TMS_DATABASE_URL") else None
     )
@@ -222,6 +225,7 @@ def create_app() -> FastAPI:
     source_catalog.assert_storage_separate(_upload_root())
     application.state.source_catalog = source_catalog
     application.include_router(health_router, prefix="/api/v1/health", tags=["health"])
+    application.include_router(ftp_sources_router, prefix="/api/v1/ftp-sources", tags=["ftp-sources"])
     application.include_router(auth_router, prefix="/api/v1/auth", tags=["auth"])
     application.include_router(
         data_domains_router, prefix="/api/v1", tags=["data-domains"]

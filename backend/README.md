@@ -2,7 +2,7 @@
 
 > 正式数据执行主线为 Route A；一次性PAT使用隔离的Quick Analysis Workspace。两条通道共享SQL队列和Worker，但只有正式导入写入Canonical。
 
-当前仓库唯一 Alembic head 为 `sql2014_0028`。开发库是否已升级必须在线核对数据库、服务器和 Revision；其他环境不能根据仓库文件名推断已升级。
+当前仓库唯一 Alembic head 为 `sql2014_0029`（新增 FTP 采集状态、扫描与包检查点）。开发库是否已升级必须在线核对数据库、服务器和 Revision；其他环境不能根据仓库文件名推断已升级。
 
 CP/FT 事实写入必须使用 `stage_fact_repository.py`，在调用方事务中分配全局 ID 并写入对应物理表。`test.unit_result` 和 `test.measurement` 已为兼容查询视图；其旧 INSERT/UPDATE 路径不再支持。0028 迁移前须停写、备份并核对服务器容量，详见 [物理存储合同](../docs/architecture/NCE_PYMS_Physical_Stage_Storage_2026-09-05.md)。
 
@@ -236,4 +236,16 @@ Import-TmsRuntimeConfig -Path (Join-Path $PWD '.env.runtime.ps1')
 & .\.conda-env\python.exe scripts/g0/verify_managed_report_e2e.py --output artifacts/runtime/managed-report-e2e.json
 ```
 
-该入口只接受 TMS_G0_DEV / sql2014_0028，使用既有授权主体和 TestClient 提交报告，由实际运行的报告 Worker 生成，验证 CP/FT 的 CSV、XLSX、HTML、PDF 及下载大小/SHA和正式事实计数不变。它会保留新增测试报告及审计记录，不改原始数据或 Current；此证据不包含浏览器登录。
+该入口只接受 TMS_G0_DEV / sql2014_0029，使用既有授权主体和 TestClient 提交报告，由实际运行的报告 Worker 生成，验证 CP/FT 的 CSV、XLSX、HTML、PDF 及下载大小/SHA和正式事实计数不变。它会保留新增测试报告及审计记录，不改原始数据或 Current；此证据不包含浏览器登录。
+
+## FTP 自动采集
+
+数据源中心新增 FTP/显式 FTPS 来源配置、连接检查、启停、立即扫描和采集记录。来源固定阶段、厂家、数据域与正式 Cleaner Release，默认暂停。采集 Worker 只读远端，完整快照后在一个事务内登记批次、源回执、原有清洗任务与去重检查点。详见 [设计与输入合同](../docs/architecture/NCE_PYMS_FTP_Integration_Design_2026-09-05.md) 和 [验证报告](../docs/development/NCE_PYMS_FTP_Integration_Completion_Report_2026-09-05.md)。
+
+凭据在 API/采集 Worker 的 Windows 运行账号下录入；SQL 只保存引用。发布环境指定包外 Python：
+
+```powershell
+.\scripts\windows\set_tms_ftp_credential.ps1 -Reference FACTORY_FT -PythonPath 'D:\NCE-TMS-Python\python.exe'
+```
+
+本地完整环境自动管理第五个 FTP Worker；独立入口为 `scripts/run_ftp_collection_worker.py`，应同时提供 `--expected-database`、`--expected-schema-revision sql2014_0029`、`--expected-database-server`。实际企业地址、目录与完成标记必须确认后配置，不以测试服务器代替业务验收。

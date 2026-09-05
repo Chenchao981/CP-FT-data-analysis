@@ -7,8 +7,10 @@ import { getSourceCenterSnapshot } from "../../api/sourceCenter";
 import type { FormalSourceRoot, StageUploadRow } from "../../api/stageData";
 import { formatUtcDateTime } from "../../utils/dateTime";
 import { factoryNames } from "../capabilities/capabilityCatalog";
+import { FtpSourcesPanel } from "./FtpSourcesPanel";
 
 interface SourceCenterProps {
+  canManageSources?: boolean;
   onNavigate: (path: string) => void;
   onOpenJob: (jobId: number) => void;
 }
@@ -16,7 +18,7 @@ interface SourceCenterProps {
 const statusColor: Record<string, string> = { PROCESSED: "success", PROCESSING: "processing", QUEUED: "gold", FAILED: "error", NEEDS_INPUT: "warning" };
 const displaySourceName = (value: string) => value.replace(/工程|量产/g, "").replace(/\s{2,}/g, " ").trim();
 
-export function SourceCenter({ onNavigate, onOpenJob }: SourceCenterProps) {
+export function SourceCenter({ onNavigate, onOpenJob, canManageSources = false }: SourceCenterProps) {
   const snapshot = useQuery({ queryKey: ["source-center", "snapshot"], queryFn: getSourceCenterSnapshot });
   const rootColumns: ColumnsType<FormalSourceRoot> = [
     { title: "数据源", dataIndex: "name", fixed: "left", width: 220, render: displaySourceName },
@@ -40,6 +42,7 @@ export function SourceCenter({ onNavigate, onOpenJob }: SourceCenterProps) {
     <div className="page-heading"><Typography.Title level={2}>数据源中心</Typography.Title><Button icon={<ReloadOutlined />} loading={snapshot.isFetching} onClick={() => void snapshot.refetch()}>刷新</Button></div>
     {snapshot.isError && <Alert type="error" showIcon message="数据源中心加载失败" description={snapshot.error.message} className="review-alert" />}
     {snapshot.data?.unavailableQueries ? <Alert type="info" showIcon message="部分数据源无查看权限" className="review-alert" /> : null}
+    <FtpSourcesPanel canManage={canManageSources} onOpenJob={onOpenJob} />
     <Card title={<Space><CloudServerOutlined />已配置正式数据源</Space>} className="production-table-card" style={{ marginBottom: 18 }}>
       <Table rowKey="code" columns={rootColumns} dataSource={snapshot.data?.roots ?? []} loading={snapshot.isLoading} pagination={false} locale={{ emptyText: <Empty description="当前账号没有可见的正式 FTP/NAS 数据源" /> }} scroll={{ x: 950 }} />
     </Card>

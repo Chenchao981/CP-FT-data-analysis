@@ -20,8 +20,8 @@ def main() -> int:
             revision = str(
                 _scalar(connection, "SELECT version_num FROM dbo.alembic_version")
             )
-            if revision != "sql2014_0028":
-                raise RuntimeError(f"sql2014_0028 is required, database is {revision}")
+            if revision != "sql2014_0029":
+                raise RuntimeError(f"sql2014_0029 is required, database is {revision}")
 
             required_tables = (
                 "iam.data_domain",
@@ -228,7 +228,7 @@ def main() -> int:
                         "SELECT COUNT(*) FROM governance.audit_log WHERE "
                         "operation='QUICK_SESSION_ACL_SCHEMA_DELTA' AND "
                         "correlation_id="
-                        "'quick-session-acl-schema-delta:sql2014_0028'",
+                        "'quick-session-acl-schema-delta:sql2014_0029'",
                     )
                 ),
                 "quick_domain_mapping_audits": int(

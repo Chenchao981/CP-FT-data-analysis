@@ -15,7 +15,7 @@ def args_for(tmp_path: Path, **changes):
         once=False, poll_seconds=0.1, worker_id="test-export", lease_seconds=300,
         heartbeat_seconds=30, stop_file=tmp_path / "export.stop",
         ready_file=tmp_path / "export.ready.json", expected_database="TMS_G0_DEV",
-        expected_schema_revision="sql2014_0028", expected_database_server="SQL-TEST",
+        expected_schema_revision="sql2014_0029", expected_database_server="SQL-TEST",
     )
     return argparse.Namespace(**(values | changes))
 
@@ -56,7 +56,7 @@ def test_export_worker_rejects_wrong_database_before_claim_and_clears_stale_read
     args.ready_file.write_text("stale", encoding="ascii")
     monkeypatch.setattr(entry, "parse_args", lambda: args)
     monkeypatch.setenv("TMS_DATABASE_URL", "test-only")
-    metadata = dict(database="TMS_G0_DEV", schema_revision="sql2014_0028", database_server="SQL-TEST")
+    metadata = dict(database="TMS_G0_DEV", schema_revision="sql2014_0029", database_server="SQL-TEST")
     metadata[field] = value
     monkeypatch.setattr(entry, "check_database", lambda: metadata)
     monkeypatch.setattr(entry, "get_engine", lambda: pytest.fail("must not claim or create a worker"))
@@ -72,7 +72,7 @@ def test_export_worker_readiness_removed_after_completion_or_failure(tmp_path, m
     monkeypatch.setenv("TMS_DATABASE_URL", "test-only")
     monkeypatch.setenv("TMS_ANALYTICS_EXPORT_ROOT", str(tmp_path / "exports"))
     monkeypatch.setattr(entry, "check_database", lambda: dict(
-        database="TMS_G0_DEV", schema_revision="sql2014_0028", database_server="SQL-TEST",
+        database="TMS_G0_DEV", schema_revision="sql2014_0029", database_server="SQL-TEST",
     ))
     monkeypatch.setattr(entry, "get_engine", lambda: object())
     monkeypatch.setattr(entry, "SqlAnalyticsExportWorkerRepository", lambda *a, **kw: object())

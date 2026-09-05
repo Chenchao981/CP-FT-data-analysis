@@ -145,7 +145,7 @@ def _parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--expected-database", required=True)
-    parser.add_argument("--expected-revision", default="sql2014_0028")
+    parser.add_argument("--expected-revision", default="sql2014_0029")
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--confirm-plan-sha256")
     return parser.parse_args()

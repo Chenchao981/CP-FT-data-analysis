@@ -6,8 +6,9 @@
 
 ## 1. 当前入口与规划
 
+- [FTP 对接设计与输入合同](architecture/NCE_PYMS_FTP_Integration_Design_2026-09-05.md) / [开发测试完成报告](development/NCE_PYMS_FTP_Integration_Completion_Report_2026-09-05.md)：当前 sql2014_0029，自动采集、事务去重与真实本地 FTP→正式数据验证；企业服务器联调待提供参数。
 - [2026-09-05 项目复审与前后端开发测试完成报告](development/NCE_PYMS_Project_Review_Completion_Report_2026-09-05.md)：需求差距、报告运行链修复、全量测试、实库报告及待验收事项。
-- [CP/FT 物理分表完成报告](development/NCE_PYMS_Physical_Stage_Storage_Completion_Report_2026-09-05.md)：当前 sql2014_0028、全量历史对账及真实入库验证。
+- [CP/FT 物理分表完成报告](development/NCE_PYMS_Physical_Stage_Storage_Completion_Report_2026-09-05.md)：sql2014_0028 阶段的全量历史对账及真实入库验证。
 - [CP/FT 物理存储合同](architecture/NCE_PYMS_Physical_Stage_Storage_2026-09-05.md)：阶段事实表、全局 ID、评价外键和容量要求。
 - [数据库结构与字段整改验收](development/NCE_PYMS_Database_Stage_Fields_Completion_Report_2026-09-05.md)：sql2014_0027、迁移对账及验证边界。
 - [数据库阶段字段字典](architecture/NCE_PYMS_Database_Stage_Fields_2026-09-05.md)：CP/FT 运行身份、来源和规格字段。

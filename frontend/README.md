@@ -11,11 +11,11 @@
 .\scripts\windows\get_tms_local_test_status.ps1 -AsJson -RequireReady
 ```
 
-它加载本地 SQL 配置，管理四个进程：API、正式/个人清洗 Worker、分析报告 Worker、Vite 页面。四项均就绪且数据库、服务器、Schema 一致才返回 all_ready。遗漏报告 Worker 时，上传可能正常而报告会一直排队。
+它加载本地 SQL 配置，管理五个进程：API、正式/个人清洗 Worker、分析报告 Worker、FTP 采集 Worker、Vite 页面。五项均就绪且数据库、服务器、Schema 一致才返回 all_ready。遗漏相应 Worker 会造成上传、报告或来源采集停留在等待状态。
 
 网页地址为 http://127.0.0.1:5173，登录使用现有已启用账号。保留配置认证的验收应使用上述参数；根目录批处理默认使用回环地址开发免登录模式，不应将其结果算作登录验收。
 
-停止入口会先让两个 Worker 完成当前任务，再停止 API，避免中断写入或生成中的报告：
+停止入口先停止 FTP 采集新包，再让清洗与报告 Worker 完成当前任务，最后停止 API：
 
 ```powershell
 .\scripts\windows\stop_tms_local_test.ps1

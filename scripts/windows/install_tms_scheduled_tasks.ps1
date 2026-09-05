@@ -60,6 +60,7 @@ $launcherScript = Join-Path $PSScriptRoot 'start_tms_runtime.ps1'
 $apiScript = Join-Path $PSScriptRoot 'run_tms_api.ps1'
 $workerScript = Join-Path $PSScriptRoot 'run_tms_worker.ps1'
 $analyticsExportWorkerScript = Join-Path $PSScriptRoot 'run_tms_analytics_export_worker.ps1'
+$ftpCollectionWorkerScript = Join-Path $PSScriptRoot 'run_tms_ftp_collection_worker.ps1'
 $analyticsExportCleanupScript = Join-Path $PSScriptRoot 'run_tms_analytics_export_cleanup.ps1'
 $cleanupScript = Join-Path $PSScriptRoot 'run_tms_cleanup.ps1'
 $formalCleanupScript = Join-Path $PSScriptRoot 'run_tms_formal_cleanup.ps1'
@@ -69,6 +70,7 @@ $requiredFiles = @(
     $apiScript,
     $workerScript,
     $analyticsExportWorkerScript,
+    $ftpCollectionWorkerScript,
     $analyticsExportCleanupScript,
     $cleanupScript,
     $formalCleanupScript,
@@ -95,6 +97,7 @@ $actions = @{
     'TMS-API' = New-ScheduledTaskAction -Execute $powershellExe -Argument (Get-TmsActionArguments -ScriptPath $launcherScript -AdditionalArguments "-Role API $externalRuntimeArguments") -WorkingDirectory $workspace
     'TMS-Worker' = New-ScheduledTaskAction -Execute $powershellExe -Argument (Get-TmsActionArguments -ScriptPath $launcherScript -AdditionalArguments "-Role Worker $externalRuntimeArguments") -WorkingDirectory $workspace
     'TMS-AnalyticsExportWorker' = New-ScheduledTaskAction -Execute $powershellExe -Argument (Get-TmsActionArguments -ScriptPath $launcherScript -AdditionalArguments "-Role AnalyticsExportWorker $externalRuntimeArguments") -WorkingDirectory $workspace
+    'TMS-FtpCollectionWorker' = New-ScheduledTaskAction -Execute $powershellExe -Argument (Get-TmsActionArguments -ScriptPath $launcherScript -AdditionalArguments "-Role FtpCollectionWorker $externalRuntimeArguments") -WorkingDirectory $workspace
     'TMS-AnalyticsExportCleanup' = New-ScheduledTaskAction -Execute $powershellExe -Argument (Get-TmsActionArguments -ScriptPath $launcherScript -AdditionalArguments "-Role AnalyticsExportCleanup $externalRuntimeArguments $analyticsExportCleanupArguments") -WorkingDirectory $workspace
     'TMS-QuickCleanup' = New-ScheduledTaskAction -Execute $powershellExe -Argument (Get-TmsActionArguments -ScriptPath $launcherScript -AdditionalArguments "-Role QuickCleanup $externalRuntimeArguments $cleanupArguments") -WorkingDirectory $workspace
     'TMS-FormalCleanup' = New-ScheduledTaskAction -Execute $powershellExe -Argument (Get-TmsActionArguments -ScriptPath $launcherScript -AdditionalArguments "-Role FormalCleanup $externalRuntimeArguments $formalCleanupArguments") -WorkingDirectory $workspace
@@ -132,6 +135,7 @@ if ($ValidateOnly) {
         [PSCustomObject]@{ TaskPath = $TaskPath; TaskName = 'TMS-API'; Trigger = 'AtStartup'; Restart = '20 x 1 minute'; MultipleInstances = 'IgnoreNew'; LogonType = 'Password'; RunLevel = 'Limited'; CleanupMode = $null },
         [PSCustomObject]@{ TaskPath = $TaskPath; TaskName = 'TMS-Worker'; Trigger = 'AtStartup'; Restart = '20 x 1 minute'; MultipleInstances = 'IgnoreNew'; LogonType = 'Password'; RunLevel = 'Limited'; CleanupMode = $null },
         [PSCustomObject]@{ TaskPath = $TaskPath; TaskName = 'TMS-AnalyticsExportWorker'; Trigger = 'AtStartup'; Restart = '20 x 1 minute'; MultipleInstances = 'IgnoreNew'; LogonType = 'Password'; RunLevel = 'Limited'; CleanupMode = $null },
+        [PSCustomObject]@{ TaskPath = $TaskPath; TaskName = 'TMS-FtpCollectionWorker'; Trigger = 'AtStartup'; Restart = '20 x 1 minute'; MultipleInstances = 'IgnoreNew'; LogonType = 'Password'; RunLevel = 'Limited'; CleanupMode = $null },
         [PSCustomObject]@{ TaskPath = $TaskPath; TaskName = 'TMS-AnalyticsExportCleanup'; Trigger = "Daily $AnalyticsExportCleanupAt"; Restart = '3 x 5 minutes'; MultipleInstances = 'IgnoreNew'; LogonType = 'Password'; RunLevel = 'Limited'; CleanupMode = $AnalyticsExportCleanupMode },
         [PSCustomObject]@{ TaskPath = $TaskPath; TaskName = 'TMS-QuickCleanup'; Trigger = "Daily $CleanupAt"; Restart = '3 x 5 minutes'; MultipleInstances = 'IgnoreNew'; LogonType = 'Password'; RunLevel = 'Limited'; CleanupMode = $CleanupMode }
         [PSCustomObject]@{ TaskPath = $TaskPath; TaskName = 'TMS-FormalCleanup'; Trigger = "Daily $FormalCleanupAt"; Restart = '3 x 5 minutes'; MultipleInstances = 'IgnoreNew'; LogonType = 'Password'; RunLevel = 'Limited'; CleanupMode = $FormalCleanupMode }
@@ -166,11 +170,12 @@ try {
         'TMS-API' = New-ScheduledTask -Action $actions['TMS-API'] -Trigger $startupTrigger -Settings $longRunningSettings -Principal $principal -Description 'NCE TMS API process'
         'TMS-Worker' = New-ScheduledTask -Action $actions['TMS-Worker'] -Trigger $startupTrigger -Settings $longRunningSettings -Principal $principal -Description 'NCE TMS Route A queue Worker'
         'TMS-AnalyticsExportWorker' = New-ScheduledTask -Action $actions['TMS-AnalyticsExportWorker'] -Trigger $startupTrigger -Settings $longRunningSettings -Principal $principal -Description 'NCE TMS Analytics Export queue Worker'
+        'TMS-FtpCollectionWorker' = New-ScheduledTask -Action $actions['TMS-FtpCollectionWorker'] -Trigger $startupTrigger -Settings $longRunningSettings -Principal $principal -Description 'NCE TMS FTP collection Worker'
         'TMS-AnalyticsExportCleanup' = New-ScheduledTask -Action $actions['TMS-AnalyticsExportCleanup'] -Trigger $analyticsExportCleanupTrigger -Settings $cleanupSettings -Principal $principal -Description "NCE TMS Analytics Export Artifact cleanup ($AnalyticsExportCleanupMode)"
         'TMS-QuickCleanup' = New-ScheduledTask -Action $actions['TMS-QuickCleanup'] -Trigger $cleanupTrigger -Settings $cleanupSettings -Principal $principal -Description "NCE TMS Quick Artifact cleanup ($CleanupMode)"
         'TMS-FormalCleanup' = New-ScheduledTask -Action $actions['TMS-FormalCleanup'] -Trigger $formalCleanupTrigger -Settings $cleanupSettings -Principal $principal -Description "NCE TMS Formal Artifact cleanup ($FormalCleanupMode)"
     }
-    foreach ($taskName in @('TMS-API', 'TMS-Worker', 'TMS-AnalyticsExportWorker', 'TMS-AnalyticsExportCleanup', 'TMS-QuickCleanup', 'TMS-FormalCleanup')) {
+    foreach ($taskName in @('TMS-API', 'TMS-Worker', 'TMS-AnalyticsExportWorker', 'TMS-FtpCollectionWorker', 'TMS-AnalyticsExportCleanup', 'TMS-QuickCleanup', 'TMS-FormalCleanup')) {
         Register-ScheduledTask `
             -TaskName $taskName `
             -TaskPath $TaskPath `
@@ -187,6 +192,7 @@ if ($StartAfterInstall) {
     Start-ScheduledTask -TaskName 'TMS-API' -TaskPath $TaskPath
     Start-ScheduledTask -TaskName 'TMS-Worker' -TaskPath $TaskPath
     Start-ScheduledTask -TaskName 'TMS-AnalyticsExportWorker' -TaskPath $TaskPath
+    Start-ScheduledTask -TaskName 'TMS-FtpCollectionWorker' -TaskPath $TaskPath
 }
 
 & (Join-Path $PSScriptRoot 'get_tms_scheduled_task_status.ps1') `

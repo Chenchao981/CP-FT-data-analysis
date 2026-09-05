@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('API', 'Worker', 'AnalyticsExportWorker', 'AnalyticsExportCleanup', 'QuickCleanup', 'FormalCleanup')]
+    [ValidateSet('API', 'Worker', 'AnalyticsExportWorker', 'FtpCollectionWorker', 'AnalyticsExportCleanup', 'QuickCleanup', 'FormalCleanup')]
     [string]$Role = 'API',
     [string]$RuntimeHome,
     [string]$RuntimeConfigPath,
@@ -149,6 +149,7 @@ switch ($Role) {
     }
     'Worker' { & (Join-Path $PSScriptRoot 'run_tms_worker.ps1'); exit $LASTEXITCODE }
     'AnalyticsExportWorker' { & (Join-Path $PSScriptRoot 'run_tms_analytics_export_worker.ps1'); exit $LASTEXITCODE }
+    'FtpCollectionWorker' { & (Join-Path $PSScriptRoot 'run_tms_ftp_collection_worker.ps1'); exit $LASTEXITCODE }
     'AnalyticsExportCleanup' { & (Join-Path $PSScriptRoot 'run_tms_analytics_export_cleanup.ps1') -Delete:$Delete; exit $LASTEXITCODE }
     'QuickCleanup' { & (Join-Path $PSScriptRoot 'run_tms_cleanup.ps1') -DryRun:(-not $Delete); exit $LASTEXITCODE }
     'FormalCleanup' { & (Join-Path $PSScriptRoot 'run_tms_formal_cleanup.ps1') -Delete:$Delete; exit $LASTEXITCODE }

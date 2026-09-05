@@ -106,7 +106,7 @@ def probe_writes() -> dict:
 
 def verify(*, before: bool = False) -> dict:
     identity = check_database()
-    expected = "sql2014_0026" if before else "sql2014_0028"
+    expected = "sql2014_0026" if before else "sql2014_0029"
     if identity["database"] != "TMS_G0_DEV" or identity["schema_revision"] != expected:
         raise ValueError("stage schema verification database/revision mismatch")
     with get_engine().connect() as c:

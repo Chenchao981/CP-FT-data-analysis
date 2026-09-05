@@ -19,6 +19,7 @@ $backend = Join-Path $workspace 'backend'
 $frontend = Join-Path $workspace 'frontend'
 $workerEntryPoint = Join-Path $workspace 'scripts\run_route_a_worker.py'
 $exportWorkerEntryPoint = Join-Path $workspace 'scripts\run_analytics_export_worker.py'
+$ftpWorkerEntryPoint = Join-Path $workspace 'scripts\run_ftp_collection_worker.py'
 $viteEntryPoint = Join-Path $frontend 'node_modules\vite\bin\vite.js'
 $stateDirectory = Join-Path $workspace 'artifacts\runtime\local-test'
 $statePath = Join-Path $stateDirectory 'processes.json'
@@ -26,10 +27,12 @@ $workerStopFile = Join-Path $stateDirectory 'worker.stop'
 $workerReadyFile = Join-Path $stateDirectory 'worker.ready.json'
 $exportWorkerStopFile = Join-Path $stateDirectory 'export-worker.stop'
 $exportWorkerReadyFile = Join-Path $stateDirectory 'export-worker.ready.json'
+$ftpWorkerStopFile = Join-Path $stateDirectory 'ftp-worker.stop'
+$ftpWorkerReadyFile = Join-Path $stateDirectory 'ftp-worker.ready.json'
 $apiUrl = 'http://127.0.0.1:8000/api/v1/health/ready'
 $frontendUrl = 'http://127.0.0.1:5173/'
 $expectedDatabase = 'TMS_G0_DEV'
-$expectedSchemaRevision = 'sql2014_0028'
+$expectedSchemaRevision = 'sql2014_0029'
 
 . (Join-Path $PSScriptRoot 'TmsRuntime.Common.ps1')
 . (Join-Path $PSScriptRoot 'TmsLocalRuntime.Common.ps1')
@@ -86,7 +89,7 @@ function Test-TmsPriorProcessRecord {
 
 function Start-TmsManagedProcess {
     param(
-        [ValidateSet('api', 'worker', 'export-worker', 'frontend')][string]$Role,
+        [ValidateSet('api', 'worker', 'export-worker', 'ftp-worker', 'frontend')][string]$Role,
         [string]$Executable,
         [string[]]$Arguments,
         [string]$WorkingDirectory,
@@ -235,8 +238,8 @@ function Stop-TmsStartedProcess {
     if (-not (Test-TmsLocalProcess -Record $Record -Workspace $workspace -Python $python -Node $node)) {
         return $true
     }
-    if ($Record.role -in @('worker', 'export-worker')) {
-        $stopFile = if ($Record.role -eq 'worker') { $workerStopFile } else { $exportWorkerStopFile }
+    if ($Record.role -in @('worker', 'export-worker', 'ftp-worker')) {
+        $stopFile = if ($Record.role -eq 'worker') { $workerStopFile } elseif ($Record.role -eq 'ftp-worker') { $ftpWorkerStopFile } else { $exportWorkerStopFile }
         [DateTime]::UtcNow.ToString('o') | Set-Content -LiteralPath $stopFile -Encoding ASCII
         $deadline = [DateTime]::UtcNow.AddSeconds(60)
         do {
@@ -250,7 +253,7 @@ function Stop-TmsStartedProcess {
 }
 
 $node = Get-TmsNodeExecutable
-$requiredFiles = @($runtimeConfig, $python, $workerEntryPoint, $exportWorkerEntryPoint, $viteEntryPoint)
+$requiredFiles = @($runtimeConfig, $python, $workerEntryPoint, $exportWorkerEntryPoint, $ftpWorkerEntryPoint, $viteEntryPoint)
 foreach ($requiredFile in $requiredFiles) {
     if (-not (Test-Path -LiteralPath $requiredFile -PathType Leaf)) {
         throw "Missing local test dependency: $requiredFile"
@@ -308,11 +311,11 @@ try {
             throw 'The existing local test state belongs to a different workspace.'
         }
         foreach ($priorRecord in @($priorState.processes)) {
-            if ($priorRecord.role -notin @('api', 'worker', 'export-worker', 'frontend')) {
+            if ($priorRecord.role -notin @('api', 'worker', 'export-worker', 'ftp-worker', 'frontend')) {
                 throw "Unknown role '$($priorRecord.role)' in the existing local state."
             }
         }
-        foreach ($role in @('api', 'worker', 'export-worker', 'frontend')) {
+        foreach ($role in @('api', 'worker', 'export-worker', 'ftp-worker', 'frontend')) {
             if (@($priorState.processes | Where-Object { $_.role -eq $role }).Count -gt 1) {
                 throw "The existing local state contains duplicate records for role '$role'. Stop it before starting again."
             }
@@ -337,13 +340,14 @@ try {
         [PSCustomObject]@{ role = 'api'; process_id = Find-TmsLocalRoleProcessId -Role 'api' -Workspace $workspace -Python $python -Node $node },
         [PSCustomObject]@{ role = 'frontend'; process_id = Find-TmsLocalRoleProcessId -Role 'frontend' -Workspace $workspace -Python $python -Node $node },
         [PSCustomObject]@{ role = 'worker'; process_id = Find-TmsWorkerProcessId },
-        [PSCustomObject]@{ role = 'export-worker'; process_id = Find-TmsLocalRoleProcessId -Role 'export-worker' -Workspace $workspace -Python $python -Node $node }
+        [PSCustomObject]@{ role = 'export-worker'; process_id = Find-TmsLocalRoleProcessId -Role 'export-worker' -Workspace $workspace -Python $python -Node $node },
+        [PSCustomObject]@{ role = 'ftp-worker'; process_id = Find-TmsLocalRoleProcessId -Role 'ftp-worker' -Workspace $workspace -Python $python -Node $node }
     )) {
         if (
             $null -ne $preflight.process_id -and
             -not (Test-TmsPriorProcessRecord -Role $preflight.role -ProcessId ([int]$preflight.process_id))
         ) {
-            if ($preflight.role -in @('worker', 'export-worker')) {
+            if ($preflight.role -in @('worker', 'export-worker', 'ftp-worker')) {
                 throw "Worker process $($preflight.process_id) was not started by this local test launcher."
             }
             $port = if ($preflight.role -eq 'api') { 8000 } else { 5173 }
@@ -356,7 +360,7 @@ try {
     } else { [Guid]::NewGuid().ToString() }
     $startedRecords = [System.Collections.Generic.List[object]]::new()
     $state = [PSCustomObject]@{
-        schema_version = 3
+        schema_version = 4
         instance_id = $instanceId
         mode = 'LOCAL_TEST'
         status = 'STARTING'
@@ -514,6 +518,47 @@ try {
             -ExpectedSchemaRevision $expectedSchemaRevision `
             -ExpectedDatabaseServer ([string]$state.database_server) -ReadyFile $exportWorkerReadyFile
 
+        $state.pending_role = 'ftp-worker'
+        $state.updated_at_utc = [DateTime]::UtcNow.ToString('o')
+        Write-TmsLocalState -StatePath $statePath -State $state
+        $workerProcessId = Find-TmsLocalRoleProcessId -Role 'ftp-worker' -Workspace $workspace -Python $python -Node $node
+        if ($null -eq $workerProcessId) {
+            foreach ($controlFile in @($ftpWorkerStopFile, $ftpWorkerReadyFile)) {
+                if (Test-Path -LiteralPath $controlFile -PathType Leaf) {
+                    Remove-Item -LiteralPath $controlFile -Force
+                }
+            }
+            $workerRecord = Start-TmsManagedProcess -Role 'ftp-worker' -Executable $python `
+                -Arguments @(
+                    $ftpWorkerEntryPoint,
+                    '--poll-seconds', $WorkerPollSeconds.ToString([Globalization.CultureInfo]::InvariantCulture),
+                    '--worker-id', "local-ftp-$instanceId",
+                    '--stop-file', $ftpWorkerStopFile,
+                    '--ready-file', $ftpWorkerReadyFile,
+                    '--expected-database', $expectedDatabase,
+                    '--expected-schema-revision', $expectedSchemaRevision,
+                    '--expected-database-server', ([string]$state.database_server)
+                ) -WorkingDirectory $workspace -LogPrefix 'ftp-worker' -State $state `
+                -StatePath $statePath -StartedRecords $startedRecords
+        } else {
+            if (Test-Path -LiteralPath $ftpWorkerStopFile -PathType Leaf) {
+                throw 'The running Worker is already stopping. Wait for it to finish, then start the environment again.'
+            }
+            if (-not (Test-TmsPriorProcessRecord -Role 'ftp-worker' -ProcessId $workerProcessId)) {
+                throw "Worker process $workerProcessId was not started by this local test launcher."
+            }
+            $workerRecord = New-TmsLocalProcessRecord -Role 'ftp-worker' -ProcessId $workerProcessId -Adopted $true
+        }
+        Set-TmsStateProcessRecord -State $state -Record $workerRecord
+        $state.pending_role = $null
+        $records = @($state.processes)
+        $state.updated_at_utc = [DateTime]::UtcNow.ToString('o')
+        Write-TmsLocalState -StatePath $statePath -State $state
+        Wait-TmsWorkerReady -Record $workerRecord -TimeoutSeconds $ReadyTimeoutSeconds `
+            -ExpectedDatabase $expectedDatabase `
+            -ExpectedSchemaRevision $expectedSchemaRevision `
+            -ExpectedDatabaseServer ([string]$state.database_server) -ReadyFile $ftpWorkerReadyFile
+
         $state.status = 'RUNNING'
         $state.updated_at_utc = [DateTime]::UtcNow.ToString('o')
         Write-TmsLocalState -StatePath $statePath -State $state
@@ -526,12 +571,12 @@ try {
         [array]::Reverse($rollback)
         $workerStillRunning = $false
         foreach ($record in $rollback) {
-            if ($workerStillRunning -and $record.role -notin @('worker', 'export-worker')) { continue }
+            if ($workerStillRunning -and $record.role -notin @('worker', 'export-worker', 'ftp-worker')) { continue }
             try {
                 $stopped = Stop-TmsStartedProcess -Record $record
-                if ($record.role -in @('worker', 'export-worker') -and -not $stopped) { $workerStillRunning = $true }
+                if ($record.role -in @('worker', 'export-worker', 'ftp-worker') -and -not $stopped) { $workerStillRunning = $true }
             } catch {
-                if ($record.role -in @('worker', 'export-worker')) { $workerStillRunning = $true }
+                if ($record.role -in @('worker', 'export-worker', 'ftp-worker')) { $workerStillRunning = $true }
             }
         }
         throw $startFailure
