@@ -6,6 +6,8 @@
 
 ## 1. 先读这两份
 
+- [数据库结构与字段整改验收](development/NCE_PYMS_Database_Stage_Fields_Completion_Report_2026-09-05.md)：sql2014_0027、迁移对账及验证边界。
+- [数据库阶段字段字典](architecture/NCE_PYMS_Database_Stage_Fields_2026-09-05.md)：CP/FT 运行身份、来源和规格字段。
 - [2026-09-05 架构与可用性优化验收](development/NCE_PYMS_Architecture_Usability_Completion_Report_2026-09-05.md)：本次完成项、实测性能与未验收边界。
 - [CP/FT 阶段合同与扩展指南](architecture/NCE_PYMS_Stage_Contracts_and_Extension_Guide_2026-09-05.md)：当前代码分层和后续物理模型迁移。
 

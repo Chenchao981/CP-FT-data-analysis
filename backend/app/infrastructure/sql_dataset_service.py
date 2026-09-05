@@ -76,6 +76,7 @@ from app.infrastructure.sql_visibility import (
     current_dataset_read_scope_sql,
     visibility_parameters,
 )
+from app.infrastructure.stage_run_details import run_source_identity
 
 _MAX_SQL_SERVER_OFFSET = 2_147_483_647
 _DETAIL_FILTER_LIMITS = {
@@ -567,17 +568,7 @@ def _comparison_scope_cte(
 
 
 def _run_source_identity(row: Mapping[str, Any]) -> str:
-    metadata: dict[str, Any] = {}
-    try:
-        decoded = json.loads(row.get("metadata_json") or "{}")
-        if isinstance(decoded, dict):
-            metadata = decoded
-    except (TypeError, ValueError):
-        metadata = {}
-    source_id = str(metadata.get("source_id") or "").strip()
-    if source_id:
-        return source_id
-    return f"RUN-{int(row['run_id'])}"
+    return run_source_identity(row)
 
 
 def _resolve_analysis_parameter_identities(
@@ -1672,7 +1663,7 @@ class SqlDatasetService:
         rows = (
             connection.execute(
                 text(
-                    "SELECT DISTINCT tr.run_id,tr.tester_id,tr.metadata_json "
+                    "SELECT DISTINCT tr.run_id,tr.tester_id,tr.metadata_json, (SELECT sd.source_id FROM test.ft_run_detail sd WHERE sd.run_id=tr.run_id) AS source_id "
                     "FROM dataset.dataset_version dv "
                     "JOIN dataset.dataset_version_run dvr "
                     "ON dvr.dataset_version_id=dv.dataset_version_id "
@@ -4353,7 +4344,7 @@ class SqlDatasetService:
         all_option_rows = (
             connection.execute(
                 text(
-                    "SELECT DISTINCT tr.run_id,tr.lot_id,tr.tester_id,tr.program_version_id,tr.metadata_json"
+                    "SELECT DISTINCT tr.run_id,tr.lot_id,tr.tester_id,tr.program_version_id,tr.metadata_json, (SELECT sd.source_id FROM test.ft_run_detail sd WHERE sd.run_id=tr.run_id) AS source_id "
                     + version_join
                     + "WHERE dv.dataset_id=:dataset_id AND dv.version_no=:version_no "
                     "ORDER BY tr.lot_id,tr.tester_id,tr.run_id"

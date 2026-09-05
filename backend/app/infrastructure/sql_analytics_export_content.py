@@ -1098,7 +1098,7 @@ class SqlAnalyticsExportContentSource:
         rows = (
             connection.execute(
                 text(
-                    "SELECT DISTINCT tr.run_id,tr.metadata_json FROM "
+                    "SELECT DISTINCT tr.run_id,tr.metadata_json,(SELECT sd.source_id FROM test.ft_run_detail sd WHERE sd.run_id=tr.run_id) AS source_id FROM "
                     "dataset.dataset_version_run dvr JOIN test.test_run tr "
                     "ON tr.processing_run_id=dvr.processing_run_id "
                     "WHERE dvr.dataset_version_id=:dataset_version_id"
@@ -1377,7 +1377,7 @@ class SqlAnalyticsExportContentSource:
             "SELECT dv.dataset_id,dv.version_no,d.test_stage,ur.unit_id,"
             "ur.logical_unit_key,tr.lot_id,COALESCE(ur.wafer_id,tr.wafer_id) AS wafer_id,"
             "ur.x_coord,ur.y_coord,ur.soft_bin,ur.hard_bin,ur.overall_result,"
-            "ur.source_row_no,tr.run_id,tr.metadata_json,tr.tester_id,"
+            "ur.source_row_no,tr.run_id,tr.metadata_json,(SELECT sd.source_id FROM test.ft_run_detail sd WHERE sd.run_id=tr.run_id) AS source_id,tr.tester_id,"
             "pv.version_code AS program_version"
         )
         joins = ""

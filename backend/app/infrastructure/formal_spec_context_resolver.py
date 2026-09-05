@@ -10,6 +10,7 @@ from sqlalchemy import Connection, bindparam, text
 
 from app.core.errors import DomainError
 from app.domain.analytics import AnalyticsContextRequest
+from app.infrastructure.stage_run_details import run_source_identity
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,15 +23,7 @@ class FormalSpecContextResolution:
 
 
 def _source_identity(row: Mapping[str, Any]) -> str:
-    metadata: Mapping[str, Any] = {}
-    try:
-        decoded = json.loads(row.get("metadata_json") or "{}")
-        if isinstance(decoded, dict):
-            metadata = decoded
-    except (TypeError, ValueError):
-        metadata = {}
-    explicit = str(metadata.get("source_id") or "").strip()
-    return explicit or f"RUN-{int(row['run_id'])}"
+    return run_source_identity(row)
 
 
 def _condition_text(value: object) -> str | None:
@@ -203,7 +196,7 @@ def resolve_formal_spec_context(
                 connection.execute(
                     text(
                         "/* ANALYTICS_FORMAL_SPEC_SOURCE_RUNS_V1 */ "
-                        "SELECT DISTINCT tr.run_id,tr.metadata_json "
+                        "SELECT DISTINCT tr.run_id,tr.metadata_json, (SELECT sd.source_id FROM test.ft_run_detail sd WHERE sd.run_id=tr.run_id) AS source_id "
                         "FROM dataset.dataset_version_run dvr "
                         "JOIN test.test_run tr "
                         "ON tr.processing_run_id=dvr.processing_run_id "

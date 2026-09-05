@@ -21,7 +21,7 @@ from app.infrastructure.sql_spec_evaluation_materializer import (
 )
 
 EXPECTED_DATABASE = "TMS_G0_DEV"
-EXPECTED_SCHEMA_REVISION = "sql2014_0026"
+EXPECTED_SCHEMA_REVISION = "sql2014_0027"
 
 
 def _scalar(connection: Connection, sql: str, parameters: dict[str, Any]) -> int:

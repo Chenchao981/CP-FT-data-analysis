@@ -32,8 +32,8 @@ def main() -> None:
     identity = check_database()
     if identity["database"] != "TMS_G0_DEV":
         raise RuntimeError("This concurrency verification is restricted to TMS_G0_DEV")
-    if identity["schema_revision"] != "sql2014_0026":
-        raise RuntimeError("sql2014_0026 is required")
+    if identity["schema_revision"] != "sql2014_0027":
+        raise RuntimeError("sql2014_0027 is required")
 
     engine = get_engine()
     resource = "TMS:LIFECYCLE:DATASET:46"

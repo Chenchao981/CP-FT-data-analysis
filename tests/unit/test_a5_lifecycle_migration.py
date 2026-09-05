@@ -47,7 +47,7 @@ def test_sql2014_verifier_tracks_current_head_and_a5_lifecycle_contract() -> Non
         encoding="utf-8-sig"
     )
 
-    assert 'assert revision == "sql2014_0026"' in verifier
+    assert 'assert revision == "sql2014_0027"' in verifier
     assert '"ingestion.lifecycle_job_target"' in verifier
     assert '"lifecycle_status"' in verifier
     assert 'assert "DELETING" in artifact_status_check[0]' in verifier

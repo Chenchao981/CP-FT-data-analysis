@@ -20,12 +20,18 @@ EXPECTED_SCHEMAS = {
     "workspace",
 }
 EXPECTED_VIEWS = {
+    "test.v_cp_die",
+    "test.v_ft_device",
+    "test.v_cp_measurement",
+    "test.v_ft_measurement",
     "analytics.v_current_dataset_version",
     "analytics.v_current_test_run",
     "analytics.v_current_unit_result",
     "analytics.v_current_measurement",
 }
 EXPECTED_TABLES = {
+    "test.cp_run_detail",
+    "test.ft_run_detail",
     "ingestion.initial_import_finalize_intent",
     "ingestion.processing_job",
     "ingestion.processing_input_request",
@@ -71,7 +77,7 @@ def main() -> None:
         cursor = connection.cursor()
         cursor.execute("SELECT version_num FROM alembic_version")
         revision = cursor.fetchone()[0]
-        assert revision == "sql2014_0026", revision
+        assert revision == "sql2014_0027", revision
 
         cursor.execute("SELECT name FROM sys.schemas")
         schemas = {row[0] for row in cursor.fetchall()}

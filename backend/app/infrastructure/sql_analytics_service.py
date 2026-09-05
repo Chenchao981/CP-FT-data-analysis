@@ -50,6 +50,7 @@ from app.domain.analytics import (
 from app.infrastructure.formal_spec_context_resolver import (
     resolve_formal_spec_context,
 )
+from app.infrastructure.stage_run_details import run_source_identity
 
 _CONTRACT_VERSION = "ANALYTICS_CONTEXT_V1"
 
@@ -318,15 +319,7 @@ def _condition_text(value: object) -> str | None:
 
 
 def _source_identity(row: Mapping[str, Any]) -> str:
-    metadata: Mapping[str, Any] = {}
-    try:
-        decoded = json.loads(row.get("metadata_json") or "{}")
-        if isinstance(decoded, dict):
-            metadata = decoded
-    except (TypeError, ValueError):
-        metadata = {}
-    explicit = str(metadata.get("source_id") or "").strip()
-    return explicit or f"RUN-{int(row['run_id'])}"
+    return run_source_identity(row)
 
 
 def _normalized_filters(request: AnalyticsContextRequest) -> AnalyticsNormalizedFilters:
@@ -673,7 +666,7 @@ class SqlAnalyticsService:
         return tuple(
             connection.execute(
                 text(
-                    "SELECT DISTINCT tr.run_id,tr.metadata_json,tr.tester_id,"
+                    "SELECT DISTINCT tr.run_id,tr.metadata_json,(SELECT sd.source_id FROM test.ft_run_detail sd WHERE sd.run_id=tr.run_id) AS source_id,tr.tester_id,"
                     "tr.program_version_id,"
                     "pv.version_code AS program_version "
                     "FROM dataset.dataset_version dv "
@@ -2367,7 +2360,7 @@ class SqlAnalyticsService:
                     + "ur.unit_id,ur.logical_unit_key,tr.lot_id,"
                     "COALESCE(ur.wafer_id,tr.wafer_id) AS wafer_id,"
                     "ur.x_coord,ur.y_coord,ur.soft_bin,ur.hard_bin,"
-                    "ur.overall_result,ur.source_row_no,tr.run_id,tr.metadata_json,"
+                    "ur.overall_result,ur.source_row_no,tr.run_id,tr.metadata_json,(SELECT sd.source_id FROM test.ft_run_detail sd WHERE sd.run_id=tr.run_id) AS source_id,"
                     "tr.tester_id,pv.version_code AS program_version,"
                     "cr.cleaner_code,cr.cleaner_version,pr.processing_run_id,"
                     "pr.source_file_id,sf.sha256 "

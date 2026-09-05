@@ -65,9 +65,9 @@ def test_analytics_export_runners_and_global_verifier_require_current_head() -> 
         encoding="utf-8-sig"
     )
 
-    assert 'schema_revision"] != "sql2014_0026"' in worker
-    assert 'schema_revision"] != "sql2014_0026"' in cleanup
-    assert 'assert revision == "sql2014_0026"' in verifier
+    assert 'schema_revision"] != "sql2014_0027"' in worker
+    assert 'schema_revision"] != "sql2014_0027"' in cleanup
+    assert 'assert revision == "sql2014_0027"' in verifier
 
 
 def test_analytics_export_cleanup_is_packaged_and_scheduled_dry_run_by_default() -> (
@@ -121,13 +121,13 @@ def test_real_lifecycle_smoke_is_synthetic_and_never_mutates_canonical() -> None
 
 def test_real_lifecycle_smoke_write_guard_requires_exact_dev_target() -> None:
     assert_lifecycle_write_target(
-        {"database": "TMS_G0_DEV", "schema_revision": "sql2014_0026"}
+        {"database": "TMS_G0_DEV", "schema_revision": "sql2014_0027"}
     )
     with pytest.raises(RuntimeError, match="TMS_G0_DEV"):
         assert_lifecycle_write_target(
-            {"database": "NCE_TMS", "schema_revision": "sql2014_0026"}
+            {"database": "NCE_TMS", "schema_revision": "sql2014_0027"}
         )
-    with pytest.raises(RuntimeError, match="sql2014_0026"):
+    with pytest.raises(RuntimeError, match="sql2014_0027"):
         assert_lifecycle_write_target(
             {"database": "TMS_G0_DEV", "schema_revision": "sql2014_0021"}
         )

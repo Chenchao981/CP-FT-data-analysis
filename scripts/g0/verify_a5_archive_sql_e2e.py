@@ -149,8 +149,8 @@ def main() -> None:
     identity = check_database()
     if identity["database"] != "TMS_G0_DEV":
         raise RuntimeError("This rollback verification is restricted to TMS_G0_DEV")
-    if identity["schema_revision"] != "sql2014_0026":
-        raise RuntimeError("sql2014_0026 is required")
+    if identity["schema_revision"] != "sql2014_0027":
+        raise RuntimeError("sql2014_0027 is required")
 
     engine = get_engine()
     work_root = Path(os.getenv("TMS_WORK_ROOT", str(ROOT / "data" / "work"))).absolute()

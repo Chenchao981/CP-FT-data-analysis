@@ -14,6 +14,7 @@ from app.infrastructure.sql_bin_mapping_materializer import (
 from app.infrastructure.sql_spec_evaluation_materializer import (
     materialize_processing_run_spec_evaluations,
 )
+from app.infrastructure.stage_run_details import persist_stage_run_details
 
 
 class CanonicalWriteError(ValueError):
@@ -396,6 +397,8 @@ class HuaHongCanonicalWriter:
             if measurement_rows:
                 connection.execute(measurement_statement, measurement_rows)
                 measurement_count += len(measurement_rows)
+
+            persist_stage_run_details(connection, processing_run_id=processing_run_id)
 
             materialize_processing_run_bin_mappings(
                 connection,

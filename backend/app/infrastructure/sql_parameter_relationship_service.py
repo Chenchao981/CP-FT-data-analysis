@@ -44,6 +44,7 @@ from app.infrastructure.formal_spec_resolver import (
     resolve_released_formal_spec,
 )
 from app.infrastructure.sql_analysis_rule_service import SqlAnalysisRuleService
+from app.infrastructure.stage_run_details import run_source_identity
 
 _CONTRACT_VERSION = "PARAMETER_RELATIONSHIP_V1"
 _SAMPLING_METHOD = "DETERMINISTIC_SCOPE_STRIDE_PRESERVE_FORMAL_SPEC_OOS_V2"
@@ -131,15 +132,7 @@ def _condition_text(value: object, *, parameter: str) -> str | None:
 
 
 def _source_identity(row: Mapping[str, Any]) -> str:
-    metadata: Mapping[str, Any] = {}
-    try:
-        decoded = json.loads(row.get("metadata_json") or "{}")
-        if isinstance(decoded, dict):
-            metadata = decoded
-    except (TypeError, ValueError):
-        metadata = {}
-    explicit = str(metadata.get("source_id") or "").strip()
-    return explicit or f"RUN-{int(row['run_id'])}"
+    return run_source_identity(row)
 
 
 def _normalized_filters(
@@ -637,7 +630,7 @@ class SqlParameterRelationshipService:
         return tuple(
             connection.execute(
                 text(
-                    "/* REL_SOURCE */ SELECT DISTINCT tr.run_id,tr.metadata_json,"
+                    "/* REL_SOURCE */ SELECT DISTINCT tr.run_id,tr.metadata_json,(SELECT sd.source_id FROM test.ft_run_detail sd WHERE sd.run_id=tr.run_id) AS source_id,"
                     "tr.tester_id,tr.program_version_id,"
                     "pv.version_code AS program_version "
                     "FROM dataset.dataset_version dv "
@@ -1856,7 +1849,7 @@ class SqlParameterRelationshipService:
             "COALESCE(ur.unit_sequence,ur.unit_id) AS sequence_no,"
             if narrow_projection
             else (
-                "tr.run_id,tr.started_at_utc,tr.metadata_json,tr.tester_id,"
+                "tr.run_id,tr.started_at_utc,tr.metadata_json,(SELECT sd.source_id FROM test.ft_run_detail sd WHERE sd.run_id=tr.run_id) AS source_id,tr.tester_id,"
                 "tr.program_version_id,tr.lot_id,"
                 "COALESCE(ur.wafer_id,tr.wafer_id) AS wafer_id,"
                 + (
@@ -1976,7 +1969,7 @@ class SqlParameterRelationshipService:
     @staticmethod
     def _point_select() -> str:
         return (
-            "tr.run_id,tr.started_at_utc,tr.metadata_json,tr.tester_id,"
+            "tr.run_id,tr.started_at_utc,tr.metadata_json,(SELECT sd.source_id FROM test.ft_run_detail sd WHERE sd.run_id=tr.run_id) AS source_id,tr.tester_id,"
             "tr.program_version_id,tr.lot_id,"
             "COALESCE(ur.wafer_id,tr.wafer_id) AS wafer_id,"
             "pv.version_code AS program_version,ur.unit_id,ur.unit_sequence AS source_sequence,"
@@ -2237,7 +2230,7 @@ class SqlParameterRelationshipService:
         return tuple(
             connection.execute(
                 _statement(
-                    "/* REL_CORRELATION */ SELECT tr.run_id,tr.metadata_json,"
+                    "/* REL_CORRELATION */ SELECT tr.run_id,tr.metadata_json,(SELECT sd.source_id FROM test.ft_run_detail sd WHERE sd.run_id=tr.run_id) AS source_id,"
                     "tr.tester_id,tr.program_version_id,tr.lot_id,"
                     "COALESCE(ur.wafer_id,tr.wafer_id) AS wafer_id,"
                     "pv.version_code AS program_version,COUNT_BIG(*) AS pair_count,"
@@ -2275,7 +2268,7 @@ class SqlParameterRelationshipService:
             connection.execute(
                 _statement(
                     "/* REL_CORRELATION_GROUPS */ SELECT DISTINCT "
-                    "tr.run_id,tr.metadata_json,tr.tester_id,tr.program_version_id,"
+                    "tr.run_id,tr.metadata_json,(SELECT sd.source_id FROM test.ft_run_detail sd WHERE sd.run_id=tr.run_id) AS source_id,tr.tester_id,tr.program_version_id,"
                     "tr.lot_id,COALESCE(ur.wafer_id,tr.wafer_id) AS wafer_id,"
                     "pv.version_code AS program_version"
                     + self._base_join()
